@@ -22,7 +22,7 @@ I recommend putting it into the :dev profile since you usually don't need it in 
 
 ### Step 2: Create a build script.
 
-See: https://github.com/thheller/shadow-build/dev/build.clj
+See: https://github.com/thheller/shadow-build/blob/master/dev/build.clj
 
 Needs more docs ....
 
