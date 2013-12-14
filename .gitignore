@@ -1,0 +1,13 @@
+/target
+/classes
+/checkouts
+/test-projects
+pom.xml
+pom.xml.asc
+*.jar
+*.class
+/.idea
+/.lein-*
+/.nrepl-port
+/lib/js-closure
+/lib/closure-library
