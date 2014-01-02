@@ -254,16 +254,12 @@
       :source-map source-map)))
 
 (defn do-compile-cljs
-  "take current state and a seq of cljs names to compile, (tail-)recursivly compile each
+  "take current state and cljs source name to compile
    make sure you are in with-compiler-env"
-  [state [cljs-name & more]]
-  (if cljs-name
-    (recur (let [src (get-in state [:sources cljs-name])
-                 src (do-compile-cljs-resource state src)]
-             (assoc-in state [:sources cljs-name] src))
-           more)
-    ;; no more pending
-    state
+  [state cljs-name]
+  (let [src (get-in state [:sources cljs-name])
+        src (do-compile-cljs-resource state src)]
+    (assoc-in state [:sources cljs-name] src)
     ))
 
 ;; TBD, ns is read twice
@@ -274,6 +270,7 @@
     (binding [*ns* (create-ns 'cljs.user)
               ana/*cljs-ns* 'cljs.user
               ana/*cljs-file* name
+              ana/*analyze-deps* false
               ana/*passes* [ana/infer-type passes/macro-js-requires]
               reader/*data-readers* tags/*cljs-data-readers*]
 
@@ -380,7 +377,7 @@
        (when-not cljs-core
          (throw (ex-info (str "couldn't find " cljs-core-name) {})))
        (-> state
-           (do-compile-cljs [cljs-core-name])
+           (do-compile-cljs cljs-core-name)
            (assoc-in [:provide-index 'cljs.core] cljs-core-name)
            (assoc :compiled-core true)
            )))))
@@ -506,31 +503,24 @@
                    state)]
        state)))
 
-(defn do-load-compiled-files [state [{:keys [public-dir last-modified name js-name] :as src} & more]]
-  (if src
-    (let [target (io/file public-dir js-name)]
-      (if (and (.exists target)
-               (> (.lastModified target) last-modified))
-        (let [ns (cljs-file->ns name)]
-          (prn [:using-cached name ns target]) 
-          (recur (-> state
-                     (assoc-in [:sources name] (-> src
-                                                   (assoc :js-source (slurp target))
-                                                   (add-goog-dependencies)
-                                                   (assoc :precompiled true)))
-                     (assoc-in [:provide-index ns] name))
-                 more))
-        ;; else: no precompiled version available
-        (recur state more)))
-    
-    ;; else: all done
-    state
-    ))
+(defn do-load-compiled-files [state {:keys [public-dir last-modified name js-name] :as src}]
+  (let [target (io/file public-dir js-name)]
+    (if (and (.exists target)
+             (> (.lastModified target) last-modified))
+      (let [ns (cljs-file->ns name)]
+        (-> state
+            (assoc-in [:sources name] (-> src
+                                          (assoc :js-source (slurp target))
+                                          (add-goog-dependencies)
+                                          (assoc :precompiled true)))
+            (assoc-in [:provide-index ns] name)))
+      ;; else: no precompiled version available
+      state)))
 
 (defn step-load-compiled-files [state]
   (println "Loading precompiled files ...")
   (time
-   (do-load-compiled-files
+   (reduce do-load-compiled-files
     state
     ;; only load precompiled cljs where the source has already been discovered
     (->> state
@@ -668,7 +658,7 @@
                            (remove :compiled)
                            (map :name))
          state (with-compiler-env state
-                 (do-compile-cljs state source-names))]
+                 (reduce do-compile-cljs state source-names))]
 
      (-> state
          (assoc :build-modules modules)
@@ -936,20 +926,14 @@
 
 (defn do-reset-modified
   "expects the current state and a seq of names to reset"
-  [state [name & more]]
-  (if name
-    (recur (merge-resources state [(reset-resource (get-in state [:sources name]))]) more)
-    state))
+  [state name]
+  (merge-resources state [(reset-resource (get-in state [:sources name]))]))
 
 (defn do-reload-modified
   "checks if a src was touched and reset the associated state if it was"
-  [state [{:keys [name type ^File file last-modified] :as src} & more]]
-  (if src
-    (recur (if (> (.lastModified file) last-modified)
-             (merge-resources state [(reset-resource src)]) 
-             state)
-           more)
-    ;; else: done reloading
+  [state {:keys [name type ^File file last-modified] :as src}]
+  (if (> (.lastModified file) last-modified)
+    (merge-resources state [(reset-resource src)]) 
     state))
 
 (defn step-reload-modified
@@ -957,14 +941,12 @@
   [state]
   ;; only reload files in paths marked to be reloadable
   (let [reloadable-paths (get-reloadable-source-paths state)]
-    (do-reload-modified
-     state
-     (->> state
-          :sources
-          (vals)
-          (filter :file)
-          (filter #(contains? reloadable-paths (:source-path %)))
-          ))))
+    (reduce do-reload-modified state (->> state
+                                          :sources
+                                          (vals)
+                                          (filter :file)
+                                          (filter #(contains? reloadable-paths (:source-path %)))
+                                          ))))
 
 (defn wait-for-modified-files!
   "blocks current thread waiting for modified files
@@ -993,7 +975,7 @@
   "wait for modified files, reload them and return reloaded state"
   [state]
   (let [modified (wait-for-modified-files! state)]
-    (do-reset-modified state modified)))
+    (reduce do-reset-modified state modified)))
 
 ;; configuration stuff
 (defn enable-emit-constants [state]

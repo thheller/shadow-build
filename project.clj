@@ -9,7 +9,7 @@
 
   :profiles {:dev {:source-paths ["dev"]
                    :dependencies [[org.clojure/tools.namespace "0.2.4"]
-                                  [org.clojure/clojurescript "0.0-2120"
+                                  [org.clojure/clojurescript "0.0-2138"
                                    :exclusions [org.clojure/google-closure-library]]]}} 
   
   :source-paths ["src/clj"])

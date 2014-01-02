@@ -13,8 +13,7 @@
                          :pretty-print true
                          :work-dir (io/file "target/cljs-work")
                          :public-dir (io/file "target/cljs")
-                         :public-path "target/cljs"
-                         :fingerprint-modules true)
+                         :public-path "target/cljs")
                   (cljs/step-find-resources-in-jars)
                   (cljs/step-find-resources "lib/js-closure" {:reloadable false})
                   (cljs/step-find-resources "test-data")
