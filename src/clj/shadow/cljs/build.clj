@@ -775,7 +775,15 @@
   
   (time
    (doseq [{:keys [default js-source source-map-name name js-name] :as mod} modules]
-     (let [target (io/file public-dir js-name)]
+     (let [target (io/file public-dir js-name)
+           js-source (if (:web-worker mod)
+                       (let [deps (:depends-on mod)]
+                         (str (str/join "\n" (for [other modules
+                                                   :when (contains? deps (:name other))]
+                                               (str "importScripts('" (:js-name other) "');")))
+                              "\n\n"
+                              js-source)) 
+                       js-source)]
        (io/make-parents target)
        (spit target js-source)
        (prn [:wrote-module name js-name (count js-source)])

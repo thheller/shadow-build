@@ -103,9 +103,33 @@
       (cljs/step-configure-module :basic ['basic] #{})
       (cljs/step-compile-modules)
       (cljs/closure-optimize)
-      (cljs/flush-modules-to-disk))
+      (cljs/flush-modules-to-disk)) 
 
   ;; closure compiler thread keeps the jvm alive but all work is done, dunno why this is
   (shutdown-agents)
   (System/exit 0)
   :done)
+
+(defn workers
+  [& args]
+  (-> (cljs/init-state)
+      (cljs/enable-source-maps)
+      (assoc :optimizations :advanced
+             :pretty-print false
+             :work-dir (io/file "target/cljs-work")
+             :public-dir (io/file "target/cljs")
+             :public-path "target/cljs")
+      (cljs/step-find-resources-in-jars)
+      (cljs/step-find-resources "lib/js-closure" {:reloadable false})
+      (cljs/step-find-resources "test-workers")
+      (cljs/step-finalize-config)
+      (cljs/step-compile-core)
+
+      (cljs/step-configure-module :cljs ['cljs.core] #{})
+      (cljs/step-configure-module :page ['page] #{:cljs})
+      (cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
+      (cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
+
+      (cljs/step-compile-modules)
+      (cljs/closure-optimize)
+      (cljs/flush-modules-to-disk)))

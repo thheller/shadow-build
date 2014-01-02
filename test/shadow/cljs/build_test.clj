@@ -71,12 +71,12 @@
     (let [state (-> (user/resume-from
                      (-> (cljs/init-state)
                          (cljs/enable-source-maps)
-                         (cljs/enable-emit-constants)
                          (cljs/step-find-resources-in-jars)
                          (cljs/step-find-resources "lib/js-closure" {:reloadable false})
                          (cljs/step-find-resources "test-data")
-                         (assoc :optimizations :advanced
-                                :pretty-print false
+                         (cljs/step-find-resources "test-workers")
+                         (assoc :optimizations :whitespace
+                                :pretty-print true
                                 :work-dir (io/file "target/cljs-work")
                                 :public-dir (io/file "target/cljs")
                                 :public-path "target/cljs")
@@ -84,10 +84,16 @@
                          (cljs/step-compile-core)))
 
                     (cljs/step-reload-modified)
-                    (cljs/step-configure-module :cljs ['cljs.core] #{})
+                    ;; (cljs/step-configure-module :cljs ['cljs.core] #{})
                     ;;(cljs/step-configure-module :basic ['basic] #{:cljs})
                     ;;(cljs/step-configure-module :other ['other] #{:cljs})
                     ;;(step-flush-to-disk)
+                    (cljs/step-configure-module :cljs ['cljs.core] #{})
+                    (cljs/step-configure-module :page ['page] #{:cljs})
+                    (cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
+                    (cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
+
+
                     )]
       
       (prn [:count-sources (count (:sources state))])

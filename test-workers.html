@@ -1,0 +1,11 @@
+<!doctype html>
+
+<html>
+  <body>
+    <h1>Hello WebWorkers</h1>
+    <div id="log"></div>
+    <script src="target/cljs/cljs.js"></script>
+    <script src="target/cljs/page.js"></script>
+    <script>page.start_workers(document.getElementById("log"));</script>
+  </body>
+</html>
