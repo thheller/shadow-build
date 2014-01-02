@@ -87,8 +87,6 @@
     #{y}))
 
 (defn add-goog-dependencies [{:keys [js-source] :as rc}]
-  ;; FIXME: picks up goog.provide/require in comments
-  ;; see goog/base.js for example :P
   (->> js-source
        (StringReader.)
        (io/reader)
