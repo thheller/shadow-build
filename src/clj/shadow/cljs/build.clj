@@ -472,7 +472,7 @@
      (when-not (keyword? module-name)
        (throw (ex-info "module name should be a keyword" {:module-name module-name})))
      (when-not (every? keyword? depends-on)
-       (throw (ex-info "module deps should be a keywords" {:module-deps depends-on})))
+       (throw (ex-info "module deps should be keywords" {:module-deps depends-on})))
 
      (let [state (reduce do-resolve-main state module-mains)
            module-deps (->> module-mains
@@ -612,8 +612,8 @@
           ;; mod-b :require clojure.string :depends-on common
           ;; mod-a,mod-b would try to compile clojure/string.js blow up closure optimizer
 
-          ;; FIXME: this may result in dependencies in the wrong order since find returns a map
           dups (find-sources-used-more-than-once modules)
+          ;; bring back into dependency order
           sorted-dups (->> module-order
                            (mapcat #(get-in modules [% :sources]))
                            (distinct)
@@ -760,6 +760,7 @@
          (spit target source)))))
   state)
 
+;; FIXME: manifest should be custom step
 (defn flush-manifest [public-dir modules]
   (spit (io/file public-dir "manifest.json")
         (json/write-str (map #(select-keys % [:name :js-name :mains :depends-on :default :sources]) modules))))
@@ -790,7 +791,12 @@
 
   state) 
 
-(defn closure-optimize [{:keys [build-modules] :as state}]
+(defn closure-optimize
+  "takes the current defined modules and runs it through the closure optimizer
+
+   will return the state with :optimized a list of module which now have a js-source and optionally source maps
+   nothing is written to disk, use flush-optimized to write"
+  [{:keys [build-modules] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "optimize before compile?" {})))
 
@@ -832,8 +838,6 @@
                                           )))))))))))
 
 
-
-
 (defn- ns-list-string [coll]
   (->> coll
        (map #(str "'" (comp/munge %) "'"))
@@ -847,7 +851,8 @@
                 "[" (ns-list-string requires) "]);")))
        (str/join "\n")))
 
-(defn flush-unoptimized [{:keys [build-modules public-dir public-path] :as state}]
+(defn flush-unoptimized
+  [{:keys [build-modules public-dir public-path] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (println "Flushing unoptimized modules")
