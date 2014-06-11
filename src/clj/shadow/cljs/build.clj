@@ -143,7 +143,8 @@
         root-len (inc (count root-path))]
     (for [file (file-seq root)
           :let [abs-path (.getAbsolutePath file)]
-          :when (is-cljs-resource? abs-path)
+          :when (and (is-cljs-resource? abs-path)
+                     (not (.isHidden file)))
           :let [rel-path (.substring abs-path root-len)]]
       {:name rel-path
        :file file
