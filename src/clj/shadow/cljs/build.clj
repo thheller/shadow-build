@@ -367,7 +367,7 @@
     (throw (ex-info "finalize config first" {})))
 
   (println "Compiling cljs.core")
-  (when-not (get-in state [:sources "goog/base.js"])
+  (when-not (get-in state [:sources goog-base-name])
      (throw (ex-info (str "couldn't find " goog-base-name) {})))
 
   (time
@@ -689,10 +689,14 @@
             (json/write-str))))))
 
 (defn closure-defines-and-base [{:keys [public-path] :as state}]
-  (let [goog-base (get-in state [:sources "goog/base.js" :js-source])]
+  (let [goog-base (get-in state [:sources goog-base-name :js-source])]
     (when-not (seq goog-base)
       (throw (ex-info "no goog/base.js" {})))
-
+    
+    (when (< (count goog-base) 500)
+      (throw (ex-info "probably not the goog/base.js you were expecting"
+                      (get-in state [:sources goog-base-name]))))
+    
     ;; TODO: defines should be actually defineable
     (str "var CLOSURE_NO_DEPS = true;\n"
          ;; goog.findBasePath_() requires a base.js which we dont have
