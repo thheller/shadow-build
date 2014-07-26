@@ -6,7 +6,7 @@ require 'set'
 if File.exists?("closure-library")
   system("cd closure-library; git pull origin master")
 else
-  system("git clone https://code.google.com/p/closure-library/")
+  system("git clone https://github.com/google/closure-library.git")
 end
 
 FileUtils.mkdir_p("js-closure")
