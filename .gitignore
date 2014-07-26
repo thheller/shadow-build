@@ -9,5 +9,6 @@ pom.xml.asc
 /.idea
 /.lein-*
 /.nrepl-port
+/tmp
 /lib/js-closure
 /lib/closure-library
