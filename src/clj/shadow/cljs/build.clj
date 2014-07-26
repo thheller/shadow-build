@@ -779,8 +779,9 @@
     (throw (ex-info "missing :public-dir" {})))
   
   (time
-   (doseq [{:keys [default js-source source-map-name name js-name] :as mod} modules]
+   (doseq [{:keys [default js-source prepend source-map-name name js-name] :as mod} modules]
      (let [target (io/file public-dir js-name)
+           js-source (str prepend js-source)
            js-source (if (:web-worker mod)
                        (let [deps (:depends-on mod)]
                          (str (str/join "\n" (for [other modules
@@ -903,14 +904,15 @@
      (flush-manifest public-dir build-modules)
      
      ;; flush fake modules
-     (doseq [{:keys [default js-name name sources] :as mod} build-modules]
+     (doseq [{:keys [default js-name name prepend sources] :as mod} build-modules]
        (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
                                  sources)
              target (io/file public-dir js-name)
 
              out (->> provided-ns
                       (map #(str "goog.require('" (comp/munge %) "');"))
-                      (str/join "\n"))
+                      (str/join "\n")
+                      (str prepend))
              out (if default
                    ;; default mod needs closure related setup and goog.addDependency stuff
                    (str (closure-defines-and-base state)
