@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "0.7.1"
+(defproject thheller/shadow-build "0.8.0"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
