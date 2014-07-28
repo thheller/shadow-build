@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "0.8.0"
+(defproject thheller/shadow-build "0.8.5"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
@@ -12,7 +12,6 @@
                                   [org.clojure/tools.namespace "0.2.4"]
                                   [org.clojure/clojurescript "0.0-2277"
                                    :exclusions [org.clojure/google-closure-library]]
-                                  [org.slf4j/slf4j-log4j12 "1.7.7"]
                                   [log4j "1.2.17"]
                                   ]}} 
   

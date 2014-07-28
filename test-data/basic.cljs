@@ -8,4 +8,3 @@
 (assert (keyword-identical? ::test :basic/test))
 
 (.log js/console "finished loading basic" (c/test ::c/test))
-

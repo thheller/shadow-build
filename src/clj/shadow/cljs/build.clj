@@ -27,6 +27,7 @@
 
 (def ^:dynamic *time-depth* 0)
 
+
 (defmacro with-logged-time
   [msg & body]
   `(do ~msg
@@ -40,6 +41,19 @@
                      runtime#)
          result#
          )))
+
+(def cljs-warnings (atom {})) ;; I don't like global vars :(
+
+(defn warning-handler
+  "saves all warnings into the global map with src-name as key, will be printed after compile-modules"
+  [src-name warning-type {:keys [line] :as env} extra]
+  (when (get ana/*cljs-warnings* warning-type)
+    (when-let [s (ana/error-message warning-type extra)]
+      (let [msg (if line
+                  (format "%s:%d -> %s" src-name line s)
+                  s)]
+        (swap! cljs-warnings update-in [src-name] (fnil conj []) msg)
+        ))))
 
 (defn jar-entry-names [jar-path]
   (with-open [z (java.util.zip.ZipFile. jar-path)]
@@ -204,57 +218,66 @@
   (let [eof-sentinel (Object.)
         in (readers/indexing-push-back-reader cljs-source 1 name)
         source-map? (:source-map state)]
-    ;; FIXME: should assume the ns was already processed when analyzing namespaces
-    ;; and skip the ns, nasty bit a code duplication! 
+    
+    ;; this logging is a hack, no way arround a global though :(
+    (swap! cljs-warnings dissoc name)
+    (ana/with-warning-handlers
+      [(partial warning-handler name)]
 
-    (binding [comp/*source-map-data* (when source-map?
-                                       (atom {:source-map (sorted-map)
-                                              :gen-col 0
-                                              :gen-line 0}))]
-             
-      (let [result
-            (loop [{:keys [ns ns-info] :as compile-state} {:js "" :ns 'cljs.user}] ;; :ast []
-              (let [;; FIXME: i really dont like bindings ...
-                    form (binding [*ns* (create-ns ns)
-                                   ana/*cljs-ns* ns
-                                   ana/*cljs-file* name
-                                   reader/*data-readers* tags/*cljs-data-readers*
-                                   reader/*alias-map* (merge reader/*alias-map*
-                                                             (:requires ns-info) 
-                                                             (:require-macros ns-info))]
-                           (reader/read in nil eof-sentinel))]
-                (if (identical? form eof-sentinel)
-                  ;; eof
-                  compile-state
-                  ;; analyze, concat, recur
-                  (recur (binding [*ns* (create-ns ns)
-                                   ana/*cljs-ns* ns
-                                   ana/*cljs-file* name
-                                   ana/*cljs-warnings* (merge ana/*cljs-warnings* {:undeclared-var true})
-                                   ana/*passes* [ana/infer-type passes/macro-js-requires]]
+      ;; FIXME: should assume the ns was already processed when analyzing namespaces
+      ;; and skip the ns, nasty bit a code duplication! 
 
-                           (let [ast (ana/analyze (ana/empty-env) form)
-                                 ;; TBD: does it make sense to keep the ast arround?
-                                 ;; state (update-in state [:ast] ast)
-                                 ast-js (with-out-str
-                                          (comp/emit ast))
-                                 
-                                 compile-state (if (= :ns (:op ast))
-                                                 (let [ns-name (:name ast)
-                                                       requires (requires-from-ns-ast state ast)]
-                                                   (assoc compile-state :ns ns-name :ns-info (dissoc ast :env) :requires requires))
-                                                 compile-state)
-                                 compile-state (update-in compile-state [:js] str ast-js)]
-                             compile-state
-                             ))))))]
+      (binding [comp/*source-map-data* (when source-map?
+                                         (atom {:source-map (sorted-map)
+                                                :gen-col 0
+                                                :gen-line 0}))]
+        
+        (let [result
+              (loop [{:keys [ns ns-info] :as compile-state} {:js "" :ns 'cljs.user}] ;; :ast []
+                (let [ ;; FIXME: i really dont like bindings ...
+                      form (binding [*ns* (create-ns ns)
+                                     ana/*cljs-ns* ns
+                                     ana/*analyze-deps* false
+                                     ana/*cljs-file* name
+                                     reader/*data-readers* tags/*cljs-data-readers*
+                                     reader/*alias-map* (merge reader/*alias-map*
+                                                               (:requires ns-info) 
+                                                               (:require-macros ns-info))]
+                             (reader/read in nil eof-sentinel))]
+                  (if (identical? form eof-sentinel)
+                    ;; eof
+                    compile-state
+                    ;; analyze, concat, recur
+                    (recur (binding [*ns* (create-ns ns)
+                                     ana/*cljs-ns* ns
+                                     ana/*cljs-file* name
+                                     ana/*analyze-deps* false
+                                     ana/*cljs-warnings* (merge ana/*cljs-warnings* {:undeclared-var true
+                                                                                     :undeclared-ns true})
+                                     ana/*passes* [ana/infer-type passes/macro-js-requires]]
 
-        (when-not (:ns result)
-          (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+                             (let [ast (ana/analyze (ana/empty-env) form)
+                                   ;; TBD: does it make sense to keep the ast arround?
+                                   ;; state (update-in state [:ast] ast)
+                                   ast-js (with-out-str
+                                            (comp/emit ast))
+                                   
+                                   compile-state (if (= :ns (:op ast))
+                                                   (let [ns-name (:name ast)
+                                                         requires (requires-from-ns-ast state ast)]
+                                                     (assoc compile-state :ns ns-name :ns-info (dissoc ast :env) :requires requires))
+                                                   compile-state)
+                                   compile-state (update-in compile-state [:js] str ast-js)]
+                               compile-state
+                               ))))))]
 
-        (if source-map?
-          (assoc result :source-map (:source-map @comp/*source-map-data*))
-          result
-          )))))
+          (when-not (:ns result)
+            (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+
+          (if source-map?
+            (assoc result :source-map (:source-map @comp/*source-map-data*))
+            result
+            ))))))
 
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
@@ -286,27 +309,29 @@
   [state {:keys [name source] :as rc}]
   (let [eof-sentinel (Object.)
         in (readers/indexing-push-back-reader source 1 name)]
-    (binding [*ns* (create-ns 'cljs.user)
-              ana/*cljs-ns* 'cljs.user
-              ana/*cljs-file* name
-              ana/*analyze-deps* false
-              ana/*passes* [ana/infer-type passes/macro-js-requires]
-              reader/*data-readers* tags/*cljs-data-readers*]
+    (ana/with-warning-handlers
+      [(partial warning-handler name)]
+      (binding [*ns* (create-ns 'cljs.user)
+                ana/*cljs-ns* 'cljs.user
+                ana/*cljs-file* name
+                ana/*analyze-deps* false
+                ana/*passes* [ana/infer-type passes/macro-js-requires]
+                reader/*data-readers* tags/*cljs-data-readers*]
 
-      (let [peek (reader/read in nil eof-sentinel)
-            ast (ana/analyze (ana/empty-env) peek)]
+        (let [peek (reader/read in nil eof-sentinel)
+              ast (ana/analyze (ana/empty-env) peek)]
 
-        (when-not (= :ns (:op ast))
-          (throw (ex-info "peeked into file but found no ns" {:file name :ast ast})))
+          (when-not (= :ns (:op ast))
+            (throw (ex-info "peeked into file but found no ns" {:file name :ast ast})))
 
-        ;; FIXME: should explode if ns is already defined
-        (let [ns-name (:name ast)
-              requires (requires-from-ns-ast state ast)]
-          (assoc rc 
-            :ns ns-name 
-            :ns-info (dissoc ast :env)
-            :provides #{ns-name}
-            :requires requires))))))
+          ;; FIXME: should explode if ns is already defined
+          (let [ns-name (:name ast)
+                requires (requires-from-ns-ast state ast)]
+            (assoc rc 
+              :ns ns-name 
+              :ns-info (dissoc ast :env)
+              :provides #{ns-name}
+              :requires requires)))))))
 
 (defn merge-provides [state provided-by provides]
   (if-let [provide (first provides)]
@@ -429,16 +454,14 @@
            ))))))
 
 (defn step-finalize-config [state]
-  (with-logged-time
-    (log/info "Finalizing config ...")
-    (assoc state
-      :configured true
-      :main-deps {}
-      ;; populate index with known sources
-      :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
-                                    provide provides]
-                                [provide name]
-                                )))))
+  (assoc state
+    :configured true
+    :main-deps {}
+    ;; populate index with known sources
+    :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
+                                  provide provides]
+                              [provide name]
+                              ))))
 
 
 
@@ -667,23 +690,35 @@
       (map #(get modules %) module-order)
       )))
 
+(defn do-print-warnings 
+  "print warnings after building modules, repeat warnings for files that weren't recompiled!"
+  [state]
+  (doseq [[src-name warnings] (->> @cljs-warnings
+                                   (sort-by first)) ;; sort by filename
+          ]
+    (log/warnf "WARNINGS: %s (%d)" src-name (count warnings))
+    (doseq [msg warnings]
+      (log/warn msg)))
+  state)
+
 (defn step-compile-modules [state]
   (with-logged-time
-   (log/info "Compiling Modules ...")
-   (let [modules (sort-and-compact-modules (:modules state))
-         source-names (->> modules
-                           (mapcat :sources)
-                           (map #(get-in state [:sources %]))
-                           (filter #(= :cljs (:type %)))
-                           (remove :compiled)
-                           (map :name))
-         state (with-compiler-env state
-                 (reduce do-compile-cljs state source-names))]
+    (log/info "Compiling Modules ...")
+    (let [modules (sort-and-compact-modules (:modules state))
+          source-names (->> modules
+                            (mapcat :sources)
+                            (map #(get-in state [:sources %]))
+                            (filter #(= :cljs (:type %)))
+                            (remove :compiled)
+                            (map :name))
+          state (with-compiler-env state
+                  (reduce do-compile-cljs state source-names))]
 
-     (-> state
-         (assoc :build-modules modules)
-         (step-generate-constants)
-         ))))
+      (-> state
+          (assoc :build-modules modules)
+          (step-generate-constants)
+          (do-print-warnings)
+          ))))
 
 (defn cljs-source-map-for-module [sm-text sources opts]
   (let [sm-json (json/read-str sm-text :key-fn keyword)
@@ -965,7 +1000,7 @@
        (set)))
 
 (defn reset-resource [{:keys [name type ^File file] :as src}]
-  (log/info "Reloading: %s -> %s" name file)
+  (log/infof "Reloading: %s -> %s" name file)
   (-> src
       (dissoc :ns :ns-info :requires :provides :js-source :compiled :compiled-at)
       (read-resource)
@@ -1013,7 +1048,7 @@
                              sources)]
         (if (seq modified)
           (do (doseq [{:keys [name file]} modified]
-                (log/info "File modified: %s -> %s" name file))
+                (log/debugf "File modified: %s -> %s" name file))
               (map :name modified))
           ;; nothing modified, wait and look again
           (do (Thread/sleep 500)

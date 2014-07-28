@@ -84,16 +84,14 @@
                          (cljs/step-compile-core)))
 
                     (cljs/step-reload-modified)
-                    ;; (cljs/step-configure-module :cljs ['cljs.core] #{})
-                    ;;(cljs/step-configure-module :basic ['basic] #{:cljs})
-                    ;;(cljs/step-configure-module :other ['other] #{:cljs})
-                    ;;(step-flush-to-disk)
                     (cljs/step-configure-module :cljs ['cljs.core] #{})
-                    (cljs/step-configure-module :page ['page] #{:cljs})
-                    (cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
-                    (cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
-
-
+                    (cljs/step-configure-module :basic ['basic] #{:cljs})
+                    (cljs/step-configure-module :other ['other] #{:cljs})
+                    ;;(step-flush-to-disk)
+                    ;;(cljs/step-configure-module :cljs ['cljs.core] #{})
+                    ;;(cljs/step-configure-module :page ['page] #{:cljs})
+                    ;;(cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
+                    ;;(cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
                     )]
       
       (prn [:count-sources (count (:sources state))])
