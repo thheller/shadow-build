@@ -759,8 +759,7 @@
          ;; this is usually only needed for unoptimized builds anyways
          "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
          "var CLOSURE_DEFINES = " 
-         (json/write-str {"goog.DEBUG" false
-                          "goog.locale" "DE"})
+         (json/write-str (:closure-defines state {}))
          ";\n"
          goog-base
          "\n")))
@@ -1083,6 +1082,8 @@
 
   {:compiler-env {} ;; will become env/*compiler*
    :source-paths {}
+   :closure-defines  {"goog.DEBUG" false
+                      "goog.LOCALE" "en"}
    :logger (reify BuildLog
              (log-warning [_ msg]
                (println (str "WARN: " msg)))
