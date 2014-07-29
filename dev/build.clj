@@ -16,6 +16,12 @@
   "build the project, wait for file changes, repeat"
   [& args]
   (let [state (-> (cljs/init-state)
+                  ;; you can use a custom logger (log4j, logback) the default just println
+                  #_ (assoc :logger (reify cljs/BuildLog
+                                      (log-warning [_ log-string])
+                                      (log-progress [_ log-string])
+                                      (log-time-start [_ log-string])
+                                      (log-time-end [_ log-string time-in-ms])))
                   (cljs/enable-source-maps)
                   (assoc :optimizations :none
                          :pretty-print true
@@ -26,7 +32,7 @@
                   (cljs/step-find-resources "lib/js-closure" {:reloadable false})
                   (cljs/step-find-resources "test-data") ;; find cljs in this path
                   (cljs/step-finalize-config) ;; shouldn't be needed but is at the moment
-                  (cljs/step-compile-core) ;; compile cljs.core
+                  (cljs/step-compile-core)    ;; compile cljs.core
                   (define-modules)
                   )]
     

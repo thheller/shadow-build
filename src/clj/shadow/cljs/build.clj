@@ -17,30 +17,30 @@
             [clojure.core.reducers :as r]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
-            [clojure.tools.logging :as log]
             [clojure.core.reducers :as r]
             [shadow.cljs.passes :as passes]
             [loom.graph :as lg]
             [loom.alg :as la]
             ))
 
+(defprotocol BuildLog
+  (log-warning [this log-string])
+  (log-progress [this log-string])
+  (log-time-start [this log-string])
+  (log-time-end [this log-string time-in-ms]))
 
 (def ^:dynamic *time-depth* 0)
 
-
 (defmacro with-logged-time
-  [msg & body]
-  `(do ~msg
-       (let [start# (System/currentTimeMillis)
-             result# (binding [*time-depth* (inc *time-depth*)]
-                       ~@body)
-             runtime# (- (System/currentTimeMillis) start#)]
-         (log/debugf (str (->> (repeat *time-depth* "-")
-                               (str/join "")) 
-                          "-> time: %dms")
-                     runtime#)
-         result#
-         )))
+  [[logger msg] & body]
+  `(let [msg# ~msg]
+     (log-time-start ~logger msg#)
+     (let  [start# (System/currentTimeMillis)
+            result# (binding [*time-depth* (inc *time-depth*)]
+                      ~@body)]
+       (log-time-end ~logger msg# (- (System/currentTimeMillis) start#))
+       result#)
+     ))
 
 (def cljs-warnings (atom {})) ;; I don't like global vars :(
 
@@ -285,7 +285,7 @@
   [state {:keys [name last-modified source] :as rc}]
 
   (with-logged-time
-    (log/infof "Compile CLJS: \"%s\"" name)
+    [(:logger state) (format "Compile CLJS: \"%s\"" name)]
     (let [{:keys [js ns requires source-map] :as result} (compile-cljs-string state source name)]
       (assoc rc
         :js-source js
@@ -370,7 +370,7 @@
    ignores PATHS in classpath, add manually if you expect to find cljs there"
   [{:keys [source-paths work-dir] :as state}]
   (with-logged-time
-    (log/info "Find cljs resources in jars")
+    [(:logger state) "Find cljs resources in jars"]
     (->> (classpath-entries)
          (filter is-jar?)
          (do-find-resources-in-paths)
@@ -382,7 +382,7 @@
      (step-find-resources state path {:reloadable true}))
   ([state path opts]
      (with-logged-time
-       (log/infof "Find cljs resources in path: \"%s\"" path)
+       [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
        (-> state
            (assoc-in [:source-paths path] (assoc opts
                                             :path path))
@@ -412,7 +412,7 @@
     (throw (ex-info "finalize config first" {})))
 
   (with-logged-time 
-    (log/info "Compiling cljs.core")
+    [(:logger state) "Compiling cljs.core"]
 
     (when-not (get-in state [:sources goog-base-name])
       (throw (ex-info (str "couldn't find " goog-base-name) {})))
@@ -484,7 +484,7 @@
           )))))
 
 (defn resolve-main-deps [state main-cljs]
-  (log/infof "Resolving deps for: %s" main-cljs)
+  (format "Resolving deps for: %s" main-cljs)
   (let [{:keys [deps-ordered]} (-> state
                                    (assoc :deps-ordered []
                                           :deps-visited #{})
@@ -495,7 +495,7 @@
   "resolve all deps of a given main ns"
   [state main-cljs]
   (with-logged-time
-    (log/infof "Compile main: \"%s\"" main-cljs)
+    [(:logger state) (format "Compile main: \"%s\"" main-cljs)]
     (with-compiler-env state
       (-> state
           (assoc :pending [])
@@ -562,7 +562,7 @@
 
 (defn step-load-compiled-files [state]
   (with-logged-time
-    (log/info "Loading precompiled files ...")
+    [(:logger state) (format "Loading precompiled files ...")]
     (reduce do-load-compiled-files
             state
             ;; only load precompiled cljs where the source has already been discovered
@@ -577,7 +577,7 @@
   "flush all generated sources to disk, not terribly useful, use flush-unoptimized to include source maps"
   [{:keys [work-dir sources] :as state}]
   (with-logged-time
-    (log/info "Flushing to disk")
+    [(:logger state) (format "Flushing to disk")]
     (doseq [{:keys [type name compiled] :as src} (vals sources)
             :when (and (= :cljs type)
                        compiled)]
@@ -631,7 +631,7 @@
 
 (defn sort-and-compact-modules
   "sorts modules in dependency order and remove sources provided by parent deps"
-  [modules]
+  [{:keys [logger modules] :as state}]
   (when-not (seq modules)
     (throw (ex-info "no modules defined" {})))
   
@@ -672,7 +672,7 @@
                          dups sorted-dups]
                     (if-let [[source-name used-by] (first dups)]
                       (let [common-ancestor (first module-order) ;; FIXME: actually try to find one
-                            _ (log/warnf "Moving \"%s\" used by %s to %s" source-name used-by common-ancestor)
+                            _ (log-warning logger (format "Moving \"%s\" used by %s to %s" source-name used-by common-ancestor))
                             modules (reduce (fn [modules dep-mod]
                                               (update-in modules
                                                          [dep-mod :sources]
@@ -692,19 +692,19 @@
 
 (defn do-print-warnings 
   "print warnings after building modules, repeat warnings for files that weren't recompiled!"
-  [state]
+  [{:keys [logger] :as state}]
   (doseq [[src-name warnings] (->> @cljs-warnings
                                    (sort-by first)) ;; sort by filename
           ]
-    (log/warnf "WARNINGS: %s (%d)" src-name (count warnings))
+    (log-warning logger (format "WARNINGS: %s (%d)" src-name (count warnings)))
     (doseq [msg warnings]
-      (log/warn msg)))
+      (log-warning logger msg)))
   state)
 
 (defn step-compile-modules [state]
   (with-logged-time
-    (log/info "Compiling Modules ...")
-    (let [modules (sort-and-compact-modules (:modules state))
+    [(:logger state) "Compiling Modules ..."]
+    (let [modules (sort-and-compact-modules state)
           source-names (->> modules
                             (mapcat :sources)
                             (map #(get-in state [:sources %]))
@@ -801,7 +801,7 @@
 
 (defn- flush-source-maps [{modules :optimized :keys [^File public-dir public-path] :as state}]
   (with-logged-time
-    (log/info "Flushing source maps")
+    [(:logger state) "Flushing source maps"]
 
     (when-not (seq modules)
       (throw (ex-info "flush before optimize?" {})))
@@ -827,9 +827,9 @@
   (spit (io/file public-dir "manifest.json")
         (json/write-str (map #(select-keys % [:name :js-name :mains :depends-on :default :sources]) modules))))
 
-(defn flush-modules-to-disk [{modules :optimized :keys [^File public-dir public-path] :as state} ]
+(defn flush-modules-to-disk [{modules :optimized :keys [^File public-dir public-path logger] :as state} ]
   (with-logged-time
-    (log/info "Flushing modules to disk")
+    [(:logger state) "Flushing modules to disk"]
 
     (when-not (seq modules)
       (throw (ex-info "flush before optimize?" {})))
@@ -850,7 +850,8 @@
                         js-source)]
         (io/make-parents target)
         (spit target js-source)
-        (log/infof "Wrote module \"%s\":\"%s\" (size: %d)" name js-name (count js-source))
+
+        (log-progress logger (format "Wrote module \"%s\":\"%s\" (size: %d)" name js-name (count js-source)))
 
         (when source-map-name
           (spit target (str "\n//# sourceMappingURL=src/" (file-basename source-map-name) "\n")
@@ -868,12 +869,12 @@
 
    will return the state with :optimized a list of module which now have a js-source and optionally source maps
    nothing is written to disk, use flush-optimized to write"
-  [{:keys [build-modules] :as state}]
+  [{:keys [logger build-modules] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "optimize before compile?" {})))
 
   (with-logged-time
-    (log/info "Closure optimize")
+    [logger "Closure optimize"]
 
     (let [modules (make-closure-modules state build-modules)
           cc (closure/make-closure-compiler)
@@ -889,9 +890,9 @@
       (let [errors (.errors result)
             warnings (.warnings result)]
         (doseq [next (seq errors)]
-          (log/warnf "CLOSURE-ERROR: %s" (.toString next)))
+          (log-warning logger (format "CLOSURE-ERROR: %s" (.toString next))))
         (doseq [next (seq warnings)]
-          (log/infof "CLOSURE-WARNING: %s" (.toString next))))
+          (log-warning logger (format "CLOSURE-WARNING: %s" (.toString next)))))
       
       (assoc state
         :optimized (when (.success result)
@@ -934,7 +935,7 @@
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (with-logged-time
-    (log/info "Flushing unoptimized modules")
+    [(:logger state) "Flushing unoptimized modules"]
 
     (let [source-map? (boolean (:source-map state))]
       
@@ -1000,7 +1001,6 @@
        (set)))
 
 (defn reset-resource [{:keys [name type ^File file] :as src}]
-  (log/infof "Reloading: %s -> %s" name file)
   (-> src
       (dissoc :ns :ns-info :requires :provides :js-source :compiled :compiled-at)
       (read-resource)
@@ -1034,21 +1034,21 @@
 (defn wait-for-modified-files!
   "blocks current thread waiting for modified files
    returns names of modified sources, does NOT discover new files yet"
-  [{:keys [sources] :as state}]
+  [{:keys [logger sources] :as state}]
   (let [reloadable-paths (get-reloadable-source-paths state)
         sources (->>  (vals sources)
                       (filter :file)
                       (filter #(contains? reloadable-paths (:source-path %)))
                       (map #(select-keys % [:last-modified :name :file])))]
 
-    (log/infof "Watching %d files" (count sources))
+    (log-progress logger (format "Watching %d files" (count sources)))
     (loop []
       (let [modified (filter (fn [{:keys [name ^File file last-modified]}]
                                (> (.lastModified file) last-modified))
                              sources)]
         (if (seq modified)
           (do (doseq [{:keys [name file]} modified]
-                (log/debugf "File modified: %s -> %s" name file))
+                (log-progress logger (format "File modified: %s -> %s" name file)))
               (map :name modified))
           ;; nothing modified, wait and look again
           (do (Thread/sleep 500)
@@ -1083,4 +1083,13 @@
 
   {:compiler-env {} ;; will become env/*compiler*
    :source-paths {}
+   :logger (reify BuildLog
+             (log-warning [_ msg]
+               (println (str "WARN: " msg)))
+             (log-time-start [_ msg]
+               (println (format "-> %s" msg)))
+             (log-time-end [_ msg ms]
+               (println (format "<- %s (%dms)" msg ms)))
+             (log-progress [_ msg]
+               (println msg)))
    })
