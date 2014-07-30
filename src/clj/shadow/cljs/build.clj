@@ -68,13 +68,13 @@
       (str/split sysp #":"))))
 
 (defn is-jar? [^String name]
-  (.endsWith name ".jar"))
+  (.endsWith (str/lower-case name) ".jar"))
 
 (defn is-cljs-file? [^String name]
-  (.endsWith name ".cljs"))
+  (.endsWith (str/lower-case name) ".cljs"))
 
 (defn is-js-file? [^String name]
-  (.endsWith name ".js"))
+  (.endsWith (str/lower-case name) ".js"))
 
 (defn is-cljs-resource? [^String name]
   (or (is-cljs-file? name)
@@ -162,7 +162,7 @@
         last-modified (.lastModified jar-file)]
     (for [jar-entry (jar-entry-names path)
           :when (is-cljs-resource? jar-entry)
-          :let [url (io/resource jar-entry)]]
+          :let [url (URL. (str "jar:file:" (.getAbsolutePath jar-file) "!/" jar-entry))]]
       {:name jar-entry
        :jar true
        :source-path path
@@ -745,7 +745,9 @@
             (json/write-str))))))
 
 (defn closure-defines-and-base [{:keys [public-path] :as state}]
-  (let [goog-base (get-in state [:sources goog-base-name :js-source])]
+  (let [goog-rc (get-in state [:sources goog-base-name])
+        goog-base (:js-source goog-rc)]
+
     (when-not (seq goog-base)
       (throw (ex-info "no goog/base.js" {})))
     
