@@ -1045,56 +1045,55 @@
    return resource maps with a :scan key which is either :new :modified :delete"
   [{:keys [logger sources] :as state}]
   (let [reloadable-paths (get-reloadable-source-paths state)]
-    (->> 
-      (loop [i 0
-             sources (->>  (vals sources)
-                           (filter :file)
-                           (filter #(contains? reloadable-paths (:source-path %)))
-                           (into []))
+    (loop [i 0
+           sources (->>  (vals sources)
+                         (filter :file)
+                         (filter #(contains? reloadable-paths (:source-path %)))
+                         (into []))
 
-             known-files (->> sources
-                              (map (fn [{:keys [source-path name]}]
-                                     [source-path name]))
-                              (into #{}))]
-        
-        (when (zero? i)
-          (log-progress logger (format "Watching %d files" (count sources))))
-        
-        
-        ;; don't scan for new files to frequently
-        ;; quite a bit more expensive than just checking a known file
-        (if (zero? (mod i 5))
-          ;; look for new files
-          (let [new-sources (->> reloadable-paths
-                                 (mapcat find-fs-resources)
-                                 (remove (fn [{:keys [source-path name]}]
-                                           (contains? known-files [source-path name])))
-                                 (map #(assoc % :scan :new))
-                                 (into []))]
-            (if (seq new-sources)
-              new-sources
-              (recur (inc i) sources known-files)))
+           known-files (->> sources
+                            (map (fn [{:keys [source-path name]}]
+                                   [source-path name]))
+                            (into #{}))]
+      
+      (when (zero? i)
+        (log-progress logger (format "Watching %d files" (count sources))))
+      
+      
+      ;; don't scan for new files to frequently
+      ;; quite a bit more expensive than just checking a known file
+      (if (zero? (mod i 5))
+        ;; look for new files
+        (let [new-sources (->> reloadable-paths
+                               (mapcat find-fs-resources)
+                               (remove (fn [{:keys [source-path name]}]
+                                         (contains? known-files [source-path name])))
+                               (map #(assoc % :scan :new))
+                               (into []))]
+          (if (seq new-sources)
+            new-sources
+            (recur (inc i) sources known-files)))
 
-          ;; normal cycle
-          (let [modified (->> sources
-                              (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
-                                        (cond
-                                         (not (.exists file))
-                                         (conj result (assoc rc :scan :delete))
+        ;; normal cycle
+        (let [modified (->> sources
+                            (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
+                                      (cond
+                                       (not (.exists file))
+                                       (conj result (assoc rc :scan :delete))
 
-                                         (> (.lastModified file) last-modified)
-                                         (conj result (assoc rc :scan :modified))
+                                       (> (.lastModified file) last-modified)
+                                       (conj result (assoc rc :scan :modified))
 
-                                         :else
-                                         result))
-                                      []))]
-            (if (seq modified)
-              modified
+                                       :else
+                                       result))
+                                    []))]
+          (if (seq modified)
+            modified
 
-              ;; nothing modified, wait and repeat
-              (do (Thread/sleep 500)
-                  (recur (inc i) sources known-files)))))
-        ))))
+            ;; nothing modified, wait and repeat
+            (do (Thread/sleep 500)
+                (recur (inc i) sources known-files)))))
+      )))
 
 (defn wait-and-reload! 
   "wait for modified files, reload them and return reloaded state"
