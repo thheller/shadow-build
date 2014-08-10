@@ -136,8 +136,48 @@
           :requires #{}
           :provides #{}))))
 
+(defn requires-from-ns-ast
+  [{:keys [emit-constants] :as state} {:keys [name requires uses]}]
+  (let [req (set (vals (merge uses requires)))]
+    (if (= 'cljs.core name)
+      req
+      (if emit-constants
+        (conj req 'cljs.core 'constants-table)
+        (conj req 'cljs.core)
+        ))))
 
-(defn read-resource [{:keys [name url] :as rc}]
+(defn peek-into-cljs-resource
+  "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
+   with ns-related infos"
+  [{:keys [name source source-path] :as rc} {:keys [logger] :as state} ]
+  (let [eof-sentinel (Object.)
+        in (readers/indexing-push-back-reader source 1 name)]
+    (ana/with-warning-handlers
+      [(partial warning-handler name)]
+      (binding [*ns* (create-ns 'cljs.user)
+                ana/*cljs-ns* 'cljs.user
+                ana/*cljs-file* name
+                ana/*analyze-deps* false
+                ana/*passes* [ana/infer-type passes/macro-js-requires]
+                reader/*data-readers* tags/*cljs-data-readers*]
+
+        (let [peek (reader/read in nil eof-sentinel)
+              ast (ana/analyze (ana/empty-env) peek)]
+
+          (if-not (= :ns (:op ast))
+            (do (log-warning logger (format "Missing NS %s/%s (found %s)" source-path name (:op ast)))
+                rc)
+            ;; ns form, extract info and update resource
+            (let [ns-name (:name ast)
+                  requires (requires-from-ns-ast state ast)]
+              (assoc rc 
+                :ns ns-name 
+                :ns-info (dissoc ast :env)
+                :provides #{ns-name}
+                :requires requires))))))))
+
+(defn read-resource
+  [{:keys [name url] :as rc} config]
   (cond
    (is-js-file? name)
    (let [source (slurp url)]
@@ -149,10 +189,11 @@
          (add-goog-dependencies)))
 
    (is-cljs-file? name)
-   (assoc rc
-     :type :cljs
-     :source (slurp url)
-     :js-name (str/replace name #"\.cljs$" ".js"))
+   (-> rc
+       (assoc :type :cljs
+              :source (slurp url)
+              :js-name (str/replace name #"\.cljs$" ".js"))
+       (peek-into-cljs-resource config))
 
    :else
    (throw (ex-info "cannot identify as cljs resource" {:name name :url url}))))
@@ -185,7 +226,7 @@
        :url (.toURL (.toURI file))}
       )))
 
-(defn- do-find-resources-in-paths [paths]
+(defn- do-find-resources-in-paths [config paths]
   (let [resources (->> paths
                        (mapcat (fn [path]
                                  (if (.endsWith path ".jar")
@@ -201,17 +242,9 @@
     ;; biggest bottleneck should be IO
     ;; also that we are re-opening a .jar for every file in it
     ;; so its probably best to read jar files in one go?
-    (into [] (r/fold 256 r/cat r/append! (r/filter usable-resource? (r/map read-resource resources))))))
+    (into [] (r/fold 256 r/cat r/append! (r/filter usable-resource? (r/map #(read-resource % config) resources))))))
 
-(defn requires-from-ns-ast
-  [{:keys [emit-constants] :as state} {:keys [name requires uses]}]
-  (let [req (set (vals (merge uses requires)))]
-    (if (= 'cljs.core name)
-      req
-      (if emit-constants
-        (conj req 'cljs.core 'constants-table)
-        (conj req 'cljs.core)
-        ))))
+
 
 (defn compile-cljs-string
   [state cljs-source name]
@@ -305,33 +338,6 @@
     ))
 
 ;; TBD, ns is read twice
-(defn peek-into-cljs-source
-  [state {:keys [name source] :as rc}]
-  (let [eof-sentinel (Object.)
-        in (readers/indexing-push-back-reader source 1 name)]
-    (ana/with-warning-handlers
-      [(partial warning-handler name)]
-      (binding [*ns* (create-ns 'cljs.user)
-                ana/*cljs-ns* 'cljs.user
-                ana/*cljs-file* name
-                ana/*analyze-deps* false
-                ana/*passes* [ana/infer-type passes/macro-js-requires]
-                reader/*data-readers* tags/*cljs-data-readers*]
-
-        (let [peek (reader/read in nil eof-sentinel)
-              ast (ana/analyze (ana/empty-env) peek)]
-
-          (when-not (= :ns (:op ast))
-            (throw (ex-info "peeked into file but found no ns" {:file name :ast ast})))
-
-          ;; FIXME: should explode if ns is already defined
-          (let [ns-name (:name ast)
-                requires (requires-from-ns-ast state ast)]
-            (assoc rc 
-              :ns ns-name 
-              :ns-info (dissoc ast :env)
-              :provides #{ns-name}
-              :requires requires)))))))
 
 (defn merge-provides [state provided-by provides]
   (if-let [provide (first provides)]
@@ -347,7 +353,9 @@
 
 (defn unmerge-resource [state name]
   (if-let [{:keys [provides] :as current} (get-in state [:sources name])]
-    (unmerge-provides state provides)
+    (-> state
+        (unmerge-provides provides)
+        (update-in [:sources] dissoc name))
     ;; else: not present
     state))
 
@@ -373,7 +381,7 @@
     [(:logger state) "Find cljs resources in jars"]
     (->> (classpath-entries)
          (filter is-jar?)
-         (do-find-resources-in-paths)
+         (do-find-resources-in-paths state)
          (merge-resources state)
          )))
 
@@ -386,7 +394,7 @@
        (-> state
            (assoc-in [:source-paths path] (assoc opts
                                             :path path))
-           (merge-resources (do-find-resources-in-paths [path]))
+           (merge-resources (do-find-resources-in-paths state [path]))
            ))))
 
 (def cljs-core-name "cljs/core.cljs")
@@ -441,9 +449,9 @@
       ;; if provides are present, assume we already know everything for it and its deps
       (if (seq (:provides src))
         state
-        (let [{:keys [ns requires provides] :as src} (peek-into-cljs-source state src)]
+        (let [{:keys [ns requires provides] :as src} src]
           (when-not (= ns ns-sym)
-            (throw (ex-info "peeked into file but didnt find expected ns" {:expected ns-sym :got ns :file name})))
+            (throw (ex-info "file doesn't have expected ns" {:expected ns-sym :got ns :file name})))
           (reduce
            do-analyze-namespace
            (-> state
@@ -470,7 +478,7 @@
   [state ns-sym]
   (let [name (get-in state [:provide-index ns-sym])]
     (when-not name
-      (throw (ex-info "could not resolve ns to source" {:ns ns-sym :name name})))
+      (throw (ex-info "ns not available" {:ns ns-sym})))
 
     (if (contains? (:deps-visited state) name)
       state
@@ -483,8 +491,8 @@
           (conj-in state [:deps-ordered] name)
           )))))
 
-(defn resolve-main-deps [state main-cljs]
-  (format "Resolving deps for: %s" main-cljs)
+(defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
+  (log-progress logger (format "Resolving deps for: %s" main-cljs))
   (let [{:keys [deps-ordered]} (-> state
                                    (assoc :deps-ordered []
                                           :deps-visited #{})
@@ -519,12 +527,7 @@
      (when-not (every? keyword? depends-on)
        (throw (ex-info "module deps should be keywords" {:module-deps depends-on})))
 
-     (let [state (reduce do-resolve-main state module-mains)
-           module-deps (->> module-mains
-                            (mapcat #(get-in state [:main-deps %]))
-                            (distinct))
-
-           is-default? (not (seq depends-on))
+     (let [is-default? (not (seq depends-on))
 
            _ (when is-default?
                (when-let [default (:default-module state)]
@@ -532,9 +535,7 @@
                                  {:default default :wants-to-be-default module-name}))))
 
            mod (merge mod-attrs
-                      {:sources module-deps ;; keep ordered
-                       :provides (set module-deps)
-                       :name module-name
+                      {:name module-name
                        :js-name (str (name module-name) ".js")
                        :mains module-mains
                        :depends-on depends-on
@@ -701,10 +702,20 @@
       (log-warning logger msg)))
   state)
 
+(defn do-analyze-module [state {:keys [name mains] :as module}]
+  (let [state (reduce do-resolve-main state mains)
+        module-deps (->> mains
+                         (mapcat #(get-in state [:main-deps %]))
+                         (distinct))]
+    (update-in state [:modules name] merge {:sources module-deps
+                                            :provides (set module-deps)})))
+
 (defn step-compile-modules [state]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
-    (let [modules (sort-and-compact-modules state)
+    (let [state (reduce do-analyze-module state (-> state :modules (vals)))
+
+          modules (sort-and-compact-modules state)
           source-names (->> modules
                             (mapcat :sources)
                             (map #(get-in state [:sources %]))
@@ -1001,23 +1012,20 @@
        (map :path)
        (set)))
 
-(defn reset-resource [{:keys [name type ^File file] :as src}]
+(defn reset-resource [{:keys [name type ^File file] :as src} config]
   (-> src
       (dissoc :ns :ns-info :requires :provides :js-source :compiled :compiled-at)
-      (read-resource)
+      (read-resource config)
       (cond-> file
               (assoc :last-modified (.lastModified file)))))
 
-(defn do-reset-modified
-  "expects the current state and a seq of names to reset"
-  [state name]
-  (merge-resources state [(reset-resource (get-in state [:sources name]))]))
+
 
 (defn do-reload-modified
   "checks if a src was touched and reset the associated state if it was"
   [state {:keys [name type ^File file last-modified] :as src}]
   (if (> (.lastModified file) last-modified)
-    (merge-resources state [(reset-resource src)]) 
+    (merge-resources state [(reset-resource src state)]) 
     state))
 
 (defn step-reload-modified
@@ -1034,32 +1042,79 @@
 
 (defn wait-for-modified-files!
   "blocks current thread waiting for modified files
-   returns names of modified sources, does NOT discover new files yet"
+   return resource maps with a :scan key which is either :new :modified :delete"
   [{:keys [logger sources] :as state}]
-  (let [reloadable-paths (get-reloadable-source-paths state)
-        sources (->>  (vals sources)
-                      (filter :file)
-                      (filter #(contains? reloadable-paths (:source-path %)))
-                      (map #(select-keys % [:last-modified :name :file])))]
+  (let [reloadable-paths (get-reloadable-source-paths state)]
+    (->> 
+      (loop [i 0
+             sources (->>  (vals sources)
+                           (filter :file)
+                           (filter #(contains? reloadable-paths (:source-path %)))
+                           (into []))
 
-    (log-progress logger (format "Watching %d files" (count sources)))
-    (loop []
-      (let [modified (filter (fn [{:keys [name ^File file last-modified]}]
-                               (> (.lastModified file) last-modified))
-                             sources)]
-        (if (seq modified)
-          (do (doseq [{:keys [name file]} modified]
-                (log-progress logger (format "File modified: %s -> %s" name file)))
-              (map :name modified))
-          ;; nothing modified, wait and look again
-          (do (Thread/sleep 500)
-              (recur)))))))
+             known-files (->> sources
+                              (map (fn [{:keys [source-path name]}]
+                                     [source-path name]))
+                              (into #{}))]
+        
+        (when (zero? i)
+          (log-progress logger (format "Watching %d files" (count sources))))
+        
+        
+        ;; don't scan for new files to frequently
+        ;; quite a bit more expensive than just checking a known file
+        (if (zero? (mod i 5))
+          ;; look for new files
+          (let [new-sources (->> reloadable-paths
+                                 (mapcat find-fs-resources)
+                                 (remove (fn [{:keys [source-path name]}]
+                                           (contains? known-files [source-path name])))
+                                 (map #(assoc % :scan :new))
+                                 (into []))]
+            (if (seq new-sources)
+              new-sources
+              (recur (inc i) sources known-files)))
+
+          ;; normal cycle
+          (let [modified (->> sources
+                              (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
+                                        (cond
+                                         (not (.exists file))
+                                         (conj result (assoc rc :scan :delete))
+
+                                         (> (.lastModified file) last-modified)
+                                         (conj result (assoc rc :scan :modified))
+
+                                         :else
+                                         result))
+                                      []))]
+            (if (seq modified)
+              modified
+
+              ;; nothing modified, wait and repeat
+              (do (Thread/sleep 500)
+                  (recur (inc i) sources known-files)))))
+        ))))
 
 (defn wait-and-reload! 
   "wait for modified files, reload them and return reloaded state"
-  [state]
-  (let [modified (wait-for-modified-files! state)]
-    (reduce do-reset-modified state modified)))
+  [{:keys [logger] :as state}]
+  ;; (reduce do-reset-modified state modified)
+  (->> (wait-for-modified-files! state)
+       (reduce (fn [state {:keys [scan name file] :as rc}]
+                 (case scan
+                   :delete
+                   (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
+                       (unmerge-resource state (:name rc)))
+
+                   :new
+                   (do (log-progress logger (format "Found new file: %s -> %s" name file))
+                       (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
+
+                   :modified
+                   (do (log-progress logger (format "File modified: %s -> %s" name file))
+                       (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+               state)))
 
 ;; configuration stuff
 (defn enable-emit-constants [state]

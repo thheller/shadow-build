@@ -40,6 +40,7 @@
     (loop [state state]
       (recur (-> state
                  (cljs/step-compile-modules)
+                 (cljs/flush-to-disk)
                  (cljs/flush-unoptimized)
                  (cljs/wait-and-reload!)
                  ))))

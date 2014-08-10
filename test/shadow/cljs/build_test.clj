@@ -66,7 +66,7 @@
 
 ;; this needs real testing
 
-(deftest ^:wip test-js-env
+(deftest test-js-env
   (binding [*err* *out*]
     (let [state (-> (user/resume-from
                      (-> (cljs/init-state)
@@ -98,6 +98,7 @@
 
       (let [state (-> state
                       (cljs/step-compile-modules)
+                      (cljs/flush-to-disk)
                       ;; (cljs/flush-unoptimized)
                       (cljs/closure-optimize)
                       (cljs/flush-modules-to-disk)
@@ -107,6 +108,67 @@
                      :optimized
                      (map #(dissoc % :prepend-js :js-source :source-map :source-map-json))))
         ))))
+
+(deftest ^:wip test-reloading
+  (let [file-a (io/file "target/reload-test/test_a.cljs")
+        file-b (io/file "target/reload-test/test_b.cljs")
+        foo-fn "(defn ^:export foo[] :bar)"]
+    (io/make-parents file-a)
+
+    (doseq [file [file-a file-b]
+            :when (.exists file)]
+      (.delete file))
+    
+    (spit file-a (str/join "\n" ["(ns test-a)"
+                                 foo-fn]))
+
+    (let [state (-> (cljs/init-state)
+                    (cljs/enable-source-maps)
+                    (cljs/step-find-resources-in-jars)
+                    (cljs/step-find-resources "target/reload-test")
+                    (assoc :optimizations :whitespace
+                           :pretty-print true
+                           :work-dir (io/file "target/cljs-work")
+                           :public-dir (io/file "target/cljs")
+                           :public-path "target/cljs")
+                    (cljs/step-finalize-config)
+                    (cljs/step-compile-core)
+                    (cljs/step-configure-module :test ['test-a] #{}))] 
+      
+      (is (nil? (get-in state [:sources "test_b.cljs"])))
+      
+      (cljs/step-compile-modules state) ;; no error is good enough for now
+
+      ;; wait for a bit
+      ;; otherwise the spit may end up in the same millisec as the previous one
+      ;; which wait-and-reload can't detect
+      (Thread/sleep 50)
+
+      ;; now we modify it to depend on test-b
+      (spit file-a (str/join "\n" ["(ns test-a (:require [test-b]))"
+                                   foo-fn]))
+
+      (let [state (cljs/wait-and-reload! state)]
+        (is (thrown? clojure.lang.ExceptionInfo (cljs/step-compile-modules state)))
+        
+        (Thread/sleep 50)
+        (spit file-b "")
+
+        (let [state (cljs/wait-and-reload! state)]
+          ;; file is empty, so we are still missing test-b
+          (is (thrown? clojure.lang.ExceptionInfo (cljs/step-compile-modules state))) 
+
+          (prn [:now-creating-test-b])
+
+          (Thread/sleep 50)
+          (spit file-b (str/join "\n" ["(ns test-b)"
+                                       foo-fn]))
+          
+          (prn [:test-b-now-present])
+
+          (let [state (cljs/wait-and-reload! state)]
+            (cljs/step-compile-modules state)
+            ))))))
 
 
 
