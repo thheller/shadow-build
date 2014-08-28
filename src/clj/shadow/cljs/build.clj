@@ -465,6 +465,8 @@
   (assoc state
     :configured true
     :main-deps {}
+    :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
+                     (slurp imul))
     ;; populate index with known sources
     :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
                                   provide provides]
@@ -839,7 +841,7 @@
   (spit (io/file public-dir "manifest.json")
         (json/write-str (map #(select-keys % [:name :js-name :mains :depends-on :default :sources]) modules))))
 
-(defn flush-modules-to-disk [{modules :optimized :keys [^File public-dir public-path logger] :as state} ]
+(defn flush-modules-to-disk [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state} ]
   (with-logged-time
     [(:logger state) "Flushing modules to disk"]
 
@@ -851,6 +853,9 @@
     
     (doseq [{:keys [default js-source prepend source-map-name name js-name] :as mod} modules]
       (let [target (io/file public-dir js-name)
+            js-source (if default
+                        (str unoptimizable js-source)
+                        js-source)
             js-source (str prepend js-source)
             js-source (if (:web-worker mod)
                         (let [deps (:depends-on mod)]
@@ -943,7 +948,7 @@
        (str/join "\n")))
 
 (defn flush-unoptimized
-  [{:keys [build-modules public-dir public-path] :as state}]
+  [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (with-logged-time
@@ -993,7 +998,8 @@
                        (str prepend))
               out (if default
                     ;; default mod needs closure related setup and goog.addDependency stuff
-                    (str (closure-defines-and-base state)
+                    (str unoptimizable
+                         (closure-defines-and-base state)
                          (closure-goog-deps state)
                          "\n\n"
                          out)
