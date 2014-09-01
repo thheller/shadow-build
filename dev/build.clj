@@ -29,7 +29,6 @@
                          :public-dir (io/file "target/cljs") ;; where should the output go
                          :public-path "target/cljs") ;; whats the path the html has to use to get the js?
                   (cljs/step-find-resources-in-jars) ;; finds cljs,js in jars from the classpath
-                  (cljs/step-find-resources "lib/js-closure" {:reloadable false})
                   (cljs/step-find-resources "test-data") ;; find cljs in this path
                   (cljs/step-finalize-config) ;; shouldn't be needed but is at the moment
                   (cljs/step-compile-core)    ;; compile cljs.core
@@ -38,12 +37,16 @@
     
     ;; compile, flush, reload, repeat
     (loop [state state]
-      (recur (-> state
-                 (cljs/step-compile-modules)
-                 (cljs/flush-to-disk)
-                 (cljs/flush-unoptimized)
-                 (cljs/wait-and-reload!)
-                 ))))
+      (let [new-state (try
+                        (-> state
+                            (cljs/step-compile-modules)
+                            (cljs/flush-unoptimized)
+                            (cljs/wait-and-reload!))
+                        (catch Throwable t
+                          (prn [:failed-to-compile t])
+                          (.printStackTrace t)
+                          (cljs/wait-and-reload! state)))]
+        (recur new-state))))
   ;; never really gets here, ctrl+c to stop
   :done)
 
@@ -58,7 +61,6 @@
              :public-dir (io/file "target/cljs")
              :public-path "target/cljs")
       (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "lib/js-closure" {:reloadable false})
       (cljs/step-find-resources "test-data")
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
@@ -87,7 +89,6 @@
              :public-dir (io/file "target/cljs")
              :public-path "target/cljs")
       (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "lib/js-closure" {:reloadable false})
       (cljs/step-find-resources "test-data")
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
@@ -127,7 +128,6 @@
              :public-dir (io/file "target/cljs")
              :public-path "target/cljs")
       (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "lib/js-closure" {:reloadable false})
       (cljs/step-find-resources "test-workers")
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
