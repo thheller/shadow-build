@@ -72,7 +72,6 @@
                      (-> (cljs/init-state)
                          (cljs/enable-source-maps)
                          (cljs/step-find-resources-in-jars)
-                         (cljs/step-find-resources "lib/js-closure" {:reloadable false})
                          (cljs/step-find-resources "test-data")
                          (cljs/step-find-resources "test-workers")
                          (assoc :optimizations :whitespace
@@ -99,9 +98,9 @@
       (let [state (-> state
                       (cljs/step-compile-modules)
                       (cljs/flush-to-disk)
-                      ;; (cljs/flush-unoptimized)
-                      (cljs/closure-optimize)
-                      (cljs/flush-modules-to-disk)
+                      (cljs/flush-unoptimized)
+                      ;; (cljs/closure-optimize)
+                      ;; (cljs/flush-modules-to-disk)
                       )]
 
         (pprint (->> state
@@ -147,26 +146,30 @@
       ;; now we modify it to depend on test-b
       (spit file-a (str/join "\n" ["(ns test-a (:require [test-b]))"
                                    foo-fn]))
-
-      (let [state (cljs/wait-and-reload! state)]
-        (is (thrown? clojure.lang.ExceptionInfo (cljs/step-compile-modules state)))
+      (let [modified (cljs/scan-for-modified-files state)
+            new (cljs/scan-for-new-files state)]
+        (is (empty? new))
+        (is (= 1 (count modified)))
+        (is (= :modified (-> modified first :scan)))
         
-        (Thread/sleep 50)
+        ;; empty file is :new but cannot be compiled, should produce warning, hard to test
         (spit file-b "")
 
-        (let [state (cljs/wait-and-reload! state)]
-          ;; file is empty, so we are still missing test-b
-          (is (thrown? clojure.lang.ExceptionInfo (cljs/step-compile-modules state))) 
-
-          (prn [:now-creating-test-b])
-
-          (Thread/sleep 50)
+        (let [state (cljs/reload-modified-files! state modified)
+              new (cljs/scan-for-new-files state)
+              modified (cljs/scan-for-modified-files state)]
+          
+          (is (empty? modified))
+          (is (= 1 (count new)))
+          
           (spit file-b (str/join "\n" ["(ns test-b)"
                                        foo-fn]))
-          
-          (prn [:test-b-now-present])
 
-          (let [state (cljs/wait-and-reload! state)]
+          (let [new (cljs/scan-for-new-files state)
+                state (cljs/reload-modified-files! state new)]
+            (is (= 1 (count new)))
+
+            ;; FIXME: test if everything is ok, no exception is good enough for now
             (cljs/step-compile-modules state)
             ))))))
 

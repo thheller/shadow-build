@@ -1046,80 +1046,95 @@
                                           (filter #(contains? reloadable-paths (:source-path %)))
                                           ))))
 
-(defn wait-for-modified-files!
-  "blocks current thread waiting for modified files
-   return resource maps with a :scan key which is either :new :modified :delete"
+(defn scan-for-new-files
+  "scans the reloadable paths for new files
+
+   returns a seq of resource maps with a {:scan :new} value"
+  [{:keys [sources] :as state}]
+  (let [reloadable-paths (get-reloadable-source-paths state)
+        known-files (->> sources
+                         (vals)
+                         (map (fn [{:keys [source-path name]}]
+                                [source-path name]))
+                         (into #{}))]
+    (->> reloadable-paths
+         (mapcat find-fs-resources)
+         (remove (fn [{:keys [source-path name]}]
+                   (contains? known-files [source-path name])))
+         (map #(assoc % :scan :new))
+         (into []))))
+
+(defn scan-for-modified-files
+  "scans known sources for modified or deleted files
+
+  returns a seq of resource maps with a :scan key which is either :modified :delete"
   [{:keys [logger sources] :as state}]
   (let [reloadable-paths (get-reloadable-source-paths state)]
-    (loop [i 0
-           sources (->>  (vals sources)
-                         (filter :file)
-                         (filter #(contains? reloadable-paths (:source-path %)))
-                         (into []))
+    (->> (vals sources)
+         (filter :file)
+         (filter #(contains? reloadable-paths (:source-path %)))
+         (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
+                   (cond
+                    (not (.exists file))
+                    (conj result (assoc rc :scan :delete))
 
-           known-files (->> sources
-                            (map (fn [{:keys [source-path name]}]
-                                   [source-path name]))
-                            (into #{}))]
-      
-      (when (zero? i)
-        (log-progress logger (format "Watching %d files" (count sources))))
-      
-      
-      ;; don't scan for new files to frequently
-      ;; quite a bit more expensive than just checking a known file
-      (if (zero? (mod i 5))
-        ;; look for new files
-        (let [new-sources (->> reloadable-paths
-                               (mapcat find-fs-resources)
-                               (remove (fn [{:keys [source-path name]}]
-                                         (contains? known-files [source-path name])))
-                               (map #(assoc % :scan :new))
-                               (into []))]
-          (if (seq new-sources)
-            new-sources
-            (recur (inc i) sources known-files)))
+                    (> (.lastModified file) last-modified)
+                    (conj result (assoc rc :scan :modified))
 
-        ;; normal cycle
-        (let [modified (->> sources
-                            (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
-                                      (cond
-                                       (not (.exists file))
-                                       (conj result (assoc rc :scan :delete))
+                    :else
+                    result))
+                 []))))
 
-                                       (> (.lastModified file) last-modified)
-                                       (conj result (assoc rc :scan :modified))
+(defn scan-files
+  "scans for new and modified files
+   returns resources maps with a :scan key with is either :new :modified :delete"
+  [state]
+  (concat (scan-for-modified-files state)
+          (scan-for-new-files state)))
 
-                                       :else
-                                       result))
-                                    []))]
-          (if (seq modified)
-            modified
+(defn wait-for-modified-files!
+  "blocks current thread waiting for modified files
+  return resource maps with a :scan key which is either :new :modified :delete"
+  [{:keys [logger sources] :as initial-state}]
+  (log-progress logger "Waiting for modified files ...")
+  (loop [state initial-state
+         i 0]
 
-            ;; nothing modified, wait and repeat
-            (do (Thread/sleep 500)
-                (recur (inc i) sources known-files)))))
-      )))
+    ;; don't scan for new files too frequently
+    ;; quite a bit more expensive than just checking a known file
 
-(defn wait-and-reload! 
+    (let [modified (scan-for-modified-files state)
+          modified (if (zero? (mod i 5))
+                     (concat modified (scan-for-new-files state))
+                     modified)]
+      (if (seq modified)
+        modified
+        (do (Thread/sleep 500)
+            (recur state
+                   (inc i)))))))
+
+(defn reload-modified-files!
+  [{:keys [logger] :as state} scan-results]
+  (reduce (fn [state {:keys [scan name file] :as rc}]
+            (case scan
+              :delete
+              (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
+                  (unmerge-resource state (:name rc)))
+              :new
+              (do (log-progress logger (format "Found new file: %s -> %s" name file))
+                  (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
+
+              :modified
+              (do (log-progress logger (format "File modified: %s -> %s" name file))
+                  (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+          state
+          scan-results))
+
+(defn wait-and-reload!
   "wait for modified files, reload them and return reloaded state"
   [{:keys [logger] :as state}]
-  ;; (reduce do-reset-modified state modified)
   (->> (wait-for-modified-files! state)
-       (reduce (fn [state {:keys [scan name file] :as rc}]
-                 (case scan
-                   :delete
-                   (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
-                       (unmerge-resource state (:name rc)))
-
-                   :new
-                   (do (log-progress logger (format "Found new file: %s -> %s" name file))
-                       (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
-
-                   :modified
-                   (do (log-progress logger (format "File modified: %s -> %s" name file))
-                       (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
-               state)))
+       (reload-modified-files! state)))
 
 ;; configuration stuff
 (defn enable-emit-constants [state]
