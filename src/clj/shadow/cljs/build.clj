@@ -198,13 +198,20 @@
    :else
    (throw (ex-info "cannot identify as cljs resource" {:name name :url url}))))
 
+(def ^{:doc "windows filenames need to be normalized because they contain backslashes which browsers don't understand"}
+  normalize-resource-name
+  (if (= File/separatorChar \/)
+    identity
+    (fn [^String name]
+      (str/replace name File/separatorChar \/))))
+
 (defn find-jar-resources [path]
   (let [jar-file (io/file path)
         last-modified (.lastModified jar-file)]
     (for [jar-entry (jar-entry-names path)
           :when (is-cljs-resource? jar-entry)
           :let [url (URL. (str "jar:file:" (.getAbsolutePath jar-file) "!/" jar-entry))]]
-      {:name jar-entry
+      {:name (normalize-resource-name jar-entry)
        :jar true
        :source-path path
        :last-modified last-modified
@@ -217,9 +224,10 @@
     (for [file (file-seq root)
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
-                     (not (.isHidden file)))
-          :let [rel-path (.substring abs-path root-len)]]
-      {:name rel-path
+                     (not (.isHidden file)))]
+      {:name (-> abs-path
+                 (.substring root-len)
+                 (normalize-resource-name))
        :file file
        :source-path path
        :last-modified (.lastModified file)
