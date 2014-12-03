@@ -14,29 +14,53 @@ If you have big chunks of code in your app that are only required in certain cir
 
 Right now this really only is a library and not a tool like lein-cljsbuild. But Leiningen provides enough hooks to make integration easy, assuming you are using Leiningen of course.
 
-### Step 1: Include the necessary options in your project.clj
+### Include the necessary options in your project.clj
 
 ```clojure
 :profiles {:dev {:source-paths ["dev"]
                  :dependencies [[org.clojure/clojurescript "0.0-2322"]
-                                [thheller/shadow-build "0.9.5"]]}}
+                                [thheller/shadow-build "1.0.0-alpha1"]]}}
 ```
 
 I recommend putting it into the :dev profile since you usually don't need it in production. You'll also need to provide ClojureScript itself. Currently the minimum required version is 0.0-2127 (avoid releases 2197-2263).
 
-### Step 2: Create a build script.
+### Simple CLJS Build
+
+shadow-build includes 2 common build configurations and we use leiningen to configure/execute them.
+
+- ```cljs-dev```: development mode, includes source maps and auto compiles cljs on file changes
+- ```cljs-prod```: production level build, advanced compilation
+
+Using these requires the following additions to your project.clj
+
+```clojure
+:aliases {"cljs-dev" ["run" "-m" "shadow.cljs.api/build-dev" :project/cljs]
+          "cljs-prod" ["run" "-m" "shadow.cljs.api/build-prod" :project/cljs]}
+  
+:cljs {:modules [{:name :cljs
+                  :main 'my-project.app}]
+
+       :source-paths ["src/cljs"]
+       :public-dir "public/assets/js"
+       :public-path "/assets/js"}
+```
+
+The ```:aliases``` feature of leiningen will simply call the ```shadow.cljs.api/build-(dev|prod)``` functions with the ```:cljs``` map as argument. The build config (```:cljs```) requires very little information:
+
+- ```:source-paths``` where is your cljs
+- ```:public-dir``` the directory where the output should go
+- ```:public-path``` the path where :public-dir is reachable by your webserver (should be absolute)
+- ```:modules``` a list of modules your build should be split into (optional, if you just define one)
+
+A module requires a ```:name``` value which should be a keyword, it will produce a .js file by that name in ```:public-dir``` after compilation. It must define at least one ```:main``` which is either a symbol or collection of symbols refering to the entry points to your application, usually one ```(ns ...)``` which contains exported functions. Additionally if you define multiple modules their dependencies must be declared via ```:depends-on #{:mod-1 :mod-2}```.
+
+When configured you can run these via ```lein cljs-dev```. You should end up with a ```public/assets/js/cljs.js``` which you can just include in your HTML.
+
+### Advanced Configuration: Create a build script.
 
 See: https://github.com/thheller/shadow-build/blob/master/dev/build.clj
 
-Needs more docs ....
-
-### Step 3: Run it using Leiningen
-
-```lein run -m build/dev```
-or
-```lein run -m build/production```
-
-Create as many different builds as you like, they are just a function call away. Its also possible to compile multiple independent outputs in one go, see ```build/separate```
+Needs more docs, but you can execute each build function you define via lein, either with an alias or directly on the commmand line ```lein run -m build/dev```
 
 ## License
 

@@ -876,7 +876,7 @@
         (io/make-parents target)
         (spit target js-source)
 
-        (log-progress logger (format "Wrote module \"%s\":\"%s\" (size: %d)" name js-name (count js-source)))
+        (log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count js-source)))
 
         (when source-map-name
           (spit target (str "\n//# sourceMappingURL=src/" (file-basename source-map-name) "\n")
