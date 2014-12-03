@@ -26,6 +26,8 @@ I recommend putting it into the :dev profile since you usually don't need it in 
 
 ### Simple CLJS Build
 
+See: https://github.com/thheller/shadow-build-example
+
 shadow-build includes 2 common build configurations and we use leiningen to configure/execute them.
 
 - ```cljs-dev```: development mode, includes source maps and auto compiles cljs on file changes
