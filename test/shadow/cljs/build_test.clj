@@ -66,21 +66,20 @@
 
 ;; this needs real testing
 
-(deftest test-js-env
+(deftest ^:wip test-js-env
   (binding [*err* *out*]
-    (let [state (-> (user/resume-from
-                     (-> (cljs/init-state)
-                         (cljs/enable-source-maps)
-                         (cljs/step-find-resources-in-jars)
-                         (cljs/step-find-resources "test-data")
-                         (cljs/step-find-resources "test-workers")
-                         (assoc :optimizations :whitespace
-                                :pretty-print true
-                                :work-dir (io/file "target/cljs-work")
-                                :public-dir (io/file "target/cljs")
-                                :public-path "target/cljs")
-                         (cljs/step-finalize-config)
-                         (cljs/step-compile-core)))
+    (let [state (-> (-> (cljs/init-state)
+                        (cljs/enable-source-maps)
+                        (cljs/step-find-resources-in-jars)
+                        (cljs/step-find-resources "test-data")
+                        (cljs/step-find-resources "test-workers")
+                        (assoc :optimizations :whitespace
+                               :pretty-print true
+                               :work-dir (io/file "target/cljs-work")
+                               :public-dir (io/file "target/cljs")
+                               :public-path "target/cljs")
+                        (cljs/step-finalize-config)
+                        (cljs/step-compile-core))
 
                     (cljs/step-reload-modified)
                     (cljs/step-configure-module :cljs ['cljs.core] #{})
@@ -95,6 +94,8 @@
       
       (prn [:count-sources (count (:sources state))])
 
+      (pprint (cljs/get-deps-for-ns state 'basic))
+
       (let [state (-> state
                       (cljs/step-compile-modules)
                       (cljs/flush-to-disk)
@@ -108,7 +109,7 @@
                      (map #(dissoc % :prepend-js :js-source :source-map :source-map-json))))
         ))))
 
-(deftest ^:wip test-reloading
+(deftest test-reloading
   (let [file-a (io/file "target/reload-test/test_a.cljs")
         file-b (io/file "target/reload-test/test_b.cljs")
         foo-fn "(defn ^:export foo[] :bar)"]

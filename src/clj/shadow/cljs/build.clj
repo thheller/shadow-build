@@ -345,8 +345,6 @@
     (assoc-in state [:sources cljs-name] src)
     ))
 
-;; TBD, ns is read twice
-
 (defn merge-provides [state provided-by provides]
   (if-let [provide (first provides)]
     (recur (assoc-in state [:provide-index provide] provided-by) provided-by (rest provides))
@@ -394,6 +392,7 @@
          )))
 
 (defn step-find-resources
+  "finds cljs resources in the given path"
   ([state path]
      (step-find-resources state path {:reloadable true}))
   ([state path opts]
@@ -443,32 +442,6 @@
             (assoc :compiled-core true)
             )))))
 
-(defn do-analyze-namespace
-  "analyze a namespace and recursivly analyze its dependencies"
-  [state ns-sym]
-  (if (get-in state [:provide-index ns-sym])
-    state
-    (let [name (ns->cljs-file ns-sym)
-          src (get-in state [:sources name])]
-
-      (when-not src
-        (throw (ex-info "cannot find required namespace" {:ns ns-sym :name name})))
-      
-      ;; if provides are present, assume we already know everything for it and its deps
-      (if (seq (:provides src))
-        state
-        (let [{:keys [ns requires provides] :as src} src]
-          (when-not (= ns ns-sym)
-            (throw (ex-info "file doesn't have expected ns" {:expected ns-sym :got ns :file name})))
-          (reduce
-           do-analyze-namespace
-           (-> state
-               (update-in [:pending] conj name)
-               (assoc-in [:sources name] src)
-               (update-in [:provide-index] assoc ns name))
-           requires
-           ))))))
-
 (defn step-finalize-config [state]
   (assoc state
     :configured true
@@ -481,11 +454,7 @@
                               [provide name]
                               ))))
 
-
-
-(defn do-resolve-ns-deps [state ns-sym]
-  "analyze a namespace and recursivly analyze its dependencies"
-  [state ns-sym]
+(defn- get-deps-for-ns* [state ns-sym]
   (let [name (get-in state [:provide-index ns-sym])]
     (when-not name
       (throw (ex-info "ns not available" {:ns ns-sym})))
@@ -497,30 +466,24 @@
           (throw (ex-info "cannot find required namespace deps" {:ns ns-sym :name name})))
         
         (let [state (conj-in state [:deps-visited] name)
-              state (reduce do-resolve-ns-deps state requires)]
+              state (reduce get-deps-for-ns* state requires)]
           (conj-in state [:deps-ordered] name)
           )))))
 
+(defn get-deps-for-ns
+  "returns names of all required sources for a given ns (in dependency order), does include self
+   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
+  [state ns-sym]
+  (-> state
+      (assoc :deps-ordered []
+             :deps-visited #{})
+      (get-deps-for-ns* ns-sym)
+      :deps-ordered))
+
 (defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
   (log-progress logger (format "Resolving deps for: %s" main-cljs))
-  (let [{:keys [deps-ordered]} (-> state
-                                   (assoc :deps-ordered []
-                                          :deps-visited #{})
-                                   (do-resolve-ns-deps main-cljs))]
-    (assoc-in state [:main-deps main-cljs] deps-ordered)))
-
-(defn do-resolve-main
-  "resolve all deps of a given main ns"
-  [state main-cljs]
-  (with-logged-time
-    [(:logger state) (format "Compile main: \"%s\"" main-cljs)]
-    (with-compiler-env state
-      (-> state
-          (assoc :pending [])
-          (conj-in [:main-namespaces] main-cljs)
-          (do-analyze-namespace main-cljs)
-          (resolve-main-deps main-cljs)
-          (dissoc :pending)))))
+  (let [deps (get-deps-for-ns state main-cljs)]
+    (assoc-in state [:main-deps main-cljs] deps)))
 
 (defn reset-modules [state]
   (-> state
@@ -656,7 +619,7 @@
           modules (reduce
                    (fn [modules module-name]
                      (let [{:keys [depends-on includes]} (get modules module-name)
-                           parent-provides (reduce set/union (map #(get-in modules [% :provides]) depends-on))]
+                           parent-provides (reduce set/union (map #(set (get-in modules [% :sources])) depends-on))]
                        (update-in modules [module-name :sources] #(vec (remove parent-provides %)))))
                    modules
                    module-order)
@@ -712,13 +675,15 @@
       (log-warning logger msg)))
   state)
 
-(defn do-analyze-module [state {:keys [name mains] :as module}]
-  (let [state (reduce do-resolve-main state mains)
+(defn do-analyze-module
+  "resolve all deps for a given module, based on specified :mains
+   will update state for each module with :sources, a list of sources needed to compile this module "
+  [state {:keys [name mains] :as module}]
+  (let [state (reduce resolve-main-deps state mains)
         module-deps (->> mains
                          (mapcat #(get-in state [:main-deps %]))
                          (distinct))]
-    (update-in state [:modules name] merge {:sources module-deps
-                                            :provides (set module-deps)})))
+    (assoc-in state [:modules name :sources] module-deps)))
 
 (defn step-compile-modules [state]
   (with-logged-time
@@ -732,6 +697,7 @@
                             (filter #(= :cljs (:type %)))
                             (remove :compiled)
                             (map :name))
+
           state (with-compiler-env state
                   (reduce do-compile-cljs state source-names))]
 
