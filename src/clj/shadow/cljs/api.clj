@@ -26,9 +26,8 @@
           state
           modules))
 
-(defn start-live-reload-server [{:keys [port host] :as config}]
+(defn start-live-reload-server [{:keys [logger] :as state} {:keys [port host] :as config}]
   (let [changes (atom {})
-        state (atom {})
         handler (fn [ring-request]
                   (let [client-id (UUID/randomUUID)]
                     (hk/with-channel
@@ -50,42 +49,54 @@
                                            :headers {"Content-Type" "text/plain"}
                                            :body "Long polling?"})))))]
 
+    (add-watch changes :change-dump
+               (fn [_ _ _ {:keys [js] :as new}]
+                 (doseq [{:keys [name]} js]
+                   (cljs/log-progress logger (format "RELOAD: %s" name)))))
 
-    {:instance (hk/run-server handler {:port 8888})
-     :changes changes
-     :state state}))
+
+    (let [host (or host "localhost")
+          instance (hk/run-server handler {:ip host
+                                           :port (or port 0)})]
+      {:instance instance
+       :port (:local-port (meta instance))
+       :host host
+       :changes changes
+       })))
 
 (defn setup-live-reload [{:keys [public-path] :as state} {:keys [before-load after-load] :as config}]
   (if (not config)
     state
-    (let [{:keys [host port] :as server} (start-live-reload-server config)
+    (let [{:keys [host port] :as server} (start-live-reload-server state config)
           config (assoc config
-                        :socket-url "ws://localhost:8888/socket"
+                        :socket-url (str "ws://" host ":" port "/socket")
                         :public-path public-path
                         :before-load (when before-load
                                        (str (comp/munge before-load)))
                         :after-load (when after-load
                                       (str (comp/munge after-load))))]
-      (prn [:started-live-reload config])
+      (println (format "Live-Reload started: %s" (pr-str config)))
       (-> state
           (assoc :live-reload {:server server
                                :config config})
-          (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
+          ;; (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
           (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload)
           ;; now if this isn't a fine hack
           ;; we ship with a live-reload ns and append stuff to it
           ;; so we can configure it without requiring the user to do it manually
-          ;; can't do it in module :append-js cause of weird goog.require
-          ;; behavior and execution ordering
-          ;; shadow.cljs.live_reload does not exist immediantly after goog.require('shadow.cljs.live_reload')
-          ;; only after the live with a require finishes loading.
+          ;; can't do it in module :append-js cause of weird goog.require behavior and execution ordering
+          ;; shadow.cljs.live_reload does not exist immediately after goog.require('shadow.cljs.live_reload')
+          ;; only after the file with the require finishes loading.
           (update-in [:sources "shadow/cljs/live_reload.cljs" :source] str "\n(setup " (pr-str config) ")\n")
           ))))
 
 (defn notify-live-reload [{:keys [live-reload] :as state} modified]
   (when (and live-reload (seq modified))
     (let [data (->> modified
-                    (map #(select-keys % #{:name :js-name :provides :requires :type}))
+                    (map (fn [{:keys [name js-name provides]}]
+                           {:name name
+                            :js-name js-name
+                            :provides (map #(str (comp/munge %)) provides)}))
                     (into []))
           changes (get-in state [:live-reload :server :changes])]
       (swap! changes assoc-in [:js] data)

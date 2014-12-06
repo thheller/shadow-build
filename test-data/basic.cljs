@@ -10,7 +10,6 @@
 (defn ^:export start-app []
   (.log js/console "start app"))
 
-
 (defn ^:export stop-app []
   (.log js/console "stop app"))
 
