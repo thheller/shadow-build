@@ -4,6 +4,7 @@
   (:import [java.io File StringWriter]
            [com.google.javascript.jscomp JSModule SourceFile])
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.api :as api]
             [shadow.cljs.passes :as p]
             [cljs.analyzer :as ana]
             [cljs.compiler :as comp]
@@ -176,12 +177,6 @@
 
 
 
-
-
-
-
-
-
-
-
+(deftest test-css-watching
+  (api/css-watcher nil [{:dir "test-data" :path "test-data"}]))
 
