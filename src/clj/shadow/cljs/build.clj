@@ -250,9 +250,20 @@
     ;; biggest bottleneck should be IO
     ;; also that we are re-opening a .jar for every file in it
     ;; so its probably best to read jar files in one go?
-    (into [] (r/fold 256 r/cat r/append! (r/filter usable-resource? (r/map #(read-resource % config) resources))))))
-
-
+    ;; (into [] (r/fold 256 r/cat r/append! (r/filter usable-resource? (r/map #(read-resource % config) resources))))
+    
+    ;; cannot use reducers apparantly as it MIGHT cause trouble due to parrallel loading of macro namespaces
+    ;; (ns some.ns (:require-macros [macro-ns]))
+    ;; (ns other.ns (:require-macros [macro-ns]))
+    ;; since read-resource might peek into these files at the same time the cljs.analyzer will require the macro-ns
+    ;; either clojure does not have any guards to prevent concurrent require or they don't hold
+    ;; one example to encounter this is have 2 jars which both use cljs.core.async.macros
+    ;; MIGHT get: clojure.lang.ExceptionInfo: java.lang.RuntimeException: No such var: ioc/state-machine, compiling:(cljs/core/async/macros.clj:18:19)
+    ;; if in unfortunate load order, might not happen ...
+    (->> resources
+         (map #(read-resource % config))
+         (filter usable-resource?)
+         (into []))))
 
 (defn compile-cljs-string
   [state cljs-source name]

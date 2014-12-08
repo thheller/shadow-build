@@ -11,7 +11,7 @@
   (reduce cljs/step-find-resources state source-paths))
 
 (defn define-modules [state modules]
-  (reduce (fn [state {:keys [main name depends-on] :as args}]
+  (reduce (fn [state {:keys [main name depends-on prepend] :as args}]
             (cljs/step-configure-module
               state
               name
@@ -22,7 +22,10 @@
                 :default
                 main)
               (or depends-on #{})
-              args))
+              (-> args
+                  (cond->
+                    prepend
+                    (assoc :prepend (slurp (io/resource prepend)))))))
           state
           modules))
 
