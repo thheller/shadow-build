@@ -1,5 +1,5 @@
 (ns shadow.cljs.live-reload
-  (:require [cljs.reader :refer (read-string)]
+  (:require [cljs.reader :as reader]
             [goog.net.jsloader :as loader]))
 
 
@@ -45,7 +45,7 @@
   (.debug js/console "LIVE RELOAD:" (pr-str config))
   (let [socket (js/WebSocket. socket-url)]
     (set! (.-onmessage socket) (fn [e]
-                                 (handle-changes config (-> e .-data read-string))))
+                                 (handle-changes config (-> e .-data (reader/read-string)))))
     (set! (.-onopen socket) (fn [e]
                               ;; patch away the already declared exception
                               (set! (.-provide js/goog) (aget js/goog "exportPath_"))
