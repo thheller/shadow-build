@@ -377,7 +377,7 @@
           ;; merge resource data & return it
           ;; FIXME: lost source-map data at this point, assuming it exist when out-js exists
           (-> (merge rc cache-data)
-              (dissoc cache-data :analysis :version)
+              (dissoc :analysis :version)
               (assoc :js-source (slurp target-js))))))))
 
 (defn write-cached-cljs-resource
