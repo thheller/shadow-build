@@ -119,6 +119,7 @@
                    (assoc :optimizations :none
                           :pretty-print true
                           :work-dir (io/file "target/cljs-work")
+                          :cache-dir (io/file "target/cljs-cache")
                           :public-dir (io/file public-dir)
                           :public-path public-path)
                    (cljs/step-find-resources-in-jars)

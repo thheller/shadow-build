@@ -1,23 +1,12 @@
 (ns shadow.cljs.build-test
   (:use clojure.test
         shadow.fix-test)
-  (:import [java.io File StringWriter]
-           [com.google.javascript.jscomp JSModule SourceFile])
   (:require [shadow.cljs.build :as cljs]
-            [shadow.cljs.api :as api]
             [shadow.cljs.passes :as p]
             [cljs.analyzer :as ana]
-            [cljs.compiler :as comp]
-            [cljs.env :as env]
-            [cljs.source-map :as sm]
-            [cljs.closure :as closure]
-            [clojure.data.json :as json]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
-            [clojure.set :as set]
             [clojure.java.io :as io]
-            [loom.graph :as lg]
-            [loom.alg :as la]
             ))
 
 ;; from cljs.analyzer.utils which is only in head yet
@@ -25,10 +14,10 @@
   (let [env (:env ast)
         ast (if (= op :fn)
               (assoc ast :methods
-                (map #(simplify-env nil %) (:methods ast)))
+                     (map #(simplify-env nil %) (:methods ast)))
               ast)]
     (assoc (dissoc ast :env)
-      :env {:context (:context env)})))
+           :env {:context (:context env)})))
 
 (defn elide-children [_ ast]
   (dissoc ast :children))
@@ -36,13 +25,13 @@
 (defn to-ast
   ([form] (to-ast 'cljs.user form))
   ([ns form]
-     (let [env (assoc-in (ana/empty-env) [:ns :name] ns)]
-       (binding [ana/*passes* [elide-children
-                               simplify-env
-                               p/macro-js-requires
-                               ana/infer-type]
-                 ana/*cljs-ns* 'cljs.user]
-         (ana/analyze env form)))))
+    (let [env (assoc-in (ana/empty-env) [:ns :name] ns)]
+      (binding [ana/*passes* [elide-children
+                              simplify-env
+                              p/macro-js-requires
+                              ana/infer-type]
+                ana/*cljs-ns* 'cljs.user]
+        (ana/analyze env form)))))
 
 ;; 
 
@@ -92,7 +81,7 @@
                     ;;(cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
                     ;;(cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
                     )]
-      
+
       (prn [:count-sources (count (:sources state))])
 
       (pprint (cljs/get-deps-for-ns state 'basic))
@@ -119,7 +108,7 @@
     (doseq [file [file-a file-b]
             :when (.exists file)]
       (.delete file))
-    
+
     (spit file-a (str/join "\n" ["(ns test-a)"
                                  foo-fn]))
 
@@ -134,10 +123,10 @@
                            :public-path "target/cljs")
                     (cljs/step-finalize-config)
                     (cljs/step-compile-core)
-                    (cljs/step-configure-module :test ['test-a] #{}))] 
-      
+                    (cljs/step-configure-module :test ['test-a] #{}))]
+
       (is (nil? (get-in state [:sources "test_b.cljs"])))
-      
+
       (cljs/step-compile-modules state) ;; no error is good enough for now
 
       ;; wait for a bit
@@ -153,17 +142,17 @@
         (is (empty? new))
         (is (= 1 (count modified)))
         (is (= :modified (-> modified first :scan)))
-        
+
         ;; empty file is :new but cannot be compiled, should produce warning, hard to test
         (spit file-b "")
 
         (let [state (cljs/reload-modified-files! state modified)
               new (cljs/scan-for-new-files state)
               modified (cljs/scan-for-modified-files state)]
-          
+
           (is (empty? modified))
           (is (= 1 (count new)))
-          
+
           (spit file-b (str/join "\n" ["(ns test-b)"
                                        foo-fn]))
 
@@ -177,6 +166,22 @@
 
 
 
-(deftest test-css-watching
-  (api/css-watcher nil [{:dir "test-data" :path "test-data"}]))
+(deftest test-caching
+  (dotimes [i 2]
+    ;; there should be some assert in here that the second time is actually cached and fast
+    (-> (cljs/init-state)
+        (cljs/enable-source-maps)
+        (assoc :optimizations :none
+               :pretty-print false
+               :work-dir (io/file "target/cljs-work")
+               :cache-dir (io/file "target/cljs-cache")
+               :public-dir (io/file "target/cljs")
+               :public-path "target/cljs")
+        (cljs/step-find-resources-in-jars)
+        (cljs/step-find-resources "test-data")
+        (cljs/step-finalize-config)
+        (cljs/step-compile-core)
+        (cljs/step-configure-module :basic ['basic] #{})
+        (cljs/step-compile-modules)
+        (cljs/flush-unoptimized))))
 

@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "1.0.0-alpha2"
+(defproject thheller/shadow-build "1.0.0-alpha3"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
@@ -14,7 +14,7 @@
   :profiles {:dev {:source-paths ["dev"]
                    :dependencies [[org.clojure/clojure "1.6.0"]
                                   [org.clojure/tools.namespace "0.2.4"]
-                                  [org.clojure/clojurescript "0.0-2322"]
+                                  [org.clojure/clojurescript "0.0-2511"]
                                   ]}}
 
   :aliases {"cljs-dev" ["run" "-m" "shadow.cljs.api/build-dev" :project/cljs]
@@ -48,5 +48,6 @@
 
   ;; make cursive happy, see https://github.com/cursiveclojure/cursive/issues/665
   ;; shadow-build has nothing to do with lein-cljsbuild!
-  :cljsbuild {:builds {:main {:source-paths ["src/cljs"]}}}
+  :cljsbuild {:builds {:main {:source-paths ["src/cljs"
+                                             "test-data"]}}}
   )
