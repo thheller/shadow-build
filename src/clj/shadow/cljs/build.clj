@@ -495,14 +495,14 @@
       (throw (ex-info (str "couldn't find " goog-base-name) {})))
 
     (with-compiler-env state
-                       (let [cljs-core (get-in state [:sources cljs-core-name])]
-                         (when-not cljs-core
-                           (throw (ex-info (str "couldn't find " cljs-core-name) {})))
-                         (-> state
-                             (maybe-compile-cljs cljs-core-name)
-                             (assoc-in [:provide-index 'cljs.core] cljs-core-name)
-                             (assoc :compiled-core true)
-                             )))))
+      (let [cljs-core (get-in state [:sources cljs-core-name])]
+        (when-not cljs-core
+          (throw (ex-info (str "couldn't find " cljs-core-name) {})))
+        (-> state
+            (maybe-compile-cljs cljs-core-name)
+            (assoc-in [:provide-index 'cljs.core] cljs-core-name)
+            (assoc :compiled-core true)
+            )))))
 
 (defn step-finalize-config [state]
   (assoc state
@@ -761,7 +761,7 @@
                             (map :name))
 
           state (with-compiler-env state
-                                   (reduce maybe-compile-cljs state source-names))]
+                  (reduce maybe-compile-cljs state source-names))]
 
       (-> state
           (assoc :build-modules modules)
