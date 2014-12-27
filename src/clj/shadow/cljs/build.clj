@@ -520,25 +520,10 @@
                       ~@body)]
      (assoc new-state# :compiler-env @dyn-env#)))
 
-(defn step-compile-core [state]
-  (when-not (:configured state)
-    (throw (ex-info "finalize config first" {})))
-
-  (with-logged-time
-    [(:logger state) "Compiling cljs.core"]
-
-    (when-not (get-in state [:sources goog-base-name])
-      (throw (ex-info (str "couldn't find " goog-base-name) {})))
-
-    (with-compiler-env state
-      (let [cljs-core (get-in state [:sources cljs-core-name])]
-        (when-not cljs-core
-          (throw (ex-info (str "couldn't find " cljs-core-name) {})))
-        (-> state
-            (maybe-compile-cljs cljs-core-name)
-            (assoc-in [:provide-index 'cljs.core] cljs-core-name)
-            (assoc :compiled-core true)
-            )))))
+(defn ^:deprecated step-compile-core [state]
+  ;; honestly not sure why this was ever here
+  ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
+  state)
 
 (defn step-finalize-config [state]
   (assoc state

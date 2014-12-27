@@ -48,6 +48,5 @@
 
   ;; make cursive happy, see https://github.com/cursiveclojure/cursive/issues/665
   ;; shadow-build has nothing to do with lein-cljsbuild!
-  :cljsbuild {:builds {:main {:source-paths ["src/cljs"
-                                             "test-data"]}}}
+  :cljsbuild {:builds {:main {:source-paths ["src/cljs"]}}}
   )
