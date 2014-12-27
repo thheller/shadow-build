@@ -1,7 +1,7 @@
 (ns common)
 
-(defn test [x]
+(defn test-it [x]
   (.log js/console "test" (= x ::test) (pr-str (vals {:a "a"})))
   (= x ::test))
 
-(test ::test)
+(test-it ::test)

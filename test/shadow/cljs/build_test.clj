@@ -167,21 +167,36 @@
 
 
 (deftest test-caching
-  (dotimes [i 2]
-    ;; there should be some assert in here that the second time is actually cached and fast
-    (-> (cljs/init-state)
-        (cljs/enable-source-maps)
-        (assoc :optimizations :none
-               :pretty-print false
-               :work-dir (io/file "target/cljs-work")
-               :cache-dir (io/file "target/cljs-cache")
-               :public-dir (io/file "target/cljs")
-               :public-path "target/cljs")
-        (cljs/step-find-resources-in-jars)
-        (cljs/step-find-resources "test-data")
-        (cljs/step-finalize-config)
-        (cljs/step-compile-core)
-        (cljs/step-configure-module :basic ['basic] #{})
-        (cljs/step-compile-modules)
-        (cljs/flush-unoptimized))))
+  (let [do-build (fn []
+                   (-> (cljs/init-state)
+                       (cljs/enable-source-maps)
+                       (assoc :optimizations :none
+                              :pretty-print false
+                              :work-dir (io/file "target/cljs-work")
+                              :cache-dir (io/file "target/cljs-cache")
+                              :public-dir (io/file "target/cljs")
+                              :public-path "target/cljs")
+                       (cljs/step-find-resources-in-jars)
+                       (cljs/step-find-resources "test-data")
+                       (cljs/step-finalize-config)
+                       (cljs/step-compile-core)
+                       (cljs/step-configure-module :basic ['basic] #{})
+                       (cljs/step-compile-modules)
+                       (cljs/flush-unoptimized)))]
+    (println "--- ROUND 1")
+    (.setLastModified (io/file "test-data/common.cljs") 1)
+    (do-build)
+    ;; all files should be cached now
+
+    (println "--- ROUND 2")
+    ;; should load only cached
+    (do-build)
+
+    (println "--- ROUND 3")
+    ;; touch one file which should cause a recompile of all dependents too
+    (.setLastModified (io/file "test-data/common.cljs") (System/currentTimeMillis))
+    (do-build)
+
+    ;; FIXME: checkout output that basic and common were recompiled, not just common
+    ))
 

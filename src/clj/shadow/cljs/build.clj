@@ -271,6 +271,32 @@
          (filter usable-resource?)
          (into []))))
 
+(defn- get-deps-for-ns* [state ns-sym]
+  (let [name (get-in state [:provide-index ns-sym])]
+    (when-not name
+      (throw (ex-info "ns not available" {:ns ns-sym})))
+
+    (if (contains? (:deps-visited state) name)
+      state
+      (let [requires (get-in state [:sources name :requires])]
+        (when-not requires
+          (throw (ex-info "cannot find required namespace deps" {:ns ns-sym :name name})))
+
+        (let [state (conj-in state [:deps-visited] name)
+              state (reduce get-deps-for-ns* state requires)]
+          (conj-in state [:deps-ordered] name)
+          )))))
+
+(defn get-deps-for-ns
+  "returns names of all required sources for a given ns (in dependency order), does include self
+   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
+  [state ns-sym]
+  (-> state
+      (assoc :deps-ordered []
+             :deps-visited #{})
+      (get-deps-for-ns* ns-sym)
+      :deps-ordered))
+
 (defn compile-cljs-string
   [state cljs-source name]
   (let [eof-sentinel (Object.)
@@ -340,7 +366,7 @@
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [state {:keys [name last-modified source] :as rc}]
+  [state {:keys [name source] :as rc}]
 
   (with-logged-time
     [(:logger state) (format "Compile CLJS: \"%s\"" name)]
@@ -358,14 +384,21 @@
   (io/file cache-dir (str name ".cache.edn")))
 
 (defn load-cached-cljs-resource
-  [{:keys [logger public-dir] :as state} {:keys [js-name name last-modified source] :as rc}]
+  [{:keys [logger public-dir] :as state} {:keys [ns js-name name last-modified source] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
         target-js (io/file public-dir "src" js-name)]
 
     (when (and (.exists cache-file)
                (> (.lastModified cache-file) last-modified)
                (.exists target-js)
-               (> (.lastModified target-js) last-modified))
+               (> (.lastModified target-js) last-modified)
+
+               ;; only use cache if its older than anything it depends on
+               (let [min-age (->> (get-deps-for-ns state ns)
+                                  (map #(get-in state [:sources % :last-modified]))
+                                  (reduce (fn [a b] (Math/max a b))))]
+                 (> (.lastModified cache-file) min-age)
+                 ))
 
       (let [cache-data (edn/read-string (slurp cache-file))]
 
@@ -383,15 +416,18 @@
 (defn write-cached-cljs-resource
   [{:keys [logger] :as state} {:keys [ns name] :as rc}]
 
-  (let [cache-file (get-cache-file-for-rc state rc)
-        cache-data (-> rc
-                       ;; dont write :source-map, assume we generate it later and are able to reuse it
-                       (dissoc :file :url :js-source :source :source-map)
-                       (assoc :version (util/clojurescript-version)
-                              :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))]
-    (io/make-parents cache-file)
-    (spit cache-file (pr-str cache-data))
-    (log-progress logger (format "Wrote cache for \"%s\" to \"%s\"" name cache-file))))
+  ;; only cache files that don't have warnings!
+  (when-not (get @cljs-warnings name)
+
+    (let [cache-file (get-cache-file-for-rc state rc)
+          cache-data (-> rc
+                         ;; dont write :source-map, assume we generate it later and are able to reuse it
+                         (dissoc :file :url :js-source :source :source-map)
+                         (assoc :version (util/clojurescript-version)
+                                :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))]
+      (io/make-parents cache-file)
+      (spit cache-file (pr-str cache-data))
+      (log-progress logger (format "Wrote cache for \"%s\" to \"%s\"" name cache-file)))))
 
 (defn maybe-compile-cljs
   "take current state and cljs source name to compile
@@ -516,31 +552,6 @@
                                    [provide name]
                                    ))))
 
-(defn- get-deps-for-ns* [state ns-sym]
-  (let [name (get-in state [:provide-index ns-sym])]
-    (when-not name
-      (throw (ex-info "ns not available" {:ns ns-sym})))
-
-    (if (contains? (:deps-visited state) name)
-      state
-      (let [requires (get-in state [:sources name :requires])]
-        (when-not requires
-          (throw (ex-info "cannot find required namespace deps" {:ns ns-sym :name name})))
-
-        (let [state (conj-in state [:deps-visited] name)
-              state (reduce get-deps-for-ns* state requires)]
-          (conj-in state [:deps-ordered] name)
-          )))))
-
-(defn get-deps-for-ns
-  "returns names of all required sources for a given ns (in dependency order), does include self
-   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
-  [state ns-sym]
-  (-> state
-      (assoc :deps-ordered []
-             :deps-visited #{})
-      (get-deps-for-ns* ns-sym)
-      :deps-ordered))
 
 (defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
   (log-progress logger (format "Resolving deps for: %s" main-cljs))
