@@ -1168,16 +1168,13 @@
                                              (let [macro (assoc macro
                                                                 :scan :macro
                                                                 :last-modified new-mod)]
-                                               (doseq [{:keys [file] :as rc} (->> used-by (map #(get-in state [:sources %])))
-                                                       :when file]
-                                                 ;; FIXME: this is soooooo ugly
-                                                 ;; touching the file to make sure it is always
-                                                 ;; modified when the macro is edited
-                                                 ;; FIXME: this modification causes the loop below to also add the file to the modified list
-                                                 ;; FIXME: should not assume there is a file!
-                                                 (.setLastModified file new-mod))
-
-                                               (conj result macro)
+                                               (->> used-by
+                                                    (map #(get-in state [:sources %]))
+                                                    (map (fn [rc]
+                                                           (assoc rc
+                                                                  :scan :modified
+                                                                  :last-modified new-mod)))
+                                                    (into (conj result macro)))
                                                ))))
                                        []))]
 
