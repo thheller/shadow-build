@@ -91,6 +91,7 @@
           ;; shadow.cljs.live_reload does not exist immediately after goog.require('shadow.cljs.live_reload')
           ;; only after the file with the require finishes loading.
           (update-in [:sources "shadow/cljs/live_reload.cljs" :source] str "\n(setup " (pr-str config) ")\n")
+          (assoc-in [:sources "shadow/cljs/live_reload.cljs" :last-modified] (System/currentTimeMillis))
           ))))
 
 (defn notify-live-reload [{:keys [live-reload] :as state} modified]
@@ -162,6 +163,7 @@
              :work-dir (io/file "target/cljs-work-prod")
              :public-dir (io/file public-dir)
              :public-path public-path)
+      (cljs/enable-emit-constants)
       (cljs/step-find-resources-in-jars)
       (add-source-paths source-paths)
       (cljs/step-finalize-config)

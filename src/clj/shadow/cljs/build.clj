@@ -93,11 +93,15 @@
 (defn cljs->js-name [name]
   (str/replace name #"\.cljs$" ".js"))
 
-(defn ns->cljs-file [ns]
+(defn ns->path [ns]
   (-> ns
       (str)
       (str/replace #"\." "/")
-      (str/replace #"-" "_")
+      (str/replace #"-" "_")))
+
+(defn ns->cljs-file [ns]
+  (-> ns
+      (ns->path)
       (str ".cljs")))
 
 (defn cljs-file->ns [name]
@@ -148,6 +152,19 @@
         (conj req 'cljs.core)
         ))))
 
+(defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
+  (into #{} (concat (vals require-macros) (vals use-macros))))
+
+(defn update-rc-from-ns [rc ast state]
+  (let [ns-name (:name ast)]
+    (assoc rc
+           :ns ns-name
+           :ns-info (dissoc ast :env)
+           :provides #{ns-name}
+           :macros (macros-from-ns-ast state ast)
+           :requires (requires-from-ns-ast state ast))))
+
+
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
@@ -170,14 +187,8 @@
             (if-not (= :ns (:op ast))
               (do (log-warning logger (format "Missing NS %s/%s (found %s)" source-path name (:op ast)))
                   rc)
-              ;; ns form, extract info and update resource
-              (let [ns-name (:name ast)
-                    requires (requires-from-ns-ast state ast)]
-                (assoc rc
-                       :ns ns-name
-                       :ns-info (dissoc ast :env)
-                       :provides #{ns-name}
-                       :requires requires))))
+              (update-rc-from-ns rc ast state)
+              ))
           (catch ExceptionInfo e
             (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
             rc))))))
@@ -347,9 +358,7 @@
                                             (comp/emit ast))
 
                                    compile-state (if (= :ns (:op ast))
-                                                   (let [ns-name (:name ast)
-                                                         requires (requires-from-ns-ast state ast)]
-                                                     (assoc compile-state :ns ns-name :ns-info (dissoc ast :env) :requires requires))
+                                                   (update-rc-from-ns compile-state ast state)
                                                    compile-state)
                                    compile-state (update-in compile-state [:js] str ast-js)]
                                compile-state
@@ -394,11 +403,14 @@
                (> (.lastModified target-js) last-modified)
 
                ;; only use cache if its older than anything it depends on
-               (let [min-age (->> (get-deps-for-ns state ns)
-                                  (map #(get-in state [:sources % :last-modified]))
-                                  (reduce (fn [a b] (Math/max a b))))]
-                 (> (.lastModified cache-file) min-age)
-                 ))
+               (try
+                 (let [min-age (->> (get-deps-for-ns state ns)
+                                    (map #(get-in state [:sources % :last-modified]))
+                                    (reduce (fn [a b] (Math/max a b))))]
+                   (> (.lastModified cache-file) min-age))
+                 (catch Exception e
+                   ;; FIXME: sometimes :last-modified seems to be missing
+                   false)))
 
       (let [cache-data (edn/read-string (slurp cache-file))]
 
@@ -525,17 +537,59 @@
   ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
   state)
 
+
+(comment
+  (defn- root-resource
+    "Returns the root directory path for a lib"
+    {:tag String}
+    [lib]
+    (str \/
+         (.. (name lib)
+             (replace \- \_)
+             (replace \. \/)))))
+
+(defn discover-macros [state]
+  ;; build {macro-ns #{used-by-source-by-name ...}}
+  (let [macro-info (->> (:sources state)
+                        (vals)
+                        (filter #(seq (:macros %)))
+                        (reduce (fn [macro-info {:keys [macros name]}]
+                                  (reduce (fn [macro-info macro-ns]
+                                            (update-in macro-info [macro-ns] set-conj name))
+                                          macro-info
+                                          macros))
+                                {})
+                        (map (fn [[macro-ns used-by]]
+                               (let [name (str (ns->path macro-ns) ".clj")
+                                     url (io/resource name)]
+                                 {:ns macro-ns
+                                  :used-by used-by
+                                  :name name
+                                  :url url})))
+                        (map (fn [{:keys [url] :as info}]
+                               (if (not= "file" (.getProtocol url))
+                                 info
+                                 (let [file (io/file (.getPath url))]
+                                   (assoc info
+                                          :file file
+                                          :last-modified (.lastModified file))))))
+                        (map (juxt :name identity))
+                        (into {}))]
+    (assoc state :macros macro-info)
+    ))
+
 (defn step-finalize-config [state]
-  (assoc state
-         :configured true
-         :main-deps {}
-         :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
-                          (slurp imul))
-         ;; populate index with known sources
-         :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
-                                       provide provides]
-                                   [provide name]
-                                   ))))
+  (-> state
+      (discover-macros)
+      (assoc :configured true
+             :main-deps {}
+             :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
+                              (slurp imul))
+             ;; populate index with known sources
+             :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
+                                           provide provides]
+                                       [provide name]
+                                       )))))
 
 
 (defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
@@ -1100,22 +1154,47 @@
   "scans known sources for modified or deleted files
 
   returns a seq of resource maps with a :scan key which is either :modified :delete"
-  [{:keys [logger sources] :as state}]
+  [{:keys [logger sources macros] :as state}]
   (let [reloadable-paths (get-reloadable-source-paths state)]
-    (->> (vals sources)
-         (filter :file)
-         (filter #(contains? reloadable-paths (:source-path %)))
-         (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
-                   (cond
-                     (not (.exists file))
-                     (conj result (assoc rc :scan :delete))
 
-                     (> (.lastModified file) last-modified)
-                     (conj result (assoc rc :scan :modified))
+    ;; editing a macro namespace will invalidate cljs files that depend on it
+    (let [modified-macros (->> macros
+                               (vals)
+                               (filter :file)
+                               (reduce (fn [result {:keys [name used-by file last-modified] :as macro}]
+                                         (let [new-mod (.lastModified file)]
+                                           (if (<= new-mod last-modified)
+                                             result
+                                             (let [macro (assoc macro
+                                                                :scan :macro
+                                                                :last-modified new-mod)]
+                                               (doseq [{:keys [file] :as rc} (->> used-by (map #(get-in state [:sources %])))
+                                                       :when file]
+                                                 ;; FIXME: this is soooooo ugly
+                                                 ;; touching the file to make sure it is always
+                                                 ;; modified when the macro is edited
+                                                 ;; FIXME: this modification causes the loop below to also add the file to the modified list
+                                                 ;; FIXME: should not assume there is a file!
+                                                 (.setLastModified file new-mod))
 
-                     :else
-                     result))
-                 []))))
+                                               (conj result macro)
+                                               ))))
+                                       []))]
+
+      (->> (vals sources)
+           (filter :file)
+           (filter #(contains? reloadable-paths (:source-path %)))
+           (reduce (fn [result {:keys [name ^File file last-modified] :as rc}]
+                     (cond
+                       (not (.exists file))
+                       (conj result (assoc rc :scan :delete))
+
+                       (> (.lastModified file) last-modified)
+                       (conj result (assoc rc :scan :modified))
+
+                       :else
+                       result))
+                   modified-macros)))))
 
 (defn scan-files
   "scans for new and modified files
@@ -1147,20 +1226,29 @@
 
 (defn reload-modified-files!
   [{:keys [logger] :as state} scan-results]
-  (reduce (fn [state {:keys [scan name file] :as rc}]
-            (case scan
-              :delete
-              (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
-                  (unmerge-resource state (:name rc)))
-              :new
-              (do (log-progress logger (format "Found new file: %s -> %s" name file))
-                  (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
+  (as-> state $state
+    (reduce (fn [state {:keys [scan name file] :as rc}]
+              (case scan
+                :macro
+                (do (log-progress logger (format "Macro File modified: %s" name))
+                    (require (:ns rc) :reload-all)
+                    (assoc-in state [:macros name] (dissoc rc :scan)))
+                :delete
+                (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
+                    (unmerge-resource state (:name rc)))
+                :new
+                (do (log-progress logger (format "Found new file: %s -> %s" name file))
+                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
 
-              :modified
-              (do (log-progress logger (format "File modified: %s -> %s" name file))
-                  (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
-          state
-          scan-results))
+                :modified
+                (do (log-progress logger (format "File modified: %s -> %s" name file))
+                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+            $state
+            scan-results)
+
+    ;; FIXME: this is kinda ugly but need a way to discover newly required macros
+    (discover-macros $state)
+    ))
 
 (defn wait-and-reload!
   "wait for modified files, reload them and return reloaded state"

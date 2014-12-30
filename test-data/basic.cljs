@@ -1,6 +1,9 @@
 (ns basic
+  (:require-macros [shadow.test-macro :as tm])
   (:require [clojure.string :as str]
             [common :as c]))
+
+(tm/hello)
 
 (defn ^:export hello []
   (.log js/console (str/join " " [:hello :world ::test])))

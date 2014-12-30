@@ -54,6 +54,19 @@
         (pprint)
         )))
 
+(deftest test-initial-scan
+  (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
+  (let [state (-> (cljs/init-state)
+                  (cljs/step-find-resources-in-jars)
+                  (cljs/step-find-resources "test-data")
+                  (cljs/step-finalize-config))]
+    (is (empty? (cljs/scan-for-modified-files state)))
+    (.setLastModified (io/file "dev/shadow/test_macro.clj") (System/currentTimeMillis))
+    (let [modded (cljs/scan-for-modified-files state)
+          state (cljs/reload-modified-files! state modded)]
+      (is (empty? (cljs/scan-for-modified-files state)))
+      )))
+
 ;; this needs real testing
 
 (deftest ^:wip test-js-env
