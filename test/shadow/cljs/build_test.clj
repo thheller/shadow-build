@@ -1,5 +1,4 @@
 (ns shadow.cljs.build-test
-  (:import (java.util.jar JarFile JarEntry))
   (:use clojure.test
         shadow.fix-test)
   (:require [shadow.cljs.build :as cljs]
@@ -213,4 +212,3 @@
 
     ;; FIXME: checkout output that basic and common were recompiled, not just common
     ))
-

@@ -3,7 +3,8 @@
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile CompilerOptions$DevMode CompilerOptions$TracerMode]
            (clojure.lang ExceptionInfo)
-           (java.util.jar JarFile JarEntry))
+           (java.util.jar JarFile JarEntry)
+           (com.google.javascript.jscomp.deps JsFileParser))
   (:require [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -121,23 +122,24 @@
     (conj x y)
     #{y}))
 
-(defn add-goog-dependencies [{:keys [js-source] :as rc}]
-  (->> js-source
-       (StringReader.)
-       (io/reader)
-       (line-seq)
-       (mapcat #(re-seq #"^goog\.(provide|require)\(['\"]([^'\"]+)['\"]\)" %))
-       (reduce
-         (fn [rc [_ x ns]]
-           (let [ns (-> ns
-                        (str/replace #"_" "-")
-                        (symbol))]
-             (case x
-               "require" (conj-in rc [:requires] ns)
-               "provide" (conj-in rc [:provides] ns))))
-         (assoc rc
-                :requires #{}
-                :provides #{}))))
+(defn munge-goog-ns [s]
+  (-> s
+      (str/replace #"_" "-")
+      (symbol)))
+
+(defn list->ns-set [list]
+  (->> list
+       (reduce (fn [set s]
+                 (conj! set (munge-goog-ns s)))
+               (transient #{}))
+       (persistent!)))
+
+(defn add-goog-dependencies [{:keys [name js-source] :as rc} config]
+  (let [deps (-> (JsFileParser. (.getErrorManager (::cc config)))
+                 (.parseFile name name js-source))]
+    (assoc rc
+           :requires (list->ns-set (.getRequires deps))
+           :provides (list->ns-set (.getProvides deps)))))
 
 (defn requires-from-ns-ast
   [{:keys [emit-constants] :as state} {:keys [name requires uses]}]
@@ -198,7 +200,7 @@
         (assoc :type :js
                :js-source source
                :js-name name)
-        (add-goog-dependencies))
+        (add-goog-dependencies config))
 
     (is-cljs-file? name)
     (-> rc
@@ -621,7 +623,7 @@
         (-> state
             (assoc-in [:sources name] (-> src
                                           (assoc :js-source (slurp target))
-                                          (add-goog-dependencies)
+                                          (add-goog-dependencies state)
                                           (assoc :precompiled true)))
             (assoc-in [:provide-index ns] name)))
       ;; else: no precompiled version available
@@ -961,7 +963,7 @@
     [logger "Closure optimize"]
 
     (let [modules (make-closure-modules state build-modules)
-          cc (closure/make-closure-compiler)
+          cc (::cc state)
           co (closure/make-options state)
 
           source-map? (boolean (:source-map state))
@@ -1260,6 +1262,10 @@
   (alter-var-root #'ana/*cljs-static-fns* (fn [_] true))
 
   {:compiler-env {} ;; will become env/*compiler*
+
+   ;; some helper functions may require a compiler instance, so just construct it eagerly
+   ::cc (closure/make-closure-compiler)
+
    :source-paths {}
    :closure-defines {"goog.DEBUG" false
                      "goog.LOCALE" "en"}
