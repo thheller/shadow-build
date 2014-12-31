@@ -2,7 +2,8 @@
   (:import [java.io File PrintStream StringWriter StringReader]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile CompilerOptions$DevMode CompilerOptions$TracerMode]
-           (clojure.lang ExceptionInfo))
+           (clojure.lang ExceptionInfo)
+           (java.util.jar JarFile JarEntry))
   (:require [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -56,10 +57,6 @@
                   s)]
         (swap! cljs-warnings update-in [src-name] (fnil conj []) msg)
         ))))
-
-(defn jar-entry-names [jar-path]
-  (with-open [z (java.util.zip.ZipFile. jar-path)]
-    (doall (map #(.getName %) (enumeration-seq (.entries z))))))
 
 (defn classpath-entries
   "finds all js files on the classpath matching the path provided"
@@ -193,22 +190,19 @@
             (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
             rc))))))
 
-(defn read-resource
-  [{:keys [name url] :as rc} config]
+(defn inspect-resource
+  [{:keys [name source url] :as rc} config]
   (cond
     (is-js-file? name)
-    (let [source (slurp url)]
-      (-> rc
-          (assoc :type :js
-                 :source source
-                 :js-source source
-                 :js-name name)
-          (add-goog-dependencies)))
+    (-> rc
+        (assoc :type :js
+               :js-source source
+               :js-name name)
+        (add-goog-dependencies))
 
     (is-cljs-file? name)
     (-> rc
         (assoc :type :cljs
-               :source (slurp url)
                :js-name (str/replace name #"\.cljs$" ".js"))
         (peek-into-cljs-resource config))
 
@@ -222,65 +216,62 @@
     (fn [^String name]
       (str/replace name File/separatorChar \/))))
 
-(defn find-jar-resources [path]
-  (let [jar-file (io/file path)
-        last-modified (.lastModified jar-file)]
-    (for [jar-entry (jar-entry-names path)
-          :when (is-cljs-resource? jar-entry)
-          :let [url (URL. (str "jar:file:" (.getAbsolutePath jar-file) "!/" jar-entry))]]
-      {:name (normalize-resource-name jar-entry)
-       :jar true
-       :source-path path
-       :last-modified last-modified
-       :url url})))
+(defn find-jar-resources [path config]
+  (let [file (io/file path)
+        abs-path (.getAbsolutePath file)
+        jar-file (JarFile. file)
+        last-modified (.lastModified file)
+        entries (.entries jar-file)]
+    (loop [result (transient [])]
+      (if (not (.hasMoreElements entries))
+        (persistent! result)
+        (let [^JarEntry jar-entry (.nextElement entries)
+              name (.getName jar-entry)]
+          (if (not (is-cljs-resource? name))
+            (recur result)
+            (let [url (URL. (str "jar:file:" abs-path "!/" name))
+                  rc (inspect-resource {:name (normalize-resource-name name)
+                                        :jar true
+                                        :source-path path
+                                        :last-modified last-modified
+                                        :url url
+                                        :source (with-open [in (.getInputStream jar-file jar-entry)]
+                                                  (slurp in))}
+                                       config)]
 
-(defn find-fs-resources [^String path]
+              (recur (conj! result rc)))
+            ))))))
+
+(defn find-fs-resources [^String path config]
   (let [root (io/file path)
         root-path (.getAbsolutePath root)
         root-len (inc (count root-path))]
     (for [file (file-seq root)
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
-                     (not (.isHidden file)))]
-      {:name (-> abs-path
-                 (.substring root-len)
-                 (normalize-resource-name))
-       :file file
-       :source-path path
-       :last-modified (.lastModified file)
-       :url (.toURL (.toURI file))}
+                     (not (.isHidden file)))
+          :let [url (.toURL (.toURI file))]]
+
+      (inspect-resource
+        {:name (-> abs-path
+                   (.substring root-len)
+                   (normalize-resource-name))
+         :file file
+         :source-path path
+         :last-modified (.lastModified file)
+         :url url
+         :source (slurp file)}
+        config)
       )))
 
 (defn- do-find-resources-in-paths [config paths]
-  (let [resources (->> paths
-                       (mapcat (fn [path]
-                                 (if (.endsWith path ".jar")
-                                   (find-jar-resources path)
-                                   (find-fs-resources path))))
-                       (vec))]
-
-    ;; (->> resources (map read-resource) (filter usable-resource?))
-
-    ;; REDUCERS FTW!
-    ;; whats a good n here? doesn't seem to gain much by going lower on my macpro+ssd
-    ;; is almost twice as fast as without reducers though
-    ;; biggest bottleneck should be IO
-    ;; also that we are re-opening a .jar for every file in it
-    ;; so its probably best to read jar files in one go?
-    ;; (into [] (r/fold 256 r/cat r/append! (r/filter usable-resource? (r/map #(read-resource % config) resources))))
-
-    ;; cannot use reducers apparantly as it MIGHT cause trouble due to parrallel loading of macro namespaces
-    ;; (ns some.ns (:require-macros [macro-ns]))
-    ;; (ns other.ns (:require-macros [macro-ns]))
-    ;; since read-resource might peek into these files at the same time the cljs.analyzer will require the macro-ns
-    ;; either clojure does not have any guards to prevent concurrent require or they don't hold
-    ;; one example to encounter this is have 2 jars which both use cljs.core.async.macros
-    ;; MIGHT get: clojure.lang.ExceptionInfo: java.lang.RuntimeException: No such var: ioc/state-machine, compiling:(cljs/core/async/macros.clj:18:19)
-    ;; if in unfortunate load order, might not happen ...
-    (->> resources
-         (map #(read-resource % config))
-         (filter usable-resource?)
-         (into []))))
+  (->> paths
+       (mapcat (fn [path]
+                 (if (.endsWith path ".jar")
+                   (find-jar-resources path config)
+                   (find-fs-resources path config))))
+       (filter usable-resource?)
+       (into [])))
 
 (defn- get-deps-for-ns* [state ns-sym]
   (let [name (get-in state [:provide-index ns-sym])]
@@ -537,16 +528,6 @@
   ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
   state)
 
-
-(comment
-  (defn- root-resource
-    "Returns the root directory path for a lib"
-    {:tag String}
-    [lib]
-    (str \/
-         (.. (name lib)
-             (replace \- \_)
-             (replace \. \/)))))
 
 (defn discover-macros [state]
   ;; build {macro-ns #{used-by-source-by-name ...}}
@@ -1104,10 +1085,14 @@
        (map :path)
        (set)))
 
+(defn reload-source [{:keys [url] :as rc}]
+  (assoc rc :source (slurp url)))
+
 (defn reset-resource [{:keys [name type ^File file] :as src} config]
   (-> src
       (dissoc :ns :ns-info :requires :provides :js-source :compiled :compiled-at)
-      (read-resource config)
+      (reload-source)
+      (inspect-resource config)
       (cond-> file
               (assoc :last-modified (.lastModified file)))))
 
