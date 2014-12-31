@@ -212,3 +212,21 @@
 
     ;; FIXME: checkout output that basic and common were recompiled, not just common
     ))
+
+(deftest test-optimized-build
+  (-> (cljs/init-state)
+      (cljs/enable-source-maps)
+      (assoc :optimizations :advanced
+             :pretty-print false
+             :work-dir (io/file "target/cljs-work")
+             :cache-dir (io/file "target/cljs-cache")
+             :public-dir (io/file "target/cljs")
+             :public-path "target/cljs")
+      (cljs/step-find-resources-in-jars)
+      (cljs/step-find-resources "test-data")
+      (cljs/step-finalize-config)
+      (cljs/step-compile-core)
+      (cljs/step-configure-module :basic ['basic] #{})
+      (cljs/step-compile-modules)
+      (cljs/closure-optimize)
+      (cljs/flush-modules-to-disk)))

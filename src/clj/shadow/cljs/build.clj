@@ -4,7 +4,8 @@
            [com.google.javascript.jscomp JSModule SourceFile CompilerOptions$DevMode CompilerOptions$TracerMode]
            (clojure.lang ExceptionInfo)
            (java.util.jar JarFile JarEntry)
-           (com.google.javascript.jscomp.deps JsFileParser))
+           (com.google.javascript.jscomp.deps JsFileParser)
+           (java.util.logging Level))
   (:require [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -169,28 +170,36 @@
    with ns-related infos"
   [{:keys [name source source-path] :as rc} {:keys [logger] :as state}]
   (let [eof-sentinel (Object.)
-        in (readers/indexing-push-back-reader source 1 name)]
-    (ana/with-warning-handlers
-      [(partial warning-handler name)]
-      (binding [*ns* (create-ns 'cljs.user)
-                ana/*cljs-ns* 'cljs.user
-                ana/*cljs-file* name
-                ana/*analyze-deps* false
-                ana/*passes* [ana/infer-type passes/macro-js-requires]
-                reader/*data-readers* tags/*cljs-data-readers*]
+        in (readers/indexing-push-back-reader source 1 name)
+        rc (ana/with-warning-handlers
+             [(partial warning-handler name)]
+             (binding [*ns* (create-ns 'cljs.user)
+                       ana/*cljs-ns* 'cljs.user
+                       ;; FIXME: wait for release
+                       ;; ana/*load-macros* false
+                       ana/*cljs-file* name
+                       ana/*analyze-deps* false
+                       ana/*passes* [ana/infer-type passes/macro-js-requires]
+                       reader/*data-readers* tags/*cljs-data-readers*]
 
-        (try
-          (let [peek (reader/read in nil eof-sentinel)
-                ast (ana/analyze (ana/empty-env) peek)]
+               (try
+                 (let [peek (reader/read in nil eof-sentinel)
+                       ast (ana/analyze (ana/empty-env) peek)]
 
-            (if-not (= :ns (:op ast))
-              (do (log-warning logger (format "Missing NS %s/%s (found %s)" source-path name (:op ast)))
-                  rc)
-              (update-rc-from-ns rc ast state)
-              ))
-          (catch ExceptionInfo e
-            (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
-            rc))))))
+                   (if-not (= :ns (:op ast))
+                     (do (log-warning logger (format "Missing NS %s/%s (found %s)" source-path name (:op ast)))
+                         rc)
+                     (update-rc-from-ns rc ast state)
+                     ))
+                 (catch ExceptionInfo e
+                   (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
+                   (.printStackTrace e)
+                   rc))))]
+
+    ;; clear warnings since we may have parsed namespaces we are not going to use
+    ;; warnings will re-appear once we actually use a namespace
+    (swap! cljs-warnings dissoc name)
+    rc))
 
 (defn inspect-resource
   [{:keys [name source url] :as rc} config]
@@ -229,7 +238,9 @@
         (persistent! result)
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
-          (if (not (is-cljs-resource? name))
+          (if (or (not (is-cljs-resource? name))
+                  (.startsWith name "goog/demos/")
+                  (.endsWith name "_test.js"))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
                   rc (inspect-resource {:name (normalize-resource-name name)
@@ -1260,6 +1271,9 @@
   ;; static fns dont work in repl env, but i never used a cljs repl
   ;; need to look into cljs repl, otherwise I see no downside to using static fns
   (alter-var-root #'ana/*cljs-static-fns* (fn [_] true))
+
+  ;; load cljs.core macros, we are probably going to use them
+  (ana/load-core)
 
   {:compiler-env {} ;; will become env/*compiler*
 
