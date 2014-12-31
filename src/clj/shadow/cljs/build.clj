@@ -1131,7 +1131,7 @@
                                 [source-path name]))
                          (into #{}))]
     (->> reloadable-paths
-         (mapcat find-fs-resources)
+         (mapcat #(find-fs-resources % state))
          (remove (fn [{:keys [source-path name]}]
                    (contains? known-files [source-path name])))
          (map #(assoc % :scan :new))
