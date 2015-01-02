@@ -358,9 +358,6 @@
                                    ast-js (with-out-str
                                             (comp/emit ast))
 
-                                   _ (when (= :ns (:op ast))
-                                       (pprint ast))
-
                                    compile-state (if (= :ns (:op ast))
                                                    (update-rc-from-ns compile-state ast state)
                                                    compile-state)
