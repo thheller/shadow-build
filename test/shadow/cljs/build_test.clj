@@ -14,10 +14,10 @@
   (let [env (:env ast)
         ast (if (= op :fn)
               (assoc ast :methods
-                     (map #(simplify-env nil %) (:methods ast)))
+                         (map #(simplify-env nil %) (:methods ast)))
               ast)]
     (assoc (dissoc ast :env)
-           :env {:context (:context env)})))
+      :env {:context (:context env)})))
 
 (defn elide-children [_ ast]
   (dissoc ast :children))
@@ -42,17 +42,6 @@
                        (:require-macros [shadow.cljs.build-test :refer (a-macro)])))]
     (is (get-in ast [:requires 'goog.math]))))
 
-
-(deftest test-base-js-foobar ;; base.js has a goog.provide in a comment
-  (let [state (-> (cljs/init-state)
-                  (cljs/step-find-resources-in-jars)
-                  (cljs/step-find-resources "lib/js-closure"))]
-
-    (-> state
-        (get-in [:sources "goog/base.js"])
-        (dissoc :js-source :source)
-        (pprint)
-        )))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -230,3 +219,21 @@
       (cljs/step-compile-modules)
       (cljs/closure-optimize)
       (cljs/flush-modules-to-disk)))
+
+
+(deftest test-dummy
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :pretty-print true
+                     :work-dir (io/file "target/test-cljs-work")
+                     :cache-dir (io/file "target/test-cljs-cache")
+                     :cache-level :jars
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/step-find-resources-in-jars)
+              (cljs/step-find-resources "test-data")
+              (cljs/step-finalize-config)
+              (cljs/step-configure-module :test ['shadow.dummy] #{})
+              (cljs/step-compile-modules)
+              (cljs/flush-unoptimized))]
+    (println (get-in s [:sources "shadow/dummy.cljs" :js-source]))))
