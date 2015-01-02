@@ -1,4 +1,4 @@
 (ns shadow.dummy
-  (:require [shadow.test-macro :refer (hello)]))
+  (:require [shadow.test-macro :as tm]))
 
-(hello "world")
+(tm/hello "world")

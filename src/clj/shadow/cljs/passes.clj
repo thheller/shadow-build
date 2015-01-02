@@ -46,6 +46,24 @@
           (assoc ast :macros macros)
           ))))
 
+(defn infer-macro-require [env {:keys [op requires name] :as ast}]
+  (if (or (not= :ns op)
+          (empty? requires))
+    ast
+    (reduce (fn [ast [used-name used-ns]]
+              (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
+                (if (nil? macros)
+                  ast
+                  (let [update-fn (fn [current]
+                                    (update-in ast [:require-macros] assoc used-name used-ns))]
+
+                    (swap! env/*compiler* update-in [::ana/namespaces name] update-fn)
+                    (update-fn ast))
+                  )))
+            ast
+            requires)))
+
+
 (defn infer-macro-use [env {:keys [op uses name] :as ast}]
   (if (or (not= :ns op)
           (empty? uses))
@@ -53,12 +71,15 @@
     (reduce (fn [ast [used-name used-ns]]
               (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
                 (if (contains? macros used-name)
-                  (do (swap! env/*compiler* (fn [current]
-                                              (-> current
-                                                  (update-in [::ana/namespaces name :use-macros] merge {used-name used-ns})
-                                                  (update-in [::ana/namespaces name :require-macros] assoc used-ns used-ns))))
-                      (update-in ast [:use-macros] merge {used-name used-ns}))
+                  (let [update-fn (fn [current]
+                                    (update-in ast [:use-macros] merge {used-name used-ns}))]
+
+                    (swap! env/*compiler* update-in [::ana/namespaces name] update-fn)
+                    (update-fn ast))
                   ast
                   )))
             ast
             uses)))
+
+
+
