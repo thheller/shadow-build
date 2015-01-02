@@ -27,7 +27,7 @@
     ast))
 
 
-(defn load-macros [env {:keys [op name] :as ast}]
+(defn load-macros [_ {:keys [op name] :as ast}]
   (if (or (not= :ns op)
           (not (-> name meta :load-macros)))
     ast
@@ -41,12 +41,12 @@
                                          (conj m var-name)
                                          m))
                                      #{}))]
-          ;; this is sort of ugly, but the compiler env does not store the result of a pass, only the parse
+
           (swap! env/*compiler* assoc-in [::ana/namespaces name :macros] macros)
           (assoc ast :macros macros)
           ))))
 
-(defn infer-macro-require [env {:keys [op requires name] :as ast}]
+(defn infer-macro-require [_ {:keys [op requires name] :as ast}]
   (if (or (not= :ns op)
           (empty? requires))
     ast
@@ -55,7 +55,7 @@
                 (if (nil? macros)
                   ast
                   (let [update-fn (fn [current]
-                                    (update-in ast [:require-macros] assoc used-name used-ns))]
+                                    (update-in current [:require-macros] assoc used-name used-ns))]
 
                     (swap! env/*compiler* update-in [::ana/namespaces name] update-fn)
                     (update-fn ast))
@@ -64,7 +64,7 @@
             requires)))
 
 
-(defn infer-macro-use [env {:keys [op uses name] :as ast}]
+(defn infer-macro-use [_ {:keys [op uses name] :as ast}]
   (if (or (not= :ns op)
           (empty? uses))
     ast
@@ -72,7 +72,7 @@
               (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
                 (if (contains? macros used-name)
                   (let [update-fn (fn [current]
-                                    (update-in ast [:use-macros] merge {used-name used-ns}))]
+                                    (update-in current [:use-macros] merge {used-name used-ns}))]
 
                     (swap! env/*compiler* update-in [::ana/namespaces name] update-fn)
                     (update-fn ast))
