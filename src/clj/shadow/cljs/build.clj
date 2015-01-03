@@ -179,7 +179,7 @@
                        ;; ana/*load-macros* false
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
-                       ana/*passes* [ana/infer-type passes/macro-js-requires]
+                       ana/*passes* [ana/infer-type]
                        reader/*data-readers* tags/*cljs-data-readers*]
 
                (try
@@ -350,7 +350,7 @@
                                      ;; FIXME: configureable warnings
                                      ana/*cljs-warnings* (merge ana/*cljs-warnings* {:undeclared-var true
                                                                                      :undeclared-ns true})
-                                     ana/*passes* [ana/infer-type passes/load-macros passes/infer-macro-require passes/infer-macro-use passes/macro-js-requires]]
+                                     ana/*passes* [ana/infer-type passes/load-macros passes/infer-macro-require passes/infer-macro-use]]
 
                              (let [ast (ana/analyze (ana/empty-env) form)
                                    ;; TBD: does it make sense to keep the ast arround?
