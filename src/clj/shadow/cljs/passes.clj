@@ -19,6 +19,7 @@
       (require macro-ns))
 
     (if (or (not= :ns op)
+            (= name 'cljs.core) ;; FIXME: remove when cljs.core add (:require-macros [cljs.core])
             (not (contains? (set require-macros) name)))
       ast
       ;; if we require a macro with the same name as the ns

@@ -26,6 +26,7 @@
             [shadow.cljs.passes :as passes]
             [loom.graph :as lg]
             [loom.alg :as la]
+            [cljs.core] ;; FIXME: can remove this when (ns cljs.core (:require-macros [cljs.core]))
             ))
 
 (defprotocol BuildLog
@@ -179,7 +180,7 @@
                        ;; ana/*load-macros* false
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
-                       ana/*passes* [ana/infer-type]
+                       ana/*passes* [passes/load-macros ana/infer-type]
                        reader/*data-readers* tags/*cljs-data-readers*]
 
                (try
