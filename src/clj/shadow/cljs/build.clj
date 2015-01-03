@@ -347,10 +347,10 @@
                                      ana/*cljs-ns* ns
                                      ana/*cljs-file* name
                                      ana/*analyze-deps* false
-                                     ;; FIXME: configureable warnings
-                                     ana/*cljs-warnings* (merge ana/*cljs-warnings* {:undeclared-var true
-                                                                                     :undeclared-ns true})
-                                     ana/*passes* [ana/infer-type passes/load-macros passes/infer-macro-require passes/infer-macro-use]]
+                                     ana/*passes* [passes/load-macros
+                                                   passes/infer-macro-require
+                                                   passes/infer-macro-use
+                                                   ana/infer-type]]
 
                              (let [ast (ana/analyze (ana/empty-env) form)
                                    ;; TBD: does it make sense to keep the ast arround?

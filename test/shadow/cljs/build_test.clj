@@ -9,40 +9,6 @@
             [clojure.java.io :as io]
             ))
 
-;; from cljs.analyzer.utils which is only in head yet
-(defn simplify-env [_ {:keys [op] :as ast}]
-  (let [env (:env ast)
-        ast (if (= op :fn)
-              (assoc ast :methods
-                         (map #(simplify-env nil %) (:methods ast)))
-              ast)]
-    (assoc (dissoc ast :env)
-      :env {:context (:context env)})))
-
-(defn elide-children [_ ast]
-  (dissoc ast :children))
-
-(defn to-ast
-  ([form] (to-ast 'cljs.user form))
-  ([ns form]
-    (let [env (assoc-in (ana/empty-env) [:ns :name] ns)]
-      (binding [ana/*passes* [elide-children
-                              simplify-env
-                              p/macro-js-requires
-                              ana/infer-type]
-                ana/*cljs-ns* 'cljs.user]
-        (ana/analyze env form)))))
-
-;; 
-
-(defmacro ^{:js-require 'goog.math} a-macro [] :yo)
-
-(deftest test-macro-js-require
-  (let [ast (to-ast '(ns some.where
-                       (:require-macros [shadow.cljs.build-test :refer (a-macro)])))]
-    (is (get-in ast [:requires 'goog.math]))))
-
-
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
   (let [state (-> (cljs/init-state)

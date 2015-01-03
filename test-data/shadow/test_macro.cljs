@@ -1,5 +1,5 @@
 (ns shadow.test-macro
-  {:load-macros true})
+  (:require-macros [shadow.test-macro]))
 
 (defn hello [& something]
   :NORMAL)
