@@ -350,6 +350,7 @@
                                      ana/*passes* [passes/load-macros
                                                    passes/infer-macro-require
                                                    passes/infer-macro-use
+                                                   passes/check-uses
                                                    ana/infer-type]]
 
                              (let [ast (ana/analyze (ana/empty-env) form)

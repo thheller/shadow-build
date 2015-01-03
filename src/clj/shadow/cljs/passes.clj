@@ -78,23 +78,14 @@
             uses)))
 
 (defn check-uses
-  "checks whether (:require [other-ns :refer (something)]) exists, warns but doesn't throw"
-  [env {:keys [op uses] :as ast}]
-  (if (not= :ns op)
-    ast
-    (do (doseq [[sym lib] uses]
-          (when (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
-            (throw
-              (ana/error env (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))
-        ast)))
-
-(defn check-uses!
   "checks whether (:require [other-ns :refer (something)]) exists, throws if not"
   [env {:keys [op uses] :as ast}]
   (if (not= :ns op)
     ast
     (do (doseq [[sym lib] uses]
-          (when (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
-            (ana/warning :undeclared-ns-form env {:type "var" :lib lib :sym sym})))
+          (when (and (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
+                     (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
+            (throw
+              (ana/error env (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))
         ast)))
 
