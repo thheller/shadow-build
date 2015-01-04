@@ -176,11 +176,10 @@
              [(partial warning-handler name)]
              (binding [*ns* (create-ns 'cljs.user)
                        ana/*cljs-ns* 'cljs.user
-                       ;; FIXME: wait for release
-                       ;; ana/*load-macros* false
+                       ana/*load-macros* false
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
-                       ana/*passes* [passes/load-macros ana/infer-type]
+                       ana/*passes* [ana/infer-type]
                        reader/*data-readers* tags/*cljs-data-readers*]
 
                (try

@@ -13,13 +13,11 @@
    figuring out what might be a macro"
   [_ {:keys [op name require-macros] :as ast}]
   (let [require-macros (vals require-macros)]
-    ;; FIXME: cljs.analyzer parse 'ns does this set! why? - thomas
-    (set! ana/*cljs-ns* name)
     (doseq [macro-ns require-macros]
       (require macro-ns))
 
     (if (or (not= :ns op)
-            (= name 'cljs.core) ;; FIXME: remove when cljs.core add (:require-macros [cljs.core])
+            (= name 'cljs.core) ;; its special, don't do anything
             (not (contains? (set require-macros) name)))
       ast
       ;; if we require a macro with the same name as the ns
