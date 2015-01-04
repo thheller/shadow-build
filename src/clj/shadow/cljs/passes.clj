@@ -1,9 +1,5 @@
 (ns shadow.cljs.passes
-  (:require [clojure.pprint :refer (pprint)]
-            [cljs.util :as util]
-            [clojure.string :as str]
-            [clojure.java.io :as io]
-            [cljs.analyzer :as ana]
+  (:require [cljs.analyzer :as ana]
             [cljs.env :as env]))
 
 (defn load-macros
@@ -11,8 +7,9 @@
    if a macro namespace of the same name as the current ns is found,
    we extract all the names of all macros so later passes have an easier time
    figuring out what might be a macro"
-  [_ {:keys [op name require-macros] :as ast}]
-  (let [require-macros (vals require-macros)]
+  [_ {:keys [op name require-macros use-macros] :as ast}]
+  (let [require-macros (concat (vals require-macros)
+                               (vals use-macros))]
     (doseq [macro-ns require-macros]
       (require macro-ns))
 
@@ -88,3 +85,11 @@
               (ana/error env (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))
         ast)))
 
+;; set default passes here since cljs.analyzer cannot do this (it doesn't know this ns)
+(alter-var-root #'ana/*passes*
+                (fn [_]
+                  [load-macros
+                   infer-macro-require
+                   infer-macro-use
+                   check-uses
+                   ana/infer-tag]))
