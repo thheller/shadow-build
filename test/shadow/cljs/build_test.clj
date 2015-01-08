@@ -2,7 +2,6 @@
   (:use clojure.test
         shadow.fix-test)
   (:require [shadow.cljs.build :as cljs]
-            [shadow.cljs.passes :as p]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]

@@ -23,7 +23,6 @@
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
             [clojure.core.reducers :as r]
-            [shadow.cljs.passes :as passes]
             [loom.graph :as lg]
             [loom.alg :as la]
             [cljs.core] ;; FIXME: can remove this when (ns cljs.core (:require-macros [cljs.core]))
@@ -176,10 +175,11 @@
              [(partial warning-handler name)]
              (binding [*ns* (create-ns 'cljs.user)
                        ana/*cljs-ns* 'cljs.user
-                       ana/*load-macros* false
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
-                       ana/*passes* [ana/infer-type]
+                       ana/*passes* [ana/load-macros
+                                     ana/infer-macro-require
+                                     ana/infer-macro-use]
                        reader/*data-readers* tags/*cljs-data-readers*]
 
                (try
@@ -347,10 +347,10 @@
                                      ana/*cljs-ns* ns
                                      ana/*cljs-file* name
                                      ana/*analyze-deps* false
-                                     ana/*passes* [passes/load-macros
-                                                   passes/infer-macro-require
-                                                   passes/infer-macro-use
-                                                   passes/check-uses
+                                     ana/*passes* [ana/load-macros
+                                                   ana/infer-macro-require
+                                                   ana/infer-macro-use
+                                                   ana/check-uses
                                                    ana/infer-type]]
 
                              (let [ast (ana/analyze (ana/empty-env) form)
@@ -395,7 +395,7 @@
   (io/file cache-dir (str name ".cache.edn")))
 
 (defn load-cached-cljs-resource
-  [{:keys [logger public-dir] :as state} {:keys [ns js-name name last-modified source] :as rc}]
+  [{:keys [logger public-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
         target-js (io/file public-dir "src" js-name)]
 
@@ -421,6 +421,7 @@
 
           ;; restore analysis data
           (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] (:analyzer cache-data))
+
           ;; merge resource data & return it
           ;; FIXME: lost source-map data at this point, assuming it exist when out-js exists
           (-> (merge rc cache-data)
