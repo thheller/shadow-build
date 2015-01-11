@@ -12,3 +12,4 @@ pom.xml.asc
 /tmp
 /lib/js-closure
 /lib/closure-library
+out/

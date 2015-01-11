@@ -192,7 +192,7 @@
                      :pretty-print true
                      :work-dir (io/file "target/test-cljs-work")
                      :cache-dir (io/file "target/test-cljs-cache")
-                     :cache-level :jars
+                     :cache-level :none
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
               (cljs/step-find-resources-in-jars)
@@ -202,3 +202,18 @@
               (cljs/step-compile-modules)
               (cljs/flush-unoptimized))]
     (println (get-in s [:sources "shadow/dummy.cljs" :js-source]))))
+
+(deftest test-dev-api
+  (-> (cljs/init-state)
+      (assoc :optimizations :none
+             :pretty-print true
+             :work-dir (io/file "target/test-cljs-work")
+             :cache-dir (io/file "target/test-cljs-cache")
+             :cache-level :jars
+             :public-dir (io/file "target/test-cljs")
+             :public-path "target/test-cljs")
+      (cljs/step-find-resources-in-jars)
+      (cljs/step-find-resources "cljs-data/dummy/src")
+      (cljs/step-find-resources "cljs-data/dummy/test")
+      (cljs/execute-affected-tests! ["basic.cljs"])))
+

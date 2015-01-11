@@ -5,7 +5,9 @@
            (clojure.lang ExceptionInfo)
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
-           (java.util.logging Level))
+           (java.util.logging Level)
+           (java.util ArrayList)
+           (java.util.concurrent Executors))
   (:require [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [clojure.java.io :as io]
@@ -25,7 +27,9 @@
             [clojure.core.reducers :as r]
             [loom.graph :as lg]
             [loom.alg :as la]
-            [cljs.core] ;; FIXME: can remove this when (ns cljs.core (:require-macros [cljs.core]))
+            [clojure.java.shell :as shell]
+            [cljs.core]
+            ;; FIXME: can remove this when (ns cljs.core (:require-macros [cljs.core]))
             ))
 
 (defprotocol BuildLog
@@ -177,9 +181,7 @@
                        ana/*cljs-ns* 'cljs.user
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
-                       ana/*passes* [ana/load-macros
-                                     ana/infer-macro-require
-                                     ana/infer-macro-use]
+                       ana/*passes* []
                        reader/*data-readers* tags/*cljs-data-readers*]
 
                (try
@@ -287,7 +289,7 @@
        (into [])))
 
 (defn- get-deps-for-ns* [state ns-sym]
-  (let [name (get-in state [:provide-index ns-sym])]
+  (let [name (get-in state [:provide->source ns-sym])]
     (when-not name
       (throw (ex-info (format "ns \"%s\" not available" ns-sym) {:ns ns-sym})))
 
@@ -347,15 +349,9 @@
                                      ana/*cljs-ns* ns
                                      ana/*cljs-file* name
                                      ana/*analyze-deps* false
-                                     ana/*passes* [ana/load-macros
-                                                   ana/infer-macro-require
-                                                   ana/infer-macro-use
-                                                   ana/check-uses
-                                                   ana/infer-type]]
+                                     ana/*passes* [ana/infer-type]]
 
                              (let [ast (ana/analyze (ana/empty-env) form)
-                                   ;; TBD: does it make sense to keep the ast arround?
-                                   ;; state (update-in state [:ast] ast)
                                    ast-js (with-out-str
                                             (comp/emit ast))
 
@@ -374,6 +370,38 @@
             result
             ))))))
 
+(defn compile-cljs-seq
+  [state cljs-forms name]
+
+  ;; this logging is a hack, no way arround a global though :(
+  (swap! cljs-warnings dissoc name)
+  (ana/with-warning-handlers
+    [(partial warning-handler name)]
+
+    (let [result (reduce (fn [{:keys [ns] :as compile-state} form]
+                           (binding [*ns* (create-ns ns)
+                                     ana/*cljs-ns* ns
+                                     ana/*cljs-file* name
+                                     ana/*analyze-deps* false
+                                     ana/*passes* [ana/infer-type]]
+
+                             (let [ast (ana/analyze (ana/empty-env) form)
+                                   ast-js (with-out-str
+                                            (comp/emit ast))
+
+                                   compile-state (if (= :ns (:op ast))
+                                                   (update-rc-from-ns compile-state ast state)
+                                                   compile-state)]
+                               (update-in compile-state [:js] str ast-js)
+                               )))
+                         {:js "" :ns 'cljs.user}
+                         cljs-forms)]
+
+      (when-not (:ns result)
+        (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+
+      result)))
+
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
@@ -381,7 +409,13 @@
 
   (with-logged-time
     [(:logger state) (format "Compile CLJS: \"%s\"" name)]
-    (let [{:keys [js ns requires source-map] :as result} (compile-cljs-string state source name)]
+    (let [{:keys [js ns requires source-map]} (cond
+                                                (string? source)
+                                                (compile-cljs-string state source name)
+                                                (vector? source)
+                                                (compile-cljs-seq state source name)
+                                                :else
+                                                (throw (ex-info "invalid cljs source type" {:name name :source source})))]
       (assoc rc
         :js-source js
         :requires requires
@@ -461,13 +495,13 @@
 
 (defn merge-provides [state provided-by provides]
   (if-let [provide (first provides)]
-    (recur (assoc-in state [:provide-index provide] provided-by) provided-by (rest provides))
+    (recur (assoc-in state [:provide->source provide] provided-by) provided-by (rest provides))
     state
     ))
 
 (defn unmerge-provides [state provides]
   (if-let [provide (first provides)]
-    (recur (update-in state [:provide-index] dissoc provide) (rest provides))
+    (recur (update-in state [:provide->source] dissoc provide) (rest provides))
     state
     ))
 
@@ -580,10 +614,10 @@
              :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
                               (slurp imul))
              ;; populate index with known sources
-             :provide-index (into {} (for [{:keys [name provides]} (vals (:sources state))
-                                           provide provides]
-                                       [provide name]
-                                       )))))
+             :provide->source (into {} (for [{:keys [name provides]} (vals (:sources state))
+                                             provide provides]
+                                         [provide name]
+                                         )))))
 
 
 (defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
@@ -636,7 +670,7 @@
                                           (assoc :js-source (slurp target))
                                           (add-goog-dependencies state)
                                           (assoc :precompiled true)))
-            (assoc-in [:provide-index ns] name)))
+            (assoc-in [:provide->source ns] name)))
       ;; else: no precompiled version available
       state)))
 
@@ -1027,13 +1061,12 @@
                 "[" (ns-list-string requires) "]);")))
        (str/join "\n")))
 
-(defn flush-unoptimized
+(defn flush-sources
   [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (with-logged-time
-    [(:logger state) "Flushing unoptimized modules"]
-
+    [(:logger state) "Flushing sources"]
 
     (doseq [{:keys [type name source] :as src} (->> (mapcat :sources build-modules)
                                                     (map #(get-in state [:sources %])))
@@ -1061,7 +1094,17 @@
               (spit (io/file public-dir "src" source-map-name)
                     (sm/encode {name source-map} {}))
               (spit target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))
-          )))
+          ))))
+  ;; return unmodified state
+  state)
+
+(defn flush-unoptimized
+  [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
+
+  (flush-sources state)
+
+  (with-logged-time
+    [(:logger state) "Flushing unoptimized modules"]
 
     (flush-manifest public-dir build-modules)
 
@@ -1072,7 +1115,10 @@
             target (io/file public-dir js-name)
 
             out (->> provided-ns
-                     (map #(str "goog.require('" (comp/munge %) "');"))
+                     (map (fn [ns]
+                            (str "goog.require('" (comp/munge ns) "');"
+                                 (when (= 'cljs.core ns)
+                                   "\ncljs.core.enable_console_print_BANG_();"))))
                      (str/join "\n"))
             out (str prepend prepend-js out append-js)
             out (if default
@@ -1084,6 +1130,41 @@
                        out)
                   ;; else
                   out)]
+
+        (spit target out))))
+  ;; return unmodified state
+  state)
+
+(defn flush-unoptimized-node
+  [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
+  (when (not= 1 (count build-modules))
+    (throw (ex-info "node builds can only have one module!" {})))
+
+  (flush-sources state)
+
+  (with-logged-time
+    [(:logger state) (format "Flushing node script: %s" (-> build-modules first :js-name))]
+
+    (let [{:keys [default js-name name prepend prepend-js append-js sources] :as mod} (first build-modules)]
+      (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
+                                sources)
+            target (io/file public-dir js-name)
+
+            out (->> provided-ns
+                     (map (fn [ns]
+                            (str "goog.require('" (comp/munge ns) "');"
+                                 (when (= 'cljs.core ns)
+                                   "\ncljs.core._STAR_print_fn_STAR_ = require(\"util\").print;"))))
+                     (str/join "\n"))
+            out (str prepend prepend-js out append-js)
+
+            out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
+                     "\n\n"
+                     out)
+            goog-js (io/file public-dir "src" "goog" "base.js")
+            deps-js (io/file public-dir "src" "deps.js")]
+        (spit goog-js (get-in state [:sources "goog/base.js" :source]))
+        (spit deps-js (closure-goog-deps state))
 
         (spit target out))))
   ;; return unmodified state
@@ -1261,7 +1342,7 @@
                                                  :name "constants_table.js"
                                                  :provides #{'constants-table}
                                                  :requires #{}})
-      (assoc-in [:provide-index 'constants-table] "constants_table.js")))
+      (assoc-in [:provide->source 'constants-table] "constants_table.js")))
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
@@ -1277,7 +1358,8 @@
   {:compiler-env {} ;; will become env/*compiler*
 
    ;; some helper functions may require a compiler instance, so just construct it eagerly
-   ::cc (closure/make-closure-compiler)
+   ::cc (doto (closure/make-closure-compiler)
+          (.disableThreads))
 
    :cache-level :jars
    :source-paths {}
@@ -1293,3 +1375,116 @@
              (log-progress [_ msg]
                (println msg)))
    })
+
+(defn watch-and-repeat! [state callback]
+  (loop [state (callback state [])]
+    (let [modified (wait-for-modified-files! state)
+          state (reload-modified-files! state modified)]
+      (recur (try
+               (callback state (mapv :name modified))
+               (catch Exception e
+                 (println (str "COMPILATION FAILED: " e))
+                 (.printStackTrace e)
+                 state))))))
+
+(defn has-tests? [{:keys [requires] :as rc}]
+  (contains? requires 'cljs.test))
+
+(defn find-dependent-resources [{:keys [provide->source] :as state} source-names]
+  (let [graph (apply lg/digraph (for [{:keys [name requires]} (vals (:sources state))
+                                      require requires]
+                                  [(get provide->source require) name]))]
+    (reduce (fn [deps source-name]
+              (into deps (la/pre-traverse graph source-name)))
+            #{}
+            source-names)))
+
+
+(defn execute! [{:keys [logger public-dir] :as state} program & args]
+  (when (not= 1 (-> state :build-modules count))
+    (throw (ex-info "can only execute non modular builds" {})))
+
+  (let [script-name (-> state :build-modules first :js-name)
+        script-args (->> args
+                         (map (fn [arg]
+                                (cond
+                                  (string? arg)
+                                  arg
+                                  (= :script arg)
+                                  script-name
+                                  :else
+                                  (throw (ex-info "invalid execute args" {:args args})))))
+                         (into [program]))
+        pb (doto (ProcessBuilder. script-args)
+             (.directory public-dir)
+             (.inheritIO))]
+
+    ;; not using this because we only get output once it is done
+    ;; I prefer to see progress
+    ;; (prn (apply shell/sh script-args))
+
+    (with-logged-time
+      [logger (format "Execute: %s" (pr-str script-args))]
+      (let [proc (.start pb)]
+        ;; FIXME: what if this doesn't terminate?
+        (.waitFor proc))))
+
+  state)
+
+(defn setup-test-runner [state test-namespaces]
+  (let [test-runner-src {:name "test_runner.cljs"
+                         :js-name "test_runner.js"
+                         :type :cljs
+                         :provides #{'test-runner}
+                         :requires (into #{'cljs.test} test-namespaces)
+                         :ns 'test-runner
+                         ;; FIXME: there should a better way for this?
+                         :source [(list 'ns 'test-runner
+                                        (concat
+                                          (list :require '[cljs.test])
+                                          (mapv vector test-namespaces)))
+                                  (concat (list 'cljs.test/run-tests '(cljs.test/empty-env))
+                                          (for [it test-namespaces]
+                                            `(quote ~it)))]}]
+    (-> state
+        (merge-resources [test-runner-src])
+        (reset-modules)
+        (step-configure-module :test-runner ['test-runner] #{}))))
+
+(defn make-test-runner [state test-namespaces]
+  (-> state
+    (setup-test-runner test-namespaces)
+    (step-compile-modules)
+    (flush-unoptimized-node)))
+
+(defn execute-affected-tests!
+  [{:keys [logger] :as state} source-names]
+  (let [test-namespaces (->> source-names
+                             (find-dependent-resources state)
+                             (filter #(has-tests? (get-in state [:sources %])))
+                             (map #(get-in state [:sources % :ns]))
+                             (distinct)
+                             (into []))]
+    (if (empty? test-namespaces)
+      (do (log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
+          state)
+      (do (-> state
+              (make-test-runner test-namespaces)
+              (execute! "node" :script))
+          ;; return unmodified state, otherwise previous module information and config is lost
+          state))))
+
+(defn execute-all-tests! [state]
+  (let [test-namespaces (->> (get-in state [:sources])
+                             (vals)
+                             (remove :jar)
+                             (filter has-tests?)
+                             (map :ns)
+                             (into []))]
+    (-> state
+        (make-test-runner test-namespaces)
+        (execute! "node" :script))
+
+    ;; return unmodified state!
+    state
+    ))

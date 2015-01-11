@@ -109,43 +109,35 @@
 
 (defn build-dev
   "build the project, wait for file changes, repeat"
-  [{:keys [live-reload source-paths public-dir public-path modules] :as config} & args]
+  [{:keys [live-reload source-paths public-dir public-path modules test] :as config} & args]
   (when (nil? config)
     (throw (ex-info "no cljs config, wrong key?" {})))
   ;; FIXME: validate config!
-
-  (loop [state (-> (cljs/init-state)
-                   (merge (dissoc config :modules :source-paths :public-dir :public-path))
-                   (cljs/enable-source-maps)
-                   (assoc :optimizations :none
-                          :pretty-print true
-                          :work-dir (io/file "target/cljs-work")
-                          :cache-dir (io/file "target/cljs-cache")
-                          :public-dir (io/file public-dir)
-                          :public-path public-path)
-                   (cljs/step-find-resources-in-jars)
-                   (add-source-paths source-paths)
-                   (cljs/step-finalize-config)
-                   (cljs/step-compile-core)
-                   (define-modules modules)
-                   (setup-live-reload live-reload))
-
-         modified []]
-
-    (let [state (try
-                  (-> state
-                      (cljs/step-compile-modules)
-                      (cljs/flush-unoptimized)
-                      ;; only notify after the build is actually completed!
-                      (notify-live-reload modified))
-                  (catch Throwable t
-                    (println (str "COMPILATION FAILED: " t))
-                    (.printStackTrace t)
-                    state))
-          modified (cljs/wait-for-modified-files! state)]
-      (recur (cljs/reload-modified-files! state modified) modified)
-      ))
-
+  
+  (-> (cljs/init-state)
+      (merge (dissoc config :modules :source-paths :public-dir :public-path))
+      (cljs/enable-source-maps)
+      (assoc :optimizations :none
+             :pretty-print true
+             :work-dir (io/file "target/cljs-work")
+             :cache-dir (io/file "target/cljs-cache")
+             :public-dir (io/file public-dir)
+             :public-path public-path)
+      (cljs/step-find-resources-in-jars)
+      (add-source-paths source-paths)
+      (cljs/step-finalize-config)
+      (cljs/step-compile-core)
+      (define-modules modules)
+      (setup-live-reload live-reload)
+      (cljs/watch-and-repeat!
+       (fn [state modified]
+         (-> state
+             (cljs/step-compile-modules)
+             (cljs/flush-unoptimized)
+             ;; only notify after the build is actually completed!
+             (notify-live-reload modified)
+             ;; FIXME: add auto-test support
+             ))))
   ;; never really gets here, ctrl+c to stop
   :done)
 
@@ -171,10 +163,6 @@
       (define-modules modules)
       (cljs/step-compile-modules)
       (cljs/closure-optimize)
-      (cljs/flush-modules-to-disk))
-
-  ;; closure compiler thread keeps the jvm alive but all work is done, dunno why this is
-  (shutdown-agents)
-  (System/exit 0))
+      (cljs/flush-modules-to-disk)))
 
 

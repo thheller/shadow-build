@@ -29,7 +29,8 @@
                     :main 'other
                     :depends-on #{:cljs}}]
 
-         :source-paths ["test-data"]
+         :source-paths ["src/cljs"
+                        "cljs-data/dummy/src"]
          :public-dir "target/cljs"
          :public-path "target/cljs"
 
