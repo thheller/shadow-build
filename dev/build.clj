@@ -26,24 +26,6 @@
       (cljs/flush-modules-to-disk)
       ))
 
- :cljs {:modules [{:name :cljs
-                    :main 'cljs.core}
-                   {:name :basic
-                    :main 'basic
-                    :depends-on #{:cljs}}
-                   {:name :other
-                    :main 'other
-                    :depends-on #{:cljs}}]
-
-         :source-paths ["test-data"]
-         :public-dir "target/cljs"
-         :public-path "target/cljs"
-
-         :live-reload {;; :host "localhost" ;; optional, defaults to localhost
-                       ;; :port 8889 ;; optional, defaults to random open port
-                       :before-load 'basic.stop-app
-                       :after-load 'basic.start-app
-                       }}
 (defn dev
   [& args]
   (-> (cljs/init-state)
