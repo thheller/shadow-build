@@ -28,9 +28,17 @@
             [loom.graph :as lg]
             [loom.alg :as la]
             [clojure.java.shell :as shell]
-            [cljs.core]
-            ;; FIXME: can remove this when (ns cljs.core (:require-macros [cljs.core]))
             ))
+
+(defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
+  (com.google.javascript.jscomp.Compiler/setLoggingLevel Level/WARNING)
+  (doto (com.google.javascript.jscomp.Compiler.)
+    ;; the thread lingers and prevents the JVM from exiting
+    ;; haven't found a clean way to shut it down otherwise
+    ;; but given that only one thread is used to compile anyways there
+    ;; is really no gain to running in another thread?
+    (.disableThreads)))
+
 
 (defprotocol BuildLog
   (log-warning [this log-string])
@@ -152,8 +160,8 @@
     (if (= 'cljs.core name)
       req
       (if emit-constants
-        (conj req 'cljs.core 'constants-table)
-        (conj req 'cljs.core)
+        (conj req 'cljs.core 'constants-table 'runtime-setup)
+        (conj req 'cljs.core 'runtime-setup)
         ))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
@@ -181,6 +189,7 @@
                        ana/*cljs-ns* 'cljs.user
                        ana/*cljs-file* name
                        ana/*analyze-deps* false
+                       ana/*load-macros* false
                        ana/*passes* []
                        reader/*data-readers* tags/*cljs-data-readers*]
 
@@ -522,7 +531,7 @@
     state))
 
 (defn merge-resources
-  [{:keys [work-dir] :as state} [{:keys [name provides] :as src} & more]]
+  [state [{:keys [name provides] :as src} & more]]
   (if src
     (recur (-> state
                (unmerge-resource name)
@@ -538,7 +547,7 @@
 (defn step-find-resources-in-jars
   "finds all cljs resources in .jar files in the classpath
    ignores PATHS in classpath, add manually if you expect to find cljs there"
-  [{:keys [source-paths work-dir] :as state}]
+  [state]
   (with-logged-time
     [(:logger state) "Find cljs resources in jars"]
     (->> (classpath-entries)
@@ -613,6 +622,8 @@
                         (into {}))]
     (assoc state :macros macro-info)
     ))
+
+
 
 (defn step-finalize-config [state]
   (-> state
@@ -833,16 +844,56 @@
                          (distinct))]
     (assoc-in state [:modules name :sources] module-deps)))
 
+(defn make-runtime-setup [{:keys [runtime] :as state}]
+  (let [src (str/join "\n" [(case (:print-fn runtime)
+                              ;; Browser
+                              :console "cljs.core.enable_console_print_BANG_();"
+                              ;; Node.JS
+                              :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
+    {:type :js
+     :name "runtime_setup.js"
+     :js-name "runtime_setup.js"
+     :provides #{'runtime-setup}
+     :requires #{'cljs.core}
+     ;; FIXME: this busts caching
+     :last-modified (System/currentTimeMillis)
+     ;; FIXME: why do I need to set both?
+     :js-source src
+     :source src}))
+
+(defn require-macros!
+  [{:keys [logger macros-loaded] :as state} used-sources]
+  (let [macros-to-load (->> used-sources
+                          (mapcat (fn [{:keys [ns-info]}]
+                                    (set (concat (vals (:require-macros ns-info))
+                                                 (vals (:use-macros ns-info))))))
+                          (remove macros-loaded)
+                          (into #{}))]
+    (reduce (fn [state macro-ns]
+              (log-progress logger (format "Require Macro NS: %s" macro-ns))
+              (require macro-ns)
+              (update-in state [:macros-loaded] conj macro-ns))
+            state
+            macros-to-load)))
+
+
+
 (defn step-compile-modules [state]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
-    (let [state (reduce do-analyze-module state (-> state :modules (vals)))
+    (let [state (merge-resources state [(make-runtime-setup state)])
+          state (reduce do-analyze-module state (-> state :modules (vals)))
 
           modules (sort-and-compact-modules state)
-          source-names (->> modules
-                            (mapcat :sources)
-                            (map #(get-in state [:sources %]))
-                            (filter #(= :cljs (:type %)))
+
+          sources (->> modules
+                       (mapcat :sources)
+                       (map #(get-in state [:sources %]))
+                       (filter #(= :cljs (:type %))))
+
+          state (require-macros! state sources)
+
+          source-names (->> sources
                             (remove :compiled)
                             (map :name))
 
@@ -890,7 +941,6 @@
       (throw (ex-info "probably not the goog/base.js you were expecting"
                       (get-in state [:sources goog-base-name]))))
 
-    ;; TODO: defines should be actually defineable
     (str "var CLOSURE_NO_DEPS = true;\n"
          ;; goog.findBasePath_() requires a base.js which we dont have
          ;; this is usually only needed for unoptimized builds anyways
@@ -1003,6 +1053,8 @@
 
   state)
 
+
+
 (defn closure-optimize
   "takes the current defined modules and runs it through the closure optimizer
 
@@ -1016,7 +1068,8 @@
     [logger "Closure optimize"]
 
     (let [modules (make-closure-modules state build-modules)
-          cc (::cc state)
+          ;; can't use the shared one, that only allows one compile
+          cc (make-closure-compiler)
           co (closure/make-options state)
 
           source-map? (boolean (:source-map state))
@@ -1124,9 +1177,7 @@
 
             out (->> provided-ns
                      (map (fn [ns]
-                            (str "goog.require('" (comp/munge ns) "');"
-                                 (when (= 'cljs.core ns)
-                                   "\ncljs.core.enable_console_print_BANG_();"))))
+                            (str "goog.require('" (comp/munge ns) "');")))
                      (str/join "\n"))
             out (str prepend prepend-js out append-js)
             out (if default
@@ -1160,9 +1211,7 @@
 
             out (->> provided-ns
                      (map (fn [ns]
-                            (str "goog.require('" (comp/munge ns) "');"
-                                 (when (= 'cljs.core ns)
-                                   "\ncljs.core._STAR_print_fn_STAR_ = require(\"util\").print;"))))
+                            (str "goog.require('" (comp/munge ns) "');")))
                      (str/join "\n"))
             out (str prepend prepend-js out append-js)
 
@@ -1365,9 +1414,10 @@
 
   {:compiler-env {} ;; will become env/*compiler*
 
-   ;; some helper functions may require a compiler instance, so just construct it eagerly
-   ::cc (doto (closure/make-closure-compiler)
-          (.disableThreads))
+   ::cc (make-closure-compiler)
+
+   :runtime {:print-fn :console}
+   :macros-loaded #{}
 
    :cache-level :jars
    :source-paths {}
@@ -1461,9 +1511,10 @@
 
 (defn make-test-runner [state test-namespaces]
   (-> state
-    (setup-test-runner test-namespaces)
-    (step-compile-modules)
-    (flush-unoptimized-node)))
+      (setup-test-runner test-namespaces)
+      (assoc-in [:runtime :print-fn] :print)
+      (step-compile-modules)
+      (flush-unoptimized-node)))
 
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]

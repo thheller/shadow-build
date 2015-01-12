@@ -177,14 +177,13 @@
              :public-dir (io/file "target/cljs")
              :public-path "target/cljs")
       (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "test-data")
+      (cljs/step-find-resources "cljs-data/dummy/src")
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
       (cljs/step-configure-module :basic ['basic] #{})
       (cljs/step-compile-modules)
       (cljs/closure-optimize)
       (cljs/flush-modules-to-disk)))
-
 
 (deftest test-dummy
   (let [s (-> (cljs/init-state)

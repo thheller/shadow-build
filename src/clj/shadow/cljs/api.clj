@@ -97,10 +97,11 @@
 (defn notify-live-reload [{:keys [live-reload] :as state} modified]
   (when (and live-reload (seq modified))
     (let [data (->> modified
-                    (map (fn [{:keys [name js-name provides]}]
-                           {:name name
-                            :js-name js-name
-                            :provides (map #(str (comp/munge %)) provides)}))
+                    (map (fn [name]
+                           (let [{:keys [js-name provides]} (get-in state [:sources name])]
+                             {:name name
+                              :js-name js-name
+                              :provides (map #(str (comp/munge %)) provides)})))
                     (into []))
           changes (get-in state [:live-reload :server :changes])]
       (swap! changes assoc-in [:js] data)
@@ -121,6 +122,7 @@
              :pretty-print true
              :work-dir (io/file "target/cljs-work")
              :cache-dir (io/file "target/cljs-cache")
+             :cache-level :jars
              :public-dir (io/file public-dir)
              :public-path public-path)
       (cljs/step-find-resources-in-jars)
