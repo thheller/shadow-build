@@ -332,15 +332,23 @@
 
         (let [result
               (loop [{:keys [ns ns-info] :as compile-state} {:js "" :ns 'cljs.user}] ;; :ast []
-                (let [form (binding [*ns* (create-ns ns)
-                                     ana/*cljs-ns* ns
-                                     ana/*analyze-deps* false
-                                     ana/*cljs-file* name
-                                     reader/*data-readers* tags/*cljs-data-readers*
-                                     reader/*alias-map* (merge reader/*alias-map*
-                                                               (:requires ns-info)
-                                                               (:require-macros ns-info))]
-                             (reader/read in nil eof-sentinel))]
+                ;; FIXME: work arround the fact that *analyze-deps* false also disables warnings
+                ;; wait for these to resolve
+                ;; http://dev.clojure.org/jira/browse/CLJS-955
+                ;; http://dev.clojure.org/jira/browse/CLJS-948
+                (let [form (with-redefs [ana/analyze-deps (fn i-dont-analyze-anything
+                                                            ([_ _ _])
+                                                            ([_ _ _ _]))]
+                             (binding [*ns* (create-ns ns)
+                                       ana/*cljs-ns* ns
+                                       ;; don't actually want to analyze deps, just want the warnings
+                                       ana/*analyze-deps* true
+                                       ana/*cljs-file* name
+                                       reader/*data-readers* tags/*cljs-data-readers*
+                                       reader/*alias-map* (merge reader/*alias-map*
+                                                                 (:requires ns-info)
+                                                                 (:require-macros ns-info))]
+                               (reader/read in nil eof-sentinel)))]
                   (if (identical? form eof-sentinel)
                     ;; eof
                     compile-state
