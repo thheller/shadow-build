@@ -191,11 +191,11 @@
                      :pretty-print true
                      :work-dir (io/file "target/test-cljs-work")
                      :cache-dir (io/file "target/test-cljs-cache")
-                     :cache-level :none
+                     :cache-level :jars
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
               (cljs/step-find-resources-in-jars)
-              (cljs/step-find-resources "test-data")
+              (cljs/step-find-resources "cljs-data/dummy/src")
               (cljs/step-finalize-config)
               (cljs/step-configure-module :test ['shadow.dummy] #{})
               (cljs/step-compile-modules)

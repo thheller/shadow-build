@@ -92,6 +92,7 @@
           ;; only after the file with the require finishes loading.
           (update-in [:sources "shadow/cljs/live_reload.cljs" :source] str "\n(setup " (pr-str config) ")\n")
           (assoc-in [:sources "shadow/cljs/live_reload.cljs" :last-modified] (System/currentTimeMillis))
+          (assoc-in [:sources "shadow/cljs/live_reload.cljs" :cacheable] false) ;; FIXME: stop cache
           ))))
 
 (defn notify-live-reload [{:keys [live-reload] :as state} modified]

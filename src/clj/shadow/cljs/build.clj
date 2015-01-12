@@ -456,14 +456,14 @@
                (> (.lastModified target-js) last-modified)
 
                ;; only use cache if its older than anything it depends on
-               (try
-                 (let [min-age (->> (get-deps-for-ns state ns)
-                                    (map #(get-in state [:sources % :last-modified]))
-                                    (reduce (fn [a b] (Math/max a b))))]
-                   (> (.lastModified cache-file) min-age))
-                 (catch Exception e
-                   ;; FIXME: sometimes :last-modified seems to be missing
-                   false)))
+               (let [min-age (->> (get-deps-for-ns state ns)
+                                  (map #(get-in state [:sources % :last-modified]))
+                                  #_ (map (fn [{:keys [name last-modified] :as src}]
+                                         (prn [:last-mod name last-modified])
+                                         last-modified))
+                                  (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
+                                  (reduce (fn [a b] (Math/max a b))))]
+                 (> (.lastModified cache-file) min-age)))
 
       (let [cache-data (edn/read-string (slurp cache-file))]
 
@@ -855,8 +855,6 @@
      :js-name "runtime_setup.js"
      :provides #{'runtime-setup}
      :requires #{'cljs.core}
-     ;; FIXME: this busts caching
-     :last-modified (System/currentTimeMillis)
      ;; FIXME: why do I need to set both?
      :js-source src
      :source src}))
@@ -864,11 +862,11 @@
 (defn require-macros!
   [{:keys [logger macros-loaded] :as state} used-sources]
   (let [macros-to-load (->> used-sources
-                          (mapcat (fn [{:keys [ns-info]}]
-                                    (set (concat (vals (:require-macros ns-info))
-                                                 (vals (:use-macros ns-info))))))
-                          (remove macros-loaded)
-                          (into #{}))]
+                            (mapcat (fn [{:keys [ns-info]}]
+                                      (set (concat (vals (:require-macros ns-info))
+                                                   (vals (:use-macros ns-info))))))
+                            (remove macros-loaded)
+                            (into #{}))]
     (reduce (fn [state macro-ns]
               (log-progress logger (format "Require Macro NS: %s" macro-ns))
               (require macro-ns)
@@ -1129,14 +1127,16 @@
   (with-logged-time
     [(:logger state) "Flushing sources"]
 
-    (doseq [{:keys [type name source] :as src} (->> (mapcat :sources build-modules)
-                                                    (map #(get-in state [:sources %])))
+    (doseq [{:keys [type name source last-modified] :as src}
+            (->> (mapcat :sources build-modules)
+                 (map #(get-in state [:sources %])))
             :let [target (io/file public-dir "src" name)]
 
             ;; skip files we already have since source maps are kinda expensive to generate
             :when (or (not (.exists target))
+                      (nil? last-modified) ;; runtime-setup doesn't have last-modified
                       (> (or (:compiled-at src) ;; js is not compiled but maybe modified
-                             (:last-modified src))
+                             last-modified)
                          (.lastModified target)))]
 
       ;; spit original source, cljs needed for source maps
