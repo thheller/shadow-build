@@ -1,13 +1,11 @@
 (ns shadow.cljs.build
-  (:import [java.io File PrintStream StringWriter StringReader]
+  (:import [java.io File StringWriter]
            [java.net URL]
-           [com.google.javascript.jscomp JSModule SourceFile CompilerOptions$DevMode CompilerOptions$TracerMode]
+           [com.google.javascript.jscomp JSModule SourceFile]
            (clojure.lang ExceptionInfo)
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
-           (java.util.logging Level)
-           (java.util ArrayList)
-           (java.util.concurrent Executors))
+           (java.util.logging Level))
   (:require [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [clojure.java.io :as io]

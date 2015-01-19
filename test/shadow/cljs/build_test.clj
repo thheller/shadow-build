@@ -23,48 +23,34 @@
 
 ;; this needs real testing
 
-(deftest ^:wip test-js-env
-  (binding [*err* *out*]
-    (let [state (-> (-> (cljs/init-state)
-                        (cljs/enable-source-maps)
-                        (cljs/step-find-resources-in-jars)
-                        (cljs/step-find-resources "test-data")
-                        (cljs/step-find-resources "test-workers")
-                        (assoc :optimizations :whitespace
-                               :pretty-print true
-                               :work-dir (io/file "target/cljs-work")
-                               :public-dir (io/file "target/cljs")
-                               :public-path "target/cljs")
-                        (cljs/step-finalize-config)
-                        (cljs/step-compile-core))
+(deftest test-js-env
+  (let [state (-> (cljs/init-state)
+                  (cljs/enable-source-maps)
+                  (cljs/step-find-resources-in-jars)
+                  (cljs/step-find-resources "cljs-data/dummy/src")
+                  (assoc :optimizations :none
+                         :pretty-print true
+                         :work-dir (io/file "target/cljs-work")
+                         :cache-dir (io/file "target/cljs-cache")
+                         :cache-level :jars
+                         :public-dir (io/file "target/cljs")
+                         :public-path "target/cljs")
+                  (cljs/step-finalize-config)
+                  (cljs/step-configure-module :cljs ['cljs.core] #{})
+                  (cljs/step-configure-module :basic ['basic] #{:cljs})
+                  (cljs/step-configure-module :other ['other] #{:cljs})
+                  (cljs/step-compile-modules)
+                  ;;(step-flush-to-disk)
+                  (cljs/flush-unoptimized)
+                  ;; (cljs/closure-optimize)
+                  ;; (cljs/flush-modules-to-disk)
+                  ;;(cljs/step-configure-module :cljs ['cljs.core] #{})
+                  ;;(cljs/step-configure-module :page ['page] #{:cljs})
+                  ;;(cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
+                  ;;(cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
+                  )]
 
-                    (cljs/step-reload-modified)
-                    (cljs/step-configure-module :cljs ['cljs.core] #{})
-                    (cljs/step-configure-module :basic ['basic] #{:cljs})
-                    (cljs/step-configure-module :other ['other] #{:cljs})
-                    ;;(step-flush-to-disk)
-                    ;;(cljs/step-configure-module :cljs ['cljs.core] #{})
-                    ;;(cljs/step-configure-module :page ['page] #{:cljs})
-                    ;;(cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
-                    ;;(cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
-                    )]
-
-      (prn [:count-sources (count (:sources state))])
-
-      (pprint (cljs/get-deps-for-ns state 'basic))
-
-      (let [state (-> state
-                      (cljs/step-compile-modules)
-                      (cljs/flush-to-disk)
-                      (cljs/flush-unoptimized)
-                      ;; (cljs/closure-optimize)
-                      ;; (cljs/flush-modules-to-disk)
-                      )]
-
-        (pprint (->> state
-                     :optimized
-                     (map #(dissoc % :prepend-js :js-source :source-map :source-map-json))))
-        ))))
+    ))
 
 (deftest test-reloading
   (let [file-a (io/file "target/reload-test/test_a.cljs")
