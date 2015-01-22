@@ -842,6 +842,24 @@
                          (distinct))]
     (assoc-in state [:modules name :sources] module-deps)))
 
+(defn add-foreign
+  [state name provides requires js-source]
+  {:pre [(string? name)
+         (set? provides)
+         (seq provides)
+         (set? requires)
+         (string? js-source)]}
+
+  (merge-resources state [{:type :js
+                           :foreign true
+                           :name name
+                           :js-name name
+                           :provides provides
+                           :requires requires
+                           :js-source js-source
+                           :source js-source
+                           }]))
+
 (defn make-runtime-setup [{:keys [runtime] :as state}]
   (let [src (str/join "\n" [(case (:print-fn runtime)
                               ;; Browser
@@ -947,6 +965,23 @@
          goog-base
          "\n")))
 
+(defn make-foreign-js-source
+  "only need this because we can't control which goog.require gets emitted"
+  [{:keys [provides requires js-source]}]
+  (let [sb (StringBuilder.)]
+    (doseq [provide provides]
+      (doto sb
+        (.append "goog.provide(\"")
+        (.append (munge-goog-ns provide))
+        (.append "\");\n")))
+    (doseq [require requires]
+      (doto sb
+        (.append "goog.require(\"")
+        (.append (munge-goog-ns require))
+        (.append "\");\n")))
+    (.toString sb)
+    ))
+
 (defn make-closure-modules
   "make a list of modules (already in dependency order) and create the closure JSModules"
   [state modules]
@@ -963,7 +998,9 @@
                               (when-not (and js-name js-source (seq js-source))
                                 (throw (ex-info "missing js-source for source" {:js-name js-name :name (:name src)})))
 
-                              (.add js-mod (SourceFile/fromCode js-name js-source)))
+                              (if (:foreign src)
+                                (.add js-mod (SourceFile/fromCode js-name (make-foreign-js-source src)))
+                                (.add js-mod (SourceFile/fromCode js-name js-source))))
 
                             (when (seq append-js)
                               (.add js-mod (SourceFile/fromCode (str "mod_" name "_append.js") append-js)))
@@ -1009,6 +1046,13 @@
   (spit (io/file public-dir "manifest.json")
         (json/write-str (map #(select-keys % [:name :js-name :mains :depends-on :default :sources]) modules))))
 
+(defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
+  (->> sources
+       (map #(get-in state [:sources %]))
+       (filter :foreign)
+       (map :js-source)
+       (str/join "\n")))
+
 (defn flush-modules-to-disk [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state}]
   (with-logged-time
     [(:logger state) "Flushing modules to disk"]
@@ -1024,7 +1068,7 @@
             js-source (if default
                         (str unoptimizable js-source)
                         js-source)
-            js-source (str prepend js-source)
+            js-source (str prepend (foreign-js-source-for-mod state mod) js-source)
             js-source (if (:web-worker mod)
                         (let [deps (:depends-on mod)]
                           (str (str/join "\n" (for [other modules
