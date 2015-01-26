@@ -28,22 +28,23 @@
                   (cljs/enable-source-maps)
                   (cljs/step-find-resources-in-jars)
                   (cljs/step-find-resources "cljs-data/dummy/src")
-                  (assoc :optimizations :none
+                  (assoc :optimizations :advanced
                          :pretty-print true
                          :work-dir (io/file "target/cljs-work")
                          :cache-dir (io/file "target/cljs-cache")
                          :cache-level :jars
+                         :pseudo-names true
                          :public-dir (io/file "target/cljs")
                          :public-path "target/cljs")
                   (cljs/step-finalize-config)
-                  (cljs/step-configure-module :cljs ['cljs.core] #{})
+                  (cljs/step-configure-module :loader ['goog.module.ModuleManager] #{})
+                  (cljs/step-configure-module :cljs ['cljs.core] #{:loader})
                   (cljs/step-configure-module :basic ['basic] #{:cljs})
                   (cljs/step-configure-module :other ['other] #{:cljs})
                   (cljs/step-compile-modules)
-                  ;;(step-flush-to-disk)
                   (cljs/flush-unoptimized)
-                  ;; (cljs/closure-optimize)
-                  ;; (cljs/flush-modules-to-disk)
+                  ;;(cljs/closure-optimize)
+                  ;;(cljs/flush-modules-to-disk)
                   ;;(cljs/step-configure-module :cljs ['cljs.core] #{})
                   ;;(cljs/step-configure-module :page ['page] #{:cljs})
                   ;;(cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
@@ -164,14 +165,17 @@
              :public-path "out")
       (cljs/step-find-resources-in-jars)
       (cljs/step-find-resources "cljs-data/foreign/src")
-      (cljs/add-foreign "jquery.js" '#{jquery} #{} (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js")))
+      (cljs/add-foreign "jquery.js"
+                        '#{jquery}
+                        #{}
+                        (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js")))
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
       (cljs/step-configure-module :test ['wants-jquery] #{})
       (cljs/step-compile-modules)
-      ;;(cljs/closure-optimize)
-      ;;(cljs/flush-modules-to-disk)
-      (cljs/flush-unoptimized)
+      (cljs/closure-optimize)
+      (cljs/flush-modules-to-disk)
+      ;; (cljs/flush-unoptimized)
       ))
 
 (deftest test-dummy

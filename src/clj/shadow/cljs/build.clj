@@ -1,7 +1,7 @@
 (ns shadow.cljs.build
   (:import [java.io File StringWriter]
            [java.net URL]
-           [com.google.javascript.jscomp JSModule SourceFile]
+           [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph]
            (clojure.lang ExceptionInfo)
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
@@ -747,18 +747,49 @@
                dep depends-on]
            [name dep])))
 
-(defn find-sources-used-more-than-once
-  [modules]
-  (let [mi (reduce (fn [counts [src module]]
-                     (update-in counts [src] set-conj module))
-                   {}
-                   (for [{:keys [name sources] :as mod} (vals modules)
-                         src sources]
-                     [src name]))]
-    (->> mi
-         (seq)
-         (remove #(= (count (second %)) 1))
-         (into {}))))
+(defn closure-defines-and-base [{:keys [public-path] :as state}]
+  (let [goog-rc (get-in state [:sources goog-base-name])
+        goog-base (:js-source goog-rc)]
+
+    (when-not (seq goog-base)
+      (throw (ex-info "no goog/base.js" {})))
+
+    (when (< (count goog-base) 500)
+      (throw (ex-info "probably not the goog/base.js you were expecting"
+                      (get-in state [:sources goog-base-name]))))
+
+    (str "var CLOSURE_NO_DEPS = true;\n"
+         ;; goog.findBasePath_() requires a base.js which we dont have
+         ;; this is usually only needed for unoptimized builds anyways
+         "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
+         "var CLOSURE_DEFINES = "
+         (json/write-str (:closure-defines state {}))
+         ";\n"
+         goog-base
+         "\n")))
+
+(defn make-foreign-js-source
+  "only need this because we can't control which goog.require gets emitted"
+  [{:keys [provides requires js-source]}]
+  (let [sb (StringBuilder.)]
+    (doseq [provide provides]
+      (doto sb
+        (.append "goog.provide(\"")
+        (.append (munge-goog-ns provide))
+        (.append "\");\n")))
+    (doseq [require requires]
+      (doto sb
+        (.append "goog.require(\"")
+        (.append (munge-goog-ns require))
+        (.append "\");\n")))
+    (.toString sb)
+    ))
+
+(defn dump-js-modules [modules]
+  (doseq [js-mod modules]
+    (prn [:js-mod (.getThisAndAllDependencies js-mod)])
+    (doseq [input (.getInputs js-mod)]
+      (prn [:js-mod input]))))
 
 (defn sort-and-compact-modules
   "sorts modules in dependency order and remove sources provided by parent deps"
@@ -772,54 +803,42 @@
     ;; else: multiple modules must be sorted in dependency order
     (let [module-graph (module-graph modules)
           module-order (reverse (la/topsort module-graph))
-          module-set (set module-order)
-          modules (reduce
-                    (fn [modules module-name]
-                      (let [{:keys [depends-on includes]} (get modules module-name)
-                            parent-provides (reduce set/union (map #(set (get-in modules [% :sources])) depends-on))]
-                        (update-in modules [module-name :sources] #(vec (remove parent-provides %)))))
-                    modules
-                    module-order)
 
-          ;; move duplicate files in seperate modules that dont depend on each other
-          ;; eg.
-          ;; common
-          ;; mod-a :require clojure.string :depends-on common
-          ;; mod-b :require clojure.string :depends-on common
-          ;; mod-a,mod-b would try to compile clojure/string.js blow up closure optimizer
+          js-mods (reduce
+                    (fn [js-mods module-key]
+                      (let [{:keys [js-name name depends-on sources]} (get modules module-key)
+                            js-mod (JSModule. js-name)]
 
-          dups (find-sources-used-more-than-once modules)
-          ;; bring back into dependency order
-          sorted-dups (->> module-order
-                           (mapcat #(get-in modules [% :sources]))
-                           (distinct)
-                           (filter #(contains? dups %))
-                           (map (fn [dup-name]
-                                  (let [dups (get dups dup-name)]
-                                    [dup-name dups]
-                                    ))))
+                        (doseq [{:keys [name] :as src} (map #(get-in state [:sources %]) sources)]
+                          ;; we don't actually need code yet
+                          (.add js-mod (SourceFile. name)))
 
-          modules (loop [modules modules
-                         dups sorted-dups]
-                    (if-let [[source-name used-by] (first dups)]
-                      (let [common-ancestor (first module-order) ;; FIXME: actually try to find one
-                            _ (log-warning logger (format "Moving \"%s\" used by %s to %s" source-name used-by common-ancestor))
-                            modules (reduce (fn [modules dep-mod]
-                                              (update-in modules
-                                                         [dep-mod :sources]
-                                                         (fn [current]
-                                                           (vec (remove #(= source-name %) current)))))
-                                            modules
-                                            used-by)
-                            modules (update-in modules [common-ancestor :sources] conj source-name)]
+                        (doseq [other-mod-name depends-on
+                                :let [other-mod (get js-mods other-mod-name)]]
+                          (when-not other-mod
+                            (throw (ex-info "module depends on undefined module" {:mod name :other other-mod-name})))
+                          (.addDependency js-mod other-mod))
 
-                        (recur modules (rest dups)))
-                      ;; done
-                      modules
-                      ))]
+                        (assoc js-mods module-key js-mod)))
+                    {}
+                    module-order)]
 
-      (map #(get modules %) module-order)
-      )))
+      ;; eek mutable code
+      ;; this will move duplicate files from each module to the closest common ancestor
+      (doto (JSModuleGraph. (into-array (for [module-key module-order]
+                                          (get js-mods module-key))))
+        (.coalesceDuplicateFiles))
+
+      (->> module-order
+           (map (fn [module-key]
+                  (let [module (get modules module-key)
+                        ;; enough with the mutable stuff
+                        sources (->> (get js-mods module-key)
+                                     (.getInputs)
+                                     (map #(.getName %))
+                                     (vec))]
+                    (assoc module :sources sources))))
+           (vec)))))
 
 (defn do-print-warnings
   "print warnings after building modules, repeat warnings for files that weren't recompiled!"
@@ -944,43 +963,9 @@
             ;; sm/encode pprints
             (json/write-str))))))
 
-(defn closure-defines-and-base [{:keys [public-path] :as state}]
-  (let [goog-rc (get-in state [:sources goog-base-name])
-        goog-base (:js-source goog-rc)]
 
-    (when-not (seq goog-base)
-      (throw (ex-info "no goog/base.js" {})))
 
-    (when (< (count goog-base) 500)
-      (throw (ex-info "probably not the goog/base.js you were expecting"
-                      (get-in state [:sources goog-base-name]))))
 
-    (str "var CLOSURE_NO_DEPS = true;\n"
-         ;; goog.findBasePath_() requires a base.js which we dont have
-         ;; this is usually only needed for unoptimized builds anyways
-         "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
-         "var CLOSURE_DEFINES = "
-         (json/write-str (:closure-defines state {}))
-         ";\n"
-         goog-base
-         "\n")))
-
-(defn make-foreign-js-source
-  "only need this because we can't control which goog.require gets emitted"
-  [{:keys [provides requires js-source]}]
-  (let [sb (StringBuilder.)]
-    (doseq [provide provides]
-      (doto sb
-        (.append "goog.provide(\"")
-        (.append (munge-goog-ns provide))
-        (.append "\");\n")))
-    (doseq [require requires]
-      (doto sb
-        (.append "goog.require(\"")
-        (.append (munge-goog-ns require))
-        (.append "\");\n")))
-    (.toString sb)
-    ))
 
 (defn make-closure-modules
   "make a list of modules (already in dependency order) and create the closure JSModules"
