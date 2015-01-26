@@ -809,7 +809,7 @@
                       (let [{:keys [js-name name depends-on sources]} (get modules module-key)
                             js-mod (JSModule. js-name)]
 
-                        (doseq [{:keys [name] :as src} (map #(get-in state [:sources %]) sources)]
+                        (doseq [name sources]
                           ;; we don't actually need code yet
                           (.add js-mod (SourceFile. name)))
 
