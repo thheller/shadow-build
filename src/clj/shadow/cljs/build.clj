@@ -236,18 +236,27 @@
     (fn [^String name]
       (str/replace name File/separatorChar \/))))
 
-(defn find-jar-resources [path config]
+(defn normalize-foreign-libs [{:keys [foreign-libs externs] :as deps}]
+  (if (seq externs)
+    ;; FIXME: :externs at top level
+    (update-in foreign-libs [0 :externs] concat externs)
+    foreign-libs))
+
+(defn find-jar-resources [path {:keys [use-file-min] :as config}]
   (let [file (io/file path)
         abs-path (.getAbsolutePath file)
         jar-file (JarFile. file)
         last-modified (.lastModified file)
-        entries (.entries jar-file)]
-    (loop [result (transient [])]
-      (if (not (.hasMoreElements entries))
-        (persistent! result)
+        entries (.entries jar-file)
+        slurp-entry (fn [entry]
+                      (with-open [in (.getInputStream jar-file entry)]
+                        (slurp in)))]
+    (loop [result (transient {})]
+      (if (.hasMoreElements entries)
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
-          (if (or (not (is-cljs-resource? name))
+          (if (or (= "deps.cljs" name)
+                  (not (is-cljs-resource? name))
                   (.startsWith name "goog/demos/")
                   (.endsWith name "_test.js"))
             (recur result)
@@ -257,12 +266,50 @@
                                         :source-path path
                                         :last-modified last-modified
                                         :url url
-                                        :source (with-open [in (.getInputStream jar-file jar-entry)]
-                                                  (slurp in))}
+                                        :source (slurp-entry jar-entry)}
                                        config)]
+              (recur (assoc! result name rc))
+              )))
 
-              (recur (conj! result rc)))
-            ))))))
+        (let [jar-entry (.getJarEntry jar-file "deps.cljs")
+              result (persistent! result)]
+          (if (nil? jar-entry)
+            (vals result)
+            (let [foreign-libs (-> (slurp-entry jar-entry)
+                                   (edn/read-string)
+                                   (normalize-foreign-libs))]
+
+              (->> foreign-libs
+                   (reduce
+                     (fn [result {:keys [externs provides requires] :as foreign-lib}]
+                       (let [[lib-key lib-other] (cond
+                                                    (and use-file-min (contains? foreign-lib :file-min))
+                                                    [:file-min :file]
+                                                    (:file foreign-lib)
+                                                    [:file :file-min])
+                             lib-name (get foreign-lib lib-key)
+                             rc (get result lib-name)]
+                         (when (nil? rc)
+                           (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
+
+                         (let [dissoc-all (fn [m list]
+                                            (apply dissoc m list))
+                               ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
+                               rc (assoc rc
+                                    :foreign true
+                                    :requires (set (map symbol requires))
+                                    :provides (set (map symbol provides))
+                                    :externs-source (->> externs
+                                                         (map #(get result %))
+                                                         (map :source)
+                                                         (str/join "\n")))]
+                           (-> result
+                               (dissoc-all externs)
+                               ;; remove :file or :file-min
+                               (dissoc (get foreign-lib lib-other))
+                               (assoc lib-name rc)))))
+                     result)
+                   (vals)))))))))
 
 (defn find-fs-resources [^String path config]
   (let [root (io/file path)
@@ -286,12 +333,14 @@
         config)
       )))
 
+(defn do-find-resources-in-path [config path]
+  (if (.endsWith path ".jar")
+    (find-jar-resources path config)
+    (find-fs-resources path config)))
+
 (defn- do-find-resources-in-paths [config paths]
   (->> paths
-       (mapcat (fn [path]
-                 (if (.endsWith path ".jar")
-                   (find-jar-resources path config)
-                   (find-fs-resources path config))))
+       (mapcat #(do-find-resources-in-path config %))
        (filter usable-resource?)
        (into [])))
 
@@ -862,12 +911,15 @@
     (assoc-in state [:modules name :sources] module-deps)))
 
 (defn add-foreign
-  [state name provides requires js-source]
+  [state name provides requires js-source externs-source]
   {:pre [(string? name)
          (set? provides)
          (seq provides)
          (set? requires)
-         (string? js-source)]}
+         (string? js-source)
+         (seq js-source)
+         (string? externs-source)
+         (seq externs-source)]}
 
   (merge-resources state [{:type :js
                            :foreign true
@@ -877,6 +929,7 @@
                            :requires requires
                            :js-source js-source
                            :source js-source
+                           :externs-source externs-source
                            }]))
 
 (defn make-runtime-setup [{:keys [runtime] :as state}]
@@ -1078,7 +1131,14 @@
 
   state)
 
-
+(defn load-externs [{:keys [build-modules] :as state}]
+  (->> build-modules
+       (mapcat :sources)
+       (map #(get-in state [:sources %]))
+       (filter :foreign)
+       (reduce (fn [externs {:keys [js-name externs-source] :as foreign-src}]
+                 (conj externs (SourceFile/fromCode (str "externs/" js-name) js-name externs-source)))
+               (closure/load-externs state))))
 
 (defn closure-optimize
   "takes the current defined modules and runs it through the closure optimizer
@@ -1099,8 +1159,7 @@
 
           source-map? (boolean (:source-map state))
 
-          ;; FIXME: that probably wont work with this arch, provide :externs config
-          externs (closure/load-externs state)
+          externs (load-externs state)
 
           result (.compileModules cc externs (map :js-module modules) co)]
 
@@ -1445,6 +1504,7 @@
 
    :runtime {:print-fn :console}
    :macros-loaded #{}
+   :use-file-min true
 
    :cache-level :jars
    :source-paths {}

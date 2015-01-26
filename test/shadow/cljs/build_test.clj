@@ -167,14 +167,15 @@
       (cljs/add-foreign "jquery.js"
                         '#{jquery}
                         #{}
-                        (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js")))
+                        (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js"))
+                        (slurp (io/file "cljs-data/foreign/lib/jquery.externs.js")))
       (cljs/step-finalize-config)
       (cljs/step-compile-core)
       (cljs/step-configure-module :test ['wants-jquery] #{})
       (cljs/step-compile-modules)
-      (cljs/closure-optimize)
-      (cljs/flush-modules-to-disk)
-      ;; (cljs/flush-unoptimized)
+      ;; (cljs/closure-optimize)
+      ;; (cljs/flush-modules-to-disk)
+      (cljs/flush-unoptimized)
       ))
 
 (deftest test-dummy
