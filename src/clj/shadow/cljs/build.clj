@@ -654,6 +654,9 @@
                         (map (fn [[macro-ns used-by]]
                                (let [name (str (ns->path macro-ns) ".clj")
                                      url (io/resource name)]
+                                 (when-not url
+                                   (throw (ex-info (format "Macro namespace: %s not found, required by %s" macro-ns used-by)
+                                                   {:ns macro-ns :used-by used-by})))
                                  {:ns macro-ns
                                   :used-by used-by
                                   :name name

@@ -62,3 +62,23 @@
                 (cljs/execute-affected-tests! modified))
               ))) ))
 
+(comment
+  (defn repl
+    [& args]
+    (-> (cljs/init-state)
+        (cljs/enable-source-maps)
+        (assoc :optimizations :none
+               :pretty-print true
+               :work-dir (io/file "target/cljs-work")
+               :cache-dir (io/file "target/cljs-cache")
+               :cache-level :jars
+               :public-dir (io/file "cljs-data/dummy/out")
+               :public-path "out")
+        (cljs/step-find-resources-in-jars)
+        (cljs/step-find-resources "cljs-data/dummy/src")
+        (cljs/step-find-resources "cljs-data/dummy/test")
+
+        (cljs/step-finalize-config)
+
+        (cljs/node-repl "/path/to/node" :argv)
+        )))
