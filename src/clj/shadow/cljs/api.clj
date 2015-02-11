@@ -120,6 +120,7 @@
       (merge (dissoc config :modules :source-paths :public-dir :public-path))
       (cljs/enable-source-maps)
       (assoc :optimizations :none
+             :use-file-min false
              :pretty-print true
              :work-dir (io/file "target/cljs-work")
              :cache-dir (io/file "target/cljs-cache")

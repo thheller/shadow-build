@@ -2,11 +2,14 @@
   (:use clojure.test
         shadow.fix-test)
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.util :as util]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [clojure.java.io :as io]
-            ))
+            [cljs.analyzer :as a]
+            [clojure.set :as set])
+  (:import (java.util.regex Pattern)))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -130,7 +133,7 @@
                               :public-dir (io/file "target/cljs")
                               :public-path "target/cljs")
                        (cljs/step-find-resources-in-jars)
-                       (cljs/step-find-resources "test-data")
+                       (cljs/step-find-resources "cljs-data/dummy/src")
                        (cljs/step-finalize-config)
                        (cljs/step-compile-core)
                        (cljs/step-configure-module :basic ['basic] #{})
@@ -180,7 +183,7 @@
 
 (deftest test-dummy
   (let [s (-> (cljs/init-state)
-              (assoc :optimizations :none
+              (assoc :optimizations :advanced
                      :pretty-print true
                      :work-dir (io/file "target/test-cljs-work")
                      :cache-dir (io/file "target/test-cljs-cache")
@@ -192,7 +195,10 @@
               (cljs/step-finalize-config)
               (cljs/step-configure-module :test ['shadow.dummy] #{})
               (cljs/step-compile-modules)
-              (cljs/flush-unoptimized))]
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
     (println (get-in s [:sources "shadow/dummy.cljs" :js-source]))))
 
 (deftest test-dev-api
@@ -208,4 +214,181 @@
       (cljs/step-find-resources "cljs-data/dummy/src")
       (cljs/step-find-resources "cljs-data/dummy/test")
       (cljs/execute-affected-tests! ["basic.cljs"])))
+
+
+(def ns-tests
+  "taken from https://github.com/clojure/clojurescript/blob/master/test/clj/cljs/analyzer_tests.clj"
+  ['(ns foo.bar
+      (:require {:foo :bar}))
+   "Only [lib.ns & options] and lib.ns specs supported in :require / :require-macros"
+   '(ns foo.bar
+      (:require [:foo :bar]))
+   "Library name must be specified as a symbol in :require / :require-macros"
+   '(ns foo.bar
+      (:require [baz.woz :as woz :refer [] :plop]))
+   "Only :as alias and :refer (names) options supported in :require"
+   '(ns foo.bar
+      (:require [baz.woz :as woz :refer [] :plop true]))
+   "Only :as and :refer options supported in :require / :require-macros"
+   '(ns foo.bar
+      (:require [baz.woz :as woz :refer [] :as boz :refer []]))
+   "Each of :as and :refer options may only be specified once in :require / :require-macros"
+   '(ns foo.bar
+      (:refer-clojure :refer []))
+   "Only [:refer-clojure :exclude (names)] form supported"
+   '(ns foo.bar
+      (:use [baz.woz :exclude []]))
+   "Only [lib.ns :only (names)] specs supported in :use / :use-macros"
+   '(ns foo.bar
+      (:require [baz.woz :as []]))
+   ":as must be followed by a symbol in :require / :require-macros"
+   '(ns foo.bar
+      (:require [baz.woz :as woz]
+                [noz.goz :as woz]))
+   ":as alias must be unique"
+   '(ns foo.bar
+      (:unless []))
+   "Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported"
+   '(ns foo.bar
+      (:require baz.woz)
+      (:require noz.goz))
+   "Only one "
+   ])
+
+(def ns-env
+  (assoc-in (a/empty-env) [:ns :name] 'cljs.user))
+
+(defn cljs-parse-ns [ns-env form]
+  (binding [a/*cljs-ns* 'cljs.user
+            a/*analyze-deps* false
+            a/*load-macros* false]
+    (a/analyze ns-env form)))
+
+(deftest test-parse-ns
+  (let [test '(ns something
+                {:doc "i got some docs" }
+                (:refer-clojure :exclude (whatever))
+                (:use-macros [macro-use :only (that-one)])
+                (:require-macros [macro-ns :as m :refer (a-macro)])
+                (:require only-symbol
+                          [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns)]
+                          [another.ns :as x :include-macros true]
+                          :reload-all)
+                (:import [goog.ui SomeElement OtherElement]
+                         a.fully-qualified.Name))
+
+        a (util/parse-ns test)
+        b (cljs-parse-ns ns-env test)]
+
+    (is (= (:name a) (:name b)))
+    (is (= (:requires a) (:requires b)))
+    (is (= (:require-macros a) (:require-macros b)))
+    (is (= (:uses a) (:uses b)))
+    (is (= (:use-macros a) (:use-macros b)))
+    (is (= (:imports a) (:imports b)))
+    (is (= (meta (:name a))
+           (meta (:name b)))))
+
+
+  (is (thrown-with-msg?
+        Exception
+        #"Only one "
+        (util/parse-ns
+          '(ns foo.bar
+             (:require foo)
+             (:require bar)))
+        ))
+
+  (comment
+    ;; FIXME: lazy, fix the errors messages
+    (is (thrown-with-msg?
+          Exception
+          #"Only \[lib.ns & options\] and lib.ns specs supported in :require / :require-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require {:foo :bar})))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #"Library name must be specified as a symbol in :require / :require-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [:foo :bar])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #"Only :as alias and :refer \(names\) options supported in :require"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [baz.woz :as woz :refer [] :plop])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #"Only :as and :refer options supported in :require / :require-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [baz.woz :as woz :refer [] :plop true])))
+          ))
+
+
+    (is (thrown-with-msg?
+          Exception
+          #"Each of :as and :refer options may only be specified once in :require / :require-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [baz.woz :as woz :refer [] :as boz :refer []])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #"Only \[:refer-clojure :exclude \(names\)\] form supported"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:refer-clojure :refer [])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #"Only \[lib.ns :only \(names\)\] specs supported in :use / :use-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:use [baz.woz :exclude []])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #":as must be followed by a symbol in :require / :require-macros"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [baz.woz :as []])))
+          ))
+
+    (is (thrown-with-msg?
+          Exception
+          #":as alias must be unique"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:require [baz.woz :as woz]
+                         [noz.goz :as woz])))
+          ))
+    (is (thrown-with-msg?
+          Exception
+          #"Only :refer-clojure, :require, :require-macros, :use and :use-macros libspecs supported"
+          (parse-ns
+            ns-env
+            '(ns foo.bar
+               (:unless [])))
+          ))))
 

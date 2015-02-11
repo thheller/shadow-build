@@ -3,3 +3,5 @@
 
 (defn hello [& something]
   :NORMAL)
+
+(defn not-a-macro [] :yo)

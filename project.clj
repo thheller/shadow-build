@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "1.0.0-alpha6"
+(defproject thheller/shadow-build "1.0.0-alpha7"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
@@ -14,8 +14,8 @@
   :profiles {:dev {:source-paths ["dev"]
                    :dependencies [[org.clojure/clojure "1.6.0"]
                                   [org.clojure/tools.namespace "0.2.4"]
-                                  ;; [org.clojure/clojurescript "0.0-2657"]
-                                  [thheller/clojurescript "0.0-2665+948"]
+                                  [org.clojure/clojurescript "0.0-2816"]
+                                  ;; [thheller/clojurescript "0.0-2665+948"]
                                   ]}}
 
   :aliases {"cljs-dev" ["run" "-m" "shadow.cljs.api/build-dev" :project/cljs]
