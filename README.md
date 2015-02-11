@@ -4,10 +4,6 @@ A ClojureScript build library capable of compiling multiple output files. It is 
 
 Its a lot more flexible than cljs.closure which also means its a little more complex to use.
 
-## WARNING
-
-alpha4 currently depends on ```[thheller/clojurescript "0.0-2665+948"]``` which is ClojureScript 0.0-2665 with the patch to CLJS-948 merged. Will go back to normal CLJS as soon at it is merged, which I hope to be soon.
-
 ## Closure Modules
 
 Modules allow the compiler to optimize the dependencies of your code for you. Usually (in jQuery-Land) you have to include all necessary javascript files (jquery.plugin-a.js, jquery.plugin-b.js, ...) on every page that needs it. This usually ends in loading all files all the time cause who knows whats needed and what not. With modules you'd group common functionality into a API namespace which serves as an entry point for the module. They are not like usual JavaScript modules though (RequireJS, AMD, ...), although they are similar except that they export names in their own which you cannot bind yourself.
@@ -22,8 +18,8 @@ Right now this really only is a library and not a tool like lein-cljsbuild. But 
 
 ```clojure
 :profiles {:dev {:source-paths ["dev"]
-                 :dependencies [[thheller/clojurescript "0.0-2665+948"]
-                                [thheller/shadow-build "1.0.0-alpha4"]]}}
+                 :dependencies [[org.clojure/clojurescript "0.0-2816"]
+                                [thheller/shadow-build "1.0.0-alpha7"]]}}
 ```
 
 I recommend putting it into the :dev profile since you usually don't need it in production. You'll also need to provide ClojureScript itself. Currently the minimum required version is 0.0-2127 (avoid releases 2197-2263).
@@ -70,6 +66,6 @@ Needs more docs, but you can execute each build function you define via lein, ei
 
 ## License
 
-Copyright © 2014 Thomas Heller
+Copyright © 2015 Thomas Heller
 
 Distributed under the Eclipse Public License, the same as Clojure.
