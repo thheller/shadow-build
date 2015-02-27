@@ -373,11 +373,9 @@
               (into (vals require-macros))
               (into (vals use-macros)))]
 
-      (set! ana/*cljs-ns* name)
-
-      (doseq [macro-ns macro-namespaces]
-        ;; FIXME: this should not be done here, rather before we start compiling anything
-        (require macro-ns))
+      (binding [ana/*cljs-ns* name]
+        (doseq [macro-ns macro-namespaces]
+          (require macro-ns)))
 
       (if (contains? macro-namespaces name)
         (let [macros (util/find-macros-in-ns name)]
@@ -400,7 +398,7 @@
 
 (defn infer-macro-use
   "infer (:require [some-ns :refer (something)]) that something might be a macro
-   must be used after load-macros pass"
+   must be used after load-macros"
   [{:keys [uses] :as ast}]
   (reduce
     (fn [ast [used-name used-ns]]
@@ -568,7 +566,6 @@
                (.exists target-js)
                (> (.lastModified target-js) last-modified)
 
-               ;; only use cache if its older than anything it depends on
                (let [min-age (->> (get-deps-for-ns state ns)
                                   (map #(get-in state [:sources % :last-modified]))
                                   #_ (map (fn [{:keys [name last-modified] :as src}]
@@ -584,7 +581,10 @@
           (log-progress logger (format "Load cached cljs resource \"%s\"" name))
 
           ;; restore analysis data
-          (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] (:analyzer cache-data))
+          (let [ana-data (:analyzer cache-data)]
+
+            (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
+            (load-macros ana-data))
 
           ;; merge resource data & return it
           ;; FIXME: lost source-map data at this point, assuming it exist when out-js exists
@@ -1652,7 +1652,6 @@
 (defn make-test-runner [state test-namespaces]
   (-> state
       (setup-test-runner test-namespaces)
-      (assoc-in [:runtime :print-fn] :print)
       (step-compile-modules)
       (flush-unoptimized-node)))
 

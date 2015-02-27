@@ -45,6 +45,7 @@
 
 var fs = require('fs');
 var path = require('path');
+var vm = require('vm');
 
 
 /**
@@ -68,15 +69,16 @@ global.CLOSURE_IMPORT_SCRIPT = function(src) {
 
 // Declared here so it can be used to require base.js
 function nodeGlobalRequire(file) {
-  process.binding('evals').NodeScript.runInThisContext.call(
-      global, fs.readFileSync(file), file);
+  var _module = global.module, _exports = global.exports;
+  global.module = undefined;
+  global.exports = undefined;
+  vm.runInThisContext(fs.readFileSync(file), file);
+  global.exports = _exports;
+  global.module = _module;
 }
 
 
-// Load Closure's base.js into memory.  It is assumed base.js is in the
-// directory above this directory given this script's location in
-// bootstrap/nodejs.js.
-// @thheller: again src directory
+// Load Closure's base.js into memory.
 nodeGlobalRequire(path.resolve(__dirname, 'src', 'goog', 'base.js'));
 
 
