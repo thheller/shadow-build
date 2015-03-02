@@ -161,6 +161,8 @@
 
   (let [first-arg (first more)
         [meta more] (cond
+                      (and (string? first-arg) (map? (second more)))
+                      [(assoc (second more) :doc first-arg) (drop 2 more)]
                       (string? first-arg)
                       [{:doc first-arg} (rest more)]
                       (map? first-arg)

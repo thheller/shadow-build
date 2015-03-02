@@ -1,5 +1,4 @@
-(ns shadow.fix-test
-  (:use clojure.test))
+(ns shadow.fix-test)
 
 (in-ns 'clojure.test)
 
@@ -22,4 +21,4 @@
           (print "  actual: ")
           (prn actual))))))
 
-(in-ns 'shadow.fix-test)
+;; (in-ns 'shadow.fix-test)
