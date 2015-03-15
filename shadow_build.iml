@@ -22,7 +22,7 @@
     <orderEntry type="library" name="Leiningen: org.clojure/clojure:1.6.0" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/clojurescript:0.0-2913" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/tools.namespace:0.2.4" level="project" />
-    <orderEntry type="library" name="Leiningen: org.clojure/tools.nrepl:0.2.3" level="project" />
+    <orderEntry type="library" name="Leiningen: org.clojure/tools.nrepl:0.2.6" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/data.priority-map:0.0.5" level="project" />
     <orderEntry type="library" name="Leiningen: com.google.javascript/closure-compiler:v20140625" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/data.json:0.2.3" level="project" />

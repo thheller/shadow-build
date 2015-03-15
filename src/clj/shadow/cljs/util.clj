@@ -1,6 +1,8 @@
 (ns shadow.cljs.util
   (:require [clojure.string :as str]
-            [clojure.set :as set]))
+            [clojure.set :as set]
+            [cljs.analyzer :as ana]
+            [cljs.env :as env]))
 
 (def require-option-keys
   #{:as
@@ -218,3 +220,58 @@
                       (conj m var-name)
                       m))
                   #{})))
+
+(defn load-macros
+  [{:keys [name require-macros use-macros] :as ast}]
+  (if (= 'cljs.core name)
+    ast
+    (let [macro-namespaces
+          (-> #{}
+              (into (vals require-macros))
+              (into (vals use-macros)))]
+
+      (binding [ana/*cljs-ns* name]
+        (doseq [macro-ns macro-namespaces]
+          (require macro-ns)))
+
+      (if (contains? macro-namespaces name)
+        (let [macros (find-macros-in-ns name)]
+          (assoc ast :macros macros))
+        ast))))
+
+(defn infer-macro-require
+  "infer (:require [some-ns]) that some-ns may come with macros
+   must be used after load-macros"
+  [{:keys [requires] :as ast}]
+  (reduce
+    (fn [ast [used-name used-ns]]
+      (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
+        (if (nil? macros)
+          ast
+          (update-in ast [:require-macros] assoc used-name used-ns)
+          )))
+    ast
+    requires))
+
+(defn infer-macro-use
+  "infer (:require [some-ns :refer (something)]) that something might be a macro
+   must be used after load-macros"
+  [{:keys [uses] :as ast}]
+  (reduce
+    (fn [ast [used-name used-ns]]
+      (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
+        (if (or (nil? macros)
+                (not (contains? macros used-name)))
+          ast
+          (update-in ast [:use-macros] assoc used-name used-ns)
+          )))
+    ast
+    uses))
+
+(defn check-uses! [env uses]
+  (doseq [[sym lib] uses]
+    (when (and (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
+               (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
+      (throw
+        (ana/error env
+                   (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))))

@@ -57,19 +57,6 @@
        result#)
      ))
 
-(def cljs-warnings (atom {})) ;; I don't like global vars :(
-
-(defn warning-handler
-  "saves all warnings into the global map with src-name as key, will be printed after compile-modules"
-  [src-name warning-type {:keys [line] :as env} extra]
-  (when (get ana/*cljs-warnings* warning-type)
-    (when-let [s (ana/error-message warning-type extra)]
-      (let [msg (if line
-                  (format "%s:%d -> %s" src-name line s)
-                  s)]
-        (swap! cljs-warnings update-in [src-name] (fnil conj []) msg)
-        ))))
-
 (defn classpath-entries
   "finds all js files on the classpath matching the path provided"
   []
@@ -211,7 +198,7 @@
     (throw (ex-info "cannot identify as cljs resource" {:name name :url url}))))
 
 (def ^{:doc "windows filenames need to be normalized because they contain backslashes which browsers don't understand"}
-     normalize-resource-name
+normalize-resource-name
   (if (= File/separatorChar \/)
     identity
     (fn [^String name]
@@ -351,12 +338,6 @@
       (get-deps-for-ns* ns-sym)
       :deps-ordered))
 
-(defn hijack-parse-ns [env form name opts]
-  (assoc (util/parse-ns form)
-    :env env
-    :form form
-    :op :ns))
-
 (defmulti post-analyze
           (fn [ast opts]
             (:op ast))
@@ -364,73 +345,29 @@
 
 (defmethod post-analyze ::no-op [ast opts] ast)
 
-(defn load-macros
-  [{:keys [name require-macros use-macros] :as ast}]
-  (if (= 'cljs.core name)
-    ast
-    (let [macro-namespaces
-          (-> #{}
-              (into (vals require-macros))
-              (into (vals use-macros)))]
-
-      (binding [ana/*cljs-ns* name]
-        (doseq [macro-ns macro-namespaces]
-          (require macro-ns)))
-
-      (if (contains? macro-namespaces name)
-        (let [macros (util/find-macros-in-ns name)]
-          (assoc ast :macros macros))
-        ast))))
-
-(defn infer-macro-require
-  "infer (:require [some-ns]) that some-ns may come with macros
-   must be used after load-macros"
-  [{:keys [requires] :as ast}]
-  (reduce
-    (fn [ast [used-name used-ns]]
-      (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
-        (if (nil? macros)
-          ast
-          (update-in ast [:require-macros] assoc used-name used-ns)
-          )))
-    ast
-    requires))
-
-(defn infer-macro-use
-  "infer (:require [some-ns :refer (something)]) that something might be a macro
-   must be used after load-macros"
-  [{:keys [uses] :as ast}]
-  (reduce
-    (fn [ast [used-name used-ns]]
-      (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
-        (if (or (nil? macros)
-                (not (contains? macros used-name)))
-          ast
-          (update-in ast [:use-macros] assoc used-name used-ns)
-          )))
-    ast
-    uses))
-
-(defn check-uses! [env uses]
-  (doseq [[sym lib] uses]
-    (when (and (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
-               (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
-      (throw
-        (ana/error env
-                   (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))))
-
 (defmethod post-analyze :ns
   [{:keys [name] :as ast} opts]
 
   (let [ast (-> ast
-                (load-macros)
-                (infer-macro-require)
-                (infer-macro-use))]
-    (check-uses! (:env ast) (:uses ast))
+                (util/load-macros)
+                (util/infer-macro-require)
+                (util/infer-macro-use))]
+    (util/check-uses! (:env ast) (:uses ast))
     (swap! env/*compiler* assoc-in [::ana/namespaces name] (dissoc ast :env :op :form))
     ast))
 
-(defn analyze [ns name form opts]
+(defn hijacked-parse-ns [env form name opts]
+  (assoc (util/parse-ns form)
+    :env env
+    :form form
+    :op :ns))
+
+(defn analyze
+  [state {:keys [ns name] :as compile-state} form]
+  {:pre [(map? compile-state)
+         (symbol? ns)
+         (string? name)
+         (seq name)]}
   ;; (defmulti parse (fn [op & rest] op))
   (let [default-parse ana/parse]
 
@@ -447,88 +384,83 @@
                         ;; don't want check-uses -> doesn't recognize macros
                         ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
                         ;; don't want swap into compiler env -> post-analyze
-                        'ns (hijack-parse-ns env form name opts)
+                        'ns (hijacked-parse-ns env form name opts)
                         (default-parse op env form name opts)))]
 
         (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-            (ana/analyze form name opts)
-            (post-analyze opts))))))
+            (ana/analyze form name state)
+            (post-analyze state))))))
+
+(defn do-compile-cljs-string
+  [{:keys [name] :as init} reduce-fn cljs-source]
+  (let [eof-sentinel (Object.)
+        in (readers/indexing-push-back-reader cljs-source 1 name)]
+
+    (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
+                                            :gen-col 0
+                                            :gen-line 0})]
+
+      (let [result
+            (loop [{:keys [ns ns-info] :as compile-state} (assoc init :js "")]
+              (let [form (binding [*ns* (create-ns ns)
+                                   ana/*cljs-ns* ns
+                                   ana/*cljs-file* name
+                                   reader/*data-readers* tags/*cljs-data-readers*
+                                   reader/*alias-map* (merge reader/*alias-map*
+                                                             (:requires ns-info)
+                                                             (:require-macros ns-info))]
+                           (reader/read in nil eof-sentinel))]
+
+                (if (identical? form eof-sentinel)
+                  ;; eof
+                  compile-state
+                  (recur (reduce-fn compile-state form)))))]
+
+        (assoc result :source-map (:source-map @comp/*source-map-data*))
+        ))))
+
+(defn default-compile-cljs
+  [state compile-state form]
+  (let [ast (analyze state compile-state form)
+        ast-js (with-out-str
+                 (comp/emit ast))
+
+        compile-state (if (= :ns (:op ast))
+                        (update-rc-from-ns compile-state ast state)
+                        compile-state)]
+    (update-in compile-state [:js] str ast-js)
+    ))
+
+
+(defn warning-collector [warnings warning-type env extra]
+  (swap! warnings conj {:warning-type warning-type
+                        :env env
+                        :extra extra}))
+
+(defmacro with-warnings
+  "given a body that produces a compilation result, collect all warnings and assoc into :warnings"
+  [& body]
+  `(let [warnings# (atom [])
+         result# (ana/with-warning-handlers
+                   [(partial warning-collector warnings#)]
+                   ~@body)]
+     (assoc result# :warnings @warnings#)))
 
 (defn compile-cljs-string
   [state cljs-source name]
-  (let [eof-sentinel (Object.)
-        in (readers/indexing-push-back-reader cljs-source 1 name)
-        source-map? (:source-map state)]
-
-    ;; this logging is a hack, no way arround a global though :(
-    (swap! cljs-warnings dissoc name)
-    (ana/with-warning-handlers
-      [(partial warning-handler name)]
-
-      (binding [comp/*source-map-data* (when source-map?
-                                         (atom {:source-map (sorted-map)
-                                                :gen-col 0
-                                                :gen-line 0}))]
-
-        (let [result
-              (loop [{:keys [ns ns-info] :as compile-state} {:js "" :ns 'cljs.user}] ;; :ast []
-                (let [form (binding [*ns* (create-ns ns)
-                                     ana/*cljs-ns* ns
-                                     ana/*cljs-file* name
-                                     reader/*data-readers* tags/*cljs-data-readers*
-                                     reader/*alias-map* (merge reader/*alias-map*
-                                                               (:requires ns-info)
-                                                               (:require-macros ns-info))]
-                             (reader/read in nil eof-sentinel))]
-
-                  (if (identical? form eof-sentinel)
-                    ;; eof
-                    compile-state
-                    ;; analyze, concat, recur
-                    (recur (let [ast (analyze ns name form state)
-                                 ast-js (with-out-str
-                                          (comp/emit ast))
-
-                                 compile-state (if (= :ns (:op ast))
-                                                 (update-rc-from-ns compile-state ast state)
-                                                 compile-state)
-                                 compile-state (update-in compile-state [:js] str ast-js)]
-                             compile-state
-                             )))))]
-
-          (when-not (:ns result)
-            (throw (ex-info "cljs file did not provide a namespace" {:file name})))
-
-          (if source-map?
-            (assoc result :source-map (:source-map @comp/*source-map-data*))
-            result
-            ))))))
+  (with-warnings
+    (do-compile-cljs-string
+      {:name name :ns 'cljs.user}
+      (partial default-compile-cljs state)
+      cljs-source)))
 
 (defn compile-cljs-seq
   [state cljs-forms name]
-
-  ;; this logging is a hack, no way arround a global though :(
-  (swap! cljs-warnings dissoc name)
-  (ana/with-warning-handlers
-    [(partial warning-handler name)]
-
-    (let [result (reduce (fn [{:keys [ns] :as compile-state} form]
-                           (let [ast (analyze ns name form state)
-                                 ast-js (with-out-str
-                                          (comp/emit ast))
-
-                                 compile-state (if (= :ns (:op ast))
-                                                 (update-rc-from-ns compile-state ast state)
-                                                 compile-state)]
-                             (update-in compile-state [:js] str ast-js)
-                             ))
-                         {:js "" :ns 'cljs.user}
-                         cljs-forms)]
-
-      (when-not (:ns result)
-        (throw (ex-info "cljs file did not provide a namespace" {:file name})))
-
-      result)))
+  (with-warnings
+    (reduce
+      (partial default-compile-cljs state)
+      {:name name :ns 'cljs.user}
+      cljs-forms)))
 
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
@@ -537,34 +469,40 @@
 
   (with-logged-time
     [(:logger state) (format "Compile CLJS: \"%s\"" name)]
-    (let [{:keys [js ns requires source-map]} (cond
-                                                (string? source)
-                                                (compile-cljs-string state source name)
-                                                (vector? source)
-                                                (compile-cljs-seq state source name)
-                                                :else
-                                                (throw (ex-info "invalid cljs source type" {:name name :source source})))]
+    (let [{:keys [js ns requires source-map warnings]}
+          (cond
+            (string? source)
+            (compile-cljs-string state source name)
+            (vector? source)
+            (compile-cljs-seq state source name)
+            :else
+            (throw (ex-info "invalid cljs source type" {:name name :source source})))]
+
+      (when-not ns
+        (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+
       (assoc rc
         :js-source js
         :requires requires
         :compiled-at (System/currentTimeMillis)
         :provides #{ns}
         :compiled true
+        :warnings warnings
         :source-map source-map))))
 
 (defn get-cache-file-for-rc
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
-  (io/file cache-dir (str name ".cache.edn")))
+  (io/file cache-dir "ana" (str name ".cache.edn")))
 
 (defn load-cached-cljs-resource
-  [{:keys [logger public-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
+  [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
-        target-js (io/file public-dir "src" js-name)]
+        cache-js (io/file cache-dir "src" js-name)]
 
     (when (and (.exists cache-file)
                (> (.lastModified cache-file) last-modified)
-               (.exists target-js)
-               (> (.lastModified target-js) last-modified)
+               (.exists cache-js)
+               (> (.lastModified cache-js) last-modified)
 
                (let [min-age (->> (get-deps-for-ns state ns)
                                   (map #(get-in state [:sources % :last-modified]))
@@ -584,28 +522,32 @@
           (let [ana-data (:analyzer cache-data)]
 
             (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
-            (load-macros ana-data))
+            (util/load-macros ana-data))
 
           ;; merge resource data & return it
-          ;; FIXME: lost source-map data at this point, assuming it exist when out-js exists
           (-> (merge rc cache-data)
-              (dissoc :analysis :version)
-              (assoc :js-source (slurp target-js))))))))
+              (dissoc :analyzer :version)
+              (assoc :js-source (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
-  [{:keys [logger] :as state} {:keys [ns name] :as rc}]
+  [{:keys [logger cache-dir] :as state} {:keys [ns name js-name] :as rc}]
 
   ;; only cache files that don't have warnings!
-  (when-not (get @cljs-warnings name)
+  (when-not (seq (:warnings rc))
 
     (let [cache-file (get-cache-file-for-rc state rc)
           cache-data (-> rc
-                         ;; dont write :source-map, assume we generate it later and are able to reuse it
-                         (dissoc :file :url :js-source :source :source-map)
+                         (dissoc :file :url)
                          (assoc :version (cljs-util/clojurescript-version)
-                                :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))]
+                                :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+          cache-js (io/file cache-dir "src" js-name)]
+
       (io/make-parents cache-file)
       (spit cache-file (pr-str cache-data))
+
+      (io/make-parents cache-js)
+      (spit cache-js (:js-source rc))
+
       (log-progress logger (format "Wrote cache for \"%s\" to \"%s\"" name cache-file)))))
 
 (defn maybe-compile-cljs
@@ -613,7 +555,12 @@
    make sure you are in with-compiler-env"
   [{:keys [cache-dir cache-level] :as state} cljs-name]
   (let [{:keys [jar] :as src} (get-in state [:sources cljs-name])
-        cache? (and cache-dir (or (= cache-level :all) (and (= cache-level :jars) jar)))
+        cache? (and cache-dir
+                    ;; i don't trust the register-constant! stuff for now
+                    (not (:emit-constants state))
+                    (or (= cache-level :all)
+                        (and (= cache-level :jars)
+                             jar)))
         src (or (when cache?
                   (load-cached-cljs-resource state src))
                 (let [src (do-compile-cljs-resource state src)]
@@ -672,15 +619,15 @@
 (defn step-find-resources
   "finds cljs resources in the given path"
   ([state path]
-    (step-find-resources state path {:reloadable true}))
+   (step-find-resources state path {:reloadable true}))
   ([state path opts]
-    (with-logged-time
-      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
-      (-> state
-          (assoc-in [:source-paths path] (assoc opts
-                                           :path path))
-          (merge-resources (do-find-resources-in-paths state [path]))
-          ))))
+   (with-logged-time
+     [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
+     (-> state
+         (assoc-in [:source-paths path] (assoc opts
+                                          :path path))
+         (merge-resources (do-find-resources-in-paths state [path]))
+         ))))
 
 (def cljs-core-name "cljs/core.cljs")
 (def goog-base-name "goog/base.js")
@@ -768,32 +715,32 @@
 
 (defn step-configure-module
   ([state module-name module-mains depends-on]
-    (step-configure-module state module-name module-mains depends-on {}))
+   (step-configure-module state module-name module-mains depends-on {}))
   ([state module-name module-mains depends-on mod-attrs]
-    (when-not (keyword? module-name)
-      (throw (ex-info "module name should be a keyword" {:module-name module-name})))
-    (when-not (every? keyword? depends-on)
-      (throw (ex-info "module deps should be keywords" {:module-deps depends-on})))
+   (when-not (keyword? module-name)
+     (throw (ex-info "module name should be a keyword" {:module-name module-name})))
+   (when-not (every? keyword? depends-on)
+     (throw (ex-info "module deps should be keywords" {:module-deps depends-on})))
 
-    (let [is-default? (not (seq depends-on))
+   (let [is-default? (not (seq depends-on))
 
-          _ (when is-default?
-              (when-let [default (:default-module state)]
-                (throw (ex-info "default module already defined, are you missing deps?"
-                                {:default default :wants-to-be-default module-name}))))
+         _ (when is-default?
+             (when-let [default (:default-module state)]
+               (throw (ex-info "default module already defined, are you missing deps?"
+                               {:default default :wants-to-be-default module-name}))))
 
-          mod (merge mod-attrs
-                     {:name module-name
-                      :js-name (str (name module-name) ".js")
-                      :mains module-mains
-                      :depends-on depends-on
-                      :default is-default?})
+         mod (merge mod-attrs
+                    {:name module-name
+                     :js-name (str (name module-name) ".js")
+                     :mains module-mains
+                     :depends-on depends-on
+                     :default is-default?})
 
-          state (assoc-in state [:modules module-name] mod)
-          state (if is-default?
-                  (assoc state :default-module module-name)
-                  state)]
-      state)))
+         state (assoc-in state [:modules module-name] mod)
+         state (if is-default?
+                 (assoc state :default-module module-name)
+                 state)]
+     state)))
 
 (defn do-load-compiled-files [state {:keys [public-dir last-modified name js-name] :as src}]
   (let [target (io/file public-dir js-name)]
@@ -808,19 +755,6 @@
             (assoc-in [:provide->source ns] name)))
       ;; else: no precompiled version available
       state)))
-
-(defn step-load-compiled-files [state]
-  (with-logged-time
-    [(:logger state) (format "Loading precompiled files ...")]
-    (reduce do-load-compiled-files
-            state
-            ;; only load precompiled cljs where the source has already been discovered
-            (->> state
-                 :sources
-                 vals
-                 (filter #(= :cljs (:type %)))
-                 (remove :generated)
-                 ))))
 
 (defn flush-to-disk
   "flush all generated sources to disk, not terribly useful, use flush-unoptimized to include source maps"
@@ -961,12 +895,16 @@
 (defn do-print-warnings
   "print warnings after building modules, repeat warnings for files that weren't recompiled!"
   [{:keys [logger] :as state}]
-  (doseq [[src-name warnings] (->> @cljs-warnings
-                                   (sort-by first)) ;; sort by filename
-          ]
-    (log-warning logger (format "WARNINGS: %s (%d)" src-name (count warnings)))
-    (doseq [msg warnings]
-      (log-warning logger msg)))
+  (doseq [{:keys [name warnings] :as src}
+          (->> (:sources state)
+               vals
+               (sort-by :name)
+               (filter #(seq (:warnings %))))]
+    (log-warning logger (format "WARNINGS: %s (%d)" name (count warnings)))
+    (doseq [{:keys [warning-type env extra]} warnings]
+      (when (warning-type ana/*cljs-warnings*)
+        (when-let [s (ana/error-message warning-type extra)]
+          (log-warning logger (ana/message env s))))))
   state)
 
 (defn do-analyze-module
@@ -1066,9 +1004,6 @@
             (assoc "sources" (keys merged))
             ;; sm/encode pprints
             (json/write-str))))))
-
-
-
 
 
 (defn make-closure-modules
@@ -1549,8 +1484,6 @@
   ;; load cljs.core macros, we are probably going to use them
   (ana/load-core)
 
-  (reset! cljs-warnings {}) ;; globals suck!
-
   {:compiler-env {} ;; will become env/*compiler*
 
    ::cc (make-closure-compiler)
@@ -1559,7 +1492,9 @@
    :macros-loaded #{}
    :use-file-min true
 
+   :cache-dir (io/file ".cljs-cache")
    :cache-level :jars
+
    :source-paths {}
    :closure-defines {"goog.DEBUG" false
                      "goog.LOCALE" "en"}
