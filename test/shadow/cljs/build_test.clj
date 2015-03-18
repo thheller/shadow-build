@@ -162,7 +162,7 @@
       (assoc :optimizations :advanced
              :pretty-print false
              :work-dir (io/file "target/cljs-work")
-             :cache-dir (io/file "target/cljs-cache")
+             :cache-dir (io/file "cljs-data/foreign/out/cljs-cache")
              :public-dir (io/file "cljs-data/foreign/out")
              :public-path "out")
       (cljs/step-find-resources-in-jars)
@@ -197,7 +197,7 @@
               ;; (cljs/flush-modules-to-disk)
               ;;(cljs/flush-unoptimized)
               )]
-    (println (get-in s [:sources "shadow/dummy.cljs" :js-source]))))
+    (println (get-in s [:sources "shadow/dummy.cljs" :output]))))
 
 (deftest test-dev-api
   (-> (cljs/init-state)

@@ -1,11 +1,13 @@
-(defproject thheller/shadow-build "1.0.0-alpha9"
+(defproject thheller/shadow-build "1.0.0-alpha10"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
             :url "http://www.eclipse.org/legal/epl-v10.html"}
 
   :dependencies [[aysylu/loom "0.5.0"]
-                 [http-kit "2.1.18"]]
+                 [http-kit "2.1.18"]
+                 ;; [org.clojure/core.typed "0.2.84"]
+                 ]
 
 
   :source-paths ["src/clj"
@@ -14,7 +16,7 @@
   :profiles {:dev {:source-paths ["dev"]
                    :dependencies [[org.clojure/clojure "1.6.0"]
                                   [org.clojure/tools.namespace "0.2.4"]
-                                  [org.clojure/clojurescript "0.0-2913"]
+                                  [org.clojure/clojurescript "0.0-3123"]
                                   ;; [thheller/clojurescript "0.0-2665+948"]
                                   ]}}
 
