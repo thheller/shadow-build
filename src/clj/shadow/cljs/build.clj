@@ -1,5 +1,5 @@
 (ns shadow.cljs.build
-  (:import [java.io File StringWriter]
+  (:import [java.io File StringWriter FileOutputStream FileInputStream]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph]
            (clojure.lang ExceptionInfo)
@@ -25,6 +25,7 @@
             [clojure.core.reducers :as r]
             [loom.graph :as lg]
             [loom.alg :as la]
+            [cognitect.transit :as transit]
             [clojure.java.shell :as shell]
             [shadow.cljs.util :as util]))
 
@@ -36,6 +37,19 @@
     ;; but given that only one thread is used to compile anyways there
     ;; is really no gain to running in another thread?
     (.disableThreads)))
+
+
+(defn write-cache [file data]
+  (with-open [out (FileOutputStream. file)]
+    (let [w (transit/writer out :json {:handlers {URL (transit/write-handler "url" str)}})]
+      (transit/write w data)
+      )))
+
+(defn read-cache [file]
+  (with-open [in (FileInputStream. file)]
+    (let [r (transit/reader in :json {:handlers {"url" (transit/read-handler #(URL. %))}})]
+      (transit/read r)
+      )))
 
 
 (def a-resource
@@ -69,6 +83,9 @@
        (log-time-end ~logger msg# (- (System/currentTimeMillis) start#))
        result#)
      ))
+
+(defn compiler-state? [state]
+  (true? (::is-compiler-state state)))
 
 (defn classpath-entries
   "finds all js files on the classpath matching the path provided"
@@ -145,13 +162,14 @@
                (transient #{}))
        (persistent!)))
 
-(defn add-goog-dependencies [{:keys [name input] :as rc} config]
+(defn add-goog-dependencies [state {:keys [name input] :as rc}]
+  {:pre [(compiler-state? state)]}
   (if (= "goog/base.js" name)
     (assoc rc
       :requires #{}
       :provides #{'goog})
     ;; parse any other js
-    (let [deps (-> (JsFileParser. (.getErrorManager (::cc config)))
+    (let [deps (-> (JsFileParser. (.getErrorManager (::cc state)))
                    (.parseFile name name @input))]
       (assoc rc
         :requires (list->ns-set (.getRequires deps))
@@ -159,6 +177,7 @@
 
 (defn requires-from-ns-ast
   [{:keys [emit-constants] :as state} {:keys [name requires uses]}]
+  {:pre [(compiler-state? state)]}
   (let [req (set (vals (merge uses requires)))]
     (if (= 'cljs.core name)
       req
@@ -168,9 +187,11 @@
         ))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
+  {:pre [(compiler-state? state)]}
   (into #{} (concat (vals require-macros) (vals use-macros))))
 
-(defn update-rc-from-ns [rc ast state]
+(defn update-rc-from-ns [state rc ast]
+  {:pre [(compiler-state? state)]}
   (let [ns-name (:name ast)]
     (assoc rc
       :ns ns-name
@@ -183,33 +204,33 @@
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
-  [{:keys [name input source-path] :as rc} {:keys [logger] :as state}]
+  [{:keys [logger] :as state} {:keys [name input source-path] :as rc}]
+  {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
         in (readers/indexing-push-back-reader @input 1 name)]
     (binding [reader/*data-readers* tags/*cljs-data-readers*]
       (try
         (let [peek (reader/read in nil eof-sentinel)
               ast (util/parse-ns peek)]
-          (update-rc-from-ns rc ast state))
+          (update-rc-from-ns state rc ast))
         (catch ExceptionInfo e
           (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
           (.printStackTrace e)
           rc)))))
 
 (defn inspect-resource
-  [{:keys [name] :as rc} config]
+  [state {:keys [name] :as rc}]
+  {:pre [(compiler-state? state)]}
   (cond
     (is-js-file? name)
-    (-> rc
-        (assoc :type :js
-               :js-name name)
-        (add-goog-dependencies config))
+    (->> (assoc rc :type :js :js-name name)
+         (add-goog-dependencies state))
 
     (is-cljs-file? name)
-    (-> rc
-        (assoc :type :cljs
-               :js-name (str/replace name #"\.cljs$" ".js"))
-        (peek-into-cljs-resource config))
+    (let [rc (assoc rc :type :cljs :js-name (str/replace name #"\.cljs$" ".js"))]
+      (if (= name "deps.cljs")
+        rc
+        (peek-into-cljs-resource state rc)))
 
     :else
     (throw (ex-info "cannot identify as cljs resource" rc))))
@@ -227,7 +248,10 @@ normalize-resource-name
     (update-in foreign-libs [0 :externs] concat externs)
     foreign-libs))
 
-(defn find-jar-resources [path {:keys [use-file-min] :as config}]
+(defn create-jar-manifest
+  "returns a map of {source-name resource-info}"
+  [state path]
+  {:pre [(compiler-state? state)]}
   (let [file (io/file path)
         abs-path (.getAbsolutePath file)
         jar-file (JarFile. file)
@@ -237,69 +261,110 @@ normalize-resource-name
                       (with-open [in (.getInputStream jar-file entry)]
                         (slurp in)))]
     (loop [result (transient {})]
-      (if (.hasMoreElements entries)
+      (if (not (.hasMoreElements entries))
+        (persistent! result)
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
-          (if (or (= "deps.cljs" name)
-                  (not (is-cljs-resource? name))
+          (if (or (not (is-cljs-resource? name))
                   (.startsWith name "goog/demos/")
-                  (.startsWith name "com/google/javascript/refactoring/examples/")
                   (.endsWith name ".aot.js") ;; caching > special case aot core.cljs
                   (.endsWith name "_test.js"))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
-                  rc (inspect-resource {:name (normalize-resource-name name)
+                  rc (inspect-resource state
+                                       {:name (normalize-resource-name name)
                                         :jar true
                                         :source-path path
                                         :last-modified last-modified
                                         :url url
-                                        :input (atom (slurp-entry jar-entry))}
-                                       config)]
+                                        :input (atom (slurp-entry jar-entry))})]
               (recur (assoc! result name rc))
-              )))
+              )))))))
 
-        (let [jar-entry (.getJarEntry jar-file "deps.cljs")
-              result (persistent! result)]
-          (if (nil? jar-entry)
-            (vals result)
-            (let [foreign-libs (-> (slurp-entry jar-entry)
-                                   (edn/read-string)
-                                   (normalize-foreign-libs))]
+(defn write-jar-manifest [file manifest]
+  (let [data (->> (vals manifest)
+                  ;; :input is non serializable deref, don't want to store actual content
+                  ;; might not need it, just a performance issue
+                  ;; reading closure jar with js contents 300ms without content 5ms
+                  ;; since we are only using a small percentage of those file we delay reading
+                  (map #(dissoc % :input))
+                  (into []))]
+    (write-cache file data)
+    ))
 
-              (->> foreign-libs
-                   (reduce
-                     (fn [result {:keys [externs provides requires] :as foreign-lib}]
-                       (let [[lib-key lib-other] (cond
-                                                   (and use-file-min (contains? foreign-lib :file-min))
-                                                   [:file-min :file]
-                                                   (:file foreign-lib)
-                                                   [:file :file-min])
-                             lib-name (get foreign-lib lib-key)
-                             rc (get result lib-name)]
-                         (when (nil? rc)
-                           (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
+(defn read-jar-manifest [file]
+  (let [entries (read-cache file)]
+    (reduce
+      (fn [m {:keys [name url] :as v}]
+        (assoc m name (assoc v :input (delay (slurp url)))))
+      {}
+      entries)))
 
-                         (let [dissoc-all (fn [m list]
-                                            (apply dissoc m list))
-                               ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
-                               rc (assoc rc
-                                    :foreign true
-                                    :requires (set (map symbol requires))
-                                    :provides (set (map symbol provides))
-                                    :externs-source (->> externs
-                                                         (map #(get result %))
-                                                         (map :input)
-                                                         (map deref)
-                                                         (str/join "\n")))]
-                           (-> result
-                               (dissoc-all externs)
-                               ;; remove :file or :file-min
-                               (dissoc (get foreign-lib lib-other))
-                               (assoc lib-name rc)))))
-                     result)
-                   (vals)))))))))
+(defn process-deps-cljs
+  [{:keys [use-file-min] :as state} manifest]
+  {:pre [(compiler-state? state)
+         (map? manifest)]}
+  (let [deps (get manifest "deps.cljs")]
+    (if (nil? deps)
+      manifest
+      (let [foreign-libs (-> @(:input deps)
+                             (edn/read-string)
+                             (normalize-foreign-libs))]
 
-(defn find-fs-resources [^String path config]
+        (reduce
+          (fn [result {:keys [externs provides requires] :as foreign-lib}]
+            (let [[lib-key lib-other] (cond
+                                        (and use-file-min (contains? foreign-lib :file-min))
+                                        [:file-min :file]
+                                        (:file foreign-lib)
+                                        [:file :file-min])
+                  lib-name (get foreign-lib lib-key)
+                  rc (get result lib-name)]
+              (when (nil? rc)
+                (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
+
+              (let [dissoc-all (fn [m list]
+                                 (apply dissoc m list))
+                    ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
+                    rc (assoc rc
+                         :foreign true
+                         :requires (set (map symbol requires))
+                         :provides (set (map symbol provides))
+                         :externs-source (->> externs
+                                              (map #(get result %))
+                                              (map :input)
+                                              (map deref)
+                                              (str/join "\n")))]
+                (-> result
+                    (dissoc-all externs)
+                    ;; remove :file or :file-min
+                    (dissoc (get foreign-lib lib-other))
+                    (assoc lib-name rc)))))
+          manifest
+          foreign-libs)))))
+
+
+(defn find-jar-resources
+  [{:keys [manifest-cache-dir] :as state} path]
+  {:pre [(compiler-state? state)]}
+  ;; FIXME: assuming a jar with the same name and same last modified is always identical, probably not. should md5 the full path?
+  (let [manifest-name (let [jar (io/file path)]
+                        (str (.lastModified jar) "-" (.getName jar) ".manifest"))
+        mfile (io/file manifest-cache-dir manifest-name)
+        jar-file (io/file path)
+        manifest (if (and (.exists mfile)
+                          (>= (.lastModified mfile) (.lastModified jar-file)))
+                   (read-jar-manifest mfile)
+                   (let [manifest (create-jar-manifest state path)]
+                     (io/make-parents mfile)
+                     (write-jar-manifest mfile manifest)
+                     manifest))]
+    (-> (process-deps-cljs state manifest)
+        (vals))))
+
+(defn find-fs-resources [state ^String path]
+  {:pre [(compiler-state? state)
+         (seq path)]}
   (let [root (io/file path)
         root-path (.getAbsolutePath root)
         root-len (inc (count root-path))]
@@ -310,6 +375,7 @@ normalize-resource-name
           :let [url (.toURL (.toURI file))]]
 
       (inspect-resource
+        state
         {:name (-> abs-path
                    (.substring root-len)
                    (normalize-resource-name))
@@ -317,22 +383,23 @@ normalize-resource-name
          :source-path path
          :last-modified (.lastModified file)
          :url url
-         :input (delay (slurp file))}
-        config)
-      )))
+         :input (delay (slurp file))}))))
 
-(defn do-find-resources-in-path [config path]
+(defn do-find-resources-in-path [state path]
+  {:pre [(compiler-state? state)]}
   (if (.endsWith path ".jar")
-    (find-jar-resources path config)
-    (find-fs-resources path config)))
+    (find-jar-resources state path)
+    (find-fs-resources state path)))
 
-(defn- do-find-resources-in-paths [config paths]
+(defn- do-find-resources-in-paths [state paths]
+  {:pre [(compiler-state? state)]}
   (->> paths
-       (mapcat #(do-find-resources-in-path config %))
+       (mapcat #(do-find-resources-in-path state %))
        (filter usable-resource?)
        (into [])))
 
 (defn- get-deps-for-ns* [state ns-sym]
+  {:pre [(compiler-state? state)]}
   (let [name (get-in state [:provide->source ns-sym])]
     (when-not name
       (throw (ex-info (format "ns \"%s\" not available" ns-sym) {:ns ns-sym})))
@@ -352,6 +419,7 @@ normalize-resource-name
   "returns names of all required sources for a given ns (in dependency order), does include self
    (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
   [state ns-sym]
+  {:pre [(compiler-state? state)]}
   (-> state
       (assoc :deps-ordered []
              :deps-visited #{})
@@ -446,7 +514,7 @@ normalize-resource-name
                  (comp/emit ast))
 
         compile-state (if (= :ns (:op ast))
-                        (update-rc-from-ns compile-state ast state)
+                        (update-rc-from-ns state compile-state ast)
                         compile-state)]
     (update-in compile-state [:js] str ast-js)
     ))
@@ -1376,7 +1444,7 @@ normalize-resource-name
                                 [source-path name]))
                          (into #{}))]
     (->> reloadable-paths
-         (mapcat #(find-fs-resources % state))
+         (mapcat #(find-fs-resources state %))
          (remove (fn [{:keys [source-path name]}]
                    (contains? known-files [source-path name])))
          (map #(assoc % :scan :new))
@@ -1511,12 +1579,16 @@ normalize-resource-name
 
   {:compiler-env {} ;; will become env/*compiler*
 
+   ::is-compiler-state true
    ::cc (make-closure-compiler)
 
    :runtime {:print-fn :console}
    :macros-loaded #{}
    :use-file-min true
 
+   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest")]
+                         (io/make-parents dir)
+                         dir)
    :cache-dir (io/file ".cljs-cache")
    :cache-level :jars
 

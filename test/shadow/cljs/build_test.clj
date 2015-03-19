@@ -9,7 +9,9 @@
             [clojure.java.io :as io]
             [cljs.analyzer :as a]
             [clojure.set :as set])
-  (:import (java.util.regex Pattern)))
+  (:import (java.util.regex Pattern)
+           (java.io File)
+           (java.net URL)))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -393,3 +395,10 @@
                (:unless [])))
           ))))
 
+(deftest test-caching-rountrip
+  (let [out (File. "target/dummy.cache")
+        data {:dummy "data"
+              :url (URL. "http://github.com")}
+        read (do (cljs/write-cache out data)
+                 (cljs/read-cache out))]
+    (is (= data read))))

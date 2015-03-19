@@ -6,6 +6,7 @@
 
   :dependencies [[aysylu/loom "0.5.0"]
                  [http-kit "2.1.18"]
+                 [com.cognitect/transit-clj "0.8.269"]
                  ;; [org.clojure/core.typed "0.2.84"]
                  ]
 
