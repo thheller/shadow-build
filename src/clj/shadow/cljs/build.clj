@@ -1563,7 +1563,8 @@ normalize-resource-name
                        :js-name "constants_table.js"
                        :name "constants_table.js"
                        :provides #{'constants-table}
-                       :requires #{}})))
+                       :requires #{}
+                       :input (atom "")})))
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
