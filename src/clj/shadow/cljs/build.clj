@@ -340,7 +340,7 @@ normalize-resource-name
                     ;; remove :file or :file-min
                     (dissoc (get foreign-lib lib-other))
                     (assoc lib-name rc)))))
-          manifest
+          (dissoc manifest "deps.cljs")
           foreign-libs)))))
 
 
