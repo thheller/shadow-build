@@ -210,10 +210,13 @@
         in (readers/indexing-push-back-reader @input 1 name)]
     (binding [reader/*data-readers* tags/*cljs-data-readers*]
       (try
-        (let [peek (reader/read in nil eof-sentinel)
-              ast (util/parse-ns peek)]
-          (update-rc-from-ns state rc ast))
-        (catch ExceptionInfo e
+        (let [peek (reader/read in nil eof-sentinel)]
+          (if (identical? peek eof-sentinel)
+            (do (log-warning logger (format "File: %s/%s is empty, skipped." source-path name))
+                rc)
+            (let [ast (util/parse-ns peek)]
+              (update-rc-from-ns state rc ast))))
+        (catch Exception e
           (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
           (.printStackTrace e)
           rc)))))
@@ -1407,7 +1410,8 @@ normalize-resource-name
   (-> src
       (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
       (reload-source)
-      (inspect-resource config)
+      (as-> src'
+        (inspect-resource config src'))
       (cond-> file
               (assoc :last-modified (.lastModified file)))))
 
