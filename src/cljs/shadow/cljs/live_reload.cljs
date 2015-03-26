@@ -19,11 +19,13 @@
       (.debug js/console a1 a2 a3)))
   )
 
+(def loaded? js/goog.isProvided_)
+
 (defn handle-changes [{:keys [public-path before-load after-load] :as config} {:keys [js] :as changes}]
   (let [js-to-reload (->> js
                           ;; only reload things we actually require'd somewhere
                           (filter (fn [{:keys [provides]}]
-                                    (some #(js/goog.isProvided_ (str %)) provides)))
+                                    (some #(loaded? (str %)) provides)))
                           (into []))]
 
     (when (seq js-to-reload)
