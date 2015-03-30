@@ -1037,11 +1037,13 @@ normalize-resource-name
      :input (atom src)}))
 
 (defn generate-output-for-source [state {:keys [name type] :as src}]
-  (case type
-    :js
-    (assoc src :output @(:input src))
-    :cljs
-    (maybe-compile-cljs state src)))
+  (if (seq (:output src))
+    src
+    (case type
+      :js
+      (assoc src :output @(:input src))
+      :cljs
+      (maybe-compile-cljs state src))))
 
 
 (defn step-compile-modules [state]

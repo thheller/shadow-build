@@ -33,18 +33,22 @@
                   (cljs/enable-source-maps)
                   (cljs/step-find-resources-in-jars)
                   (cljs/step-find-resources "cljs-data/dummy/src")
+                  ;; (cljs/step-find-resources "/Users/zilence/code/oss/closure-library/closure")
+                  ;; (cljs/step-find-resources "/Users/zilence/code/oss/closure-library/third_party")
                   (assoc :optimizations :advanced
                          :pretty-print false
                          :work-dir (io/file "target/cljs-work")
                          :cache-dir (io/file "target/cljs-cache")
                          :cache-level :jars
                          :public-dir (io/file "target/cljs")
+                         :pseudo-names true
+                         :pretty-print true
                          :public-path "target/cljs")
                   (cljs/step-finalize-config)
                   (cljs/step-configure-module :loader ['goog.module.ModuleManager] #{})
-                  (cljs/step-configure-module :cljs ['cljs.core] #{:loader})
-                  (cljs/step-configure-module :basic ['basic] #{:cljs})
-                  (cljs/step-configure-module :other ['other] #{:cljs})
+                  ;; (cljs/step-configure-module :cljs ['cljs.core] #{:loader})
+                  ;; (cljs/step-configure-module :basic ['basic] #{:cljs})
+                  ;; (cljs/step-configure-module :other ['other] #{:cljs})
                   (cljs/step-compile-modules)
                   ;;(cljs/flush-unoptimized)
                   (cljs/closure-optimize)

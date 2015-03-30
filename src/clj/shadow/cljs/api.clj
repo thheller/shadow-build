@@ -83,16 +83,16 @@
           (assoc :live-reload {:server server
                                :config config})
           ;; (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
-          (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload)
-          ;; now if this isn't a fine hack
-          ;; we ship with a live-reload ns and append stuff to it
-          ;; so we can configure it without requiring the user to do it manually
-          ;; can't do it in module :append-js cause of weird goog.require behavior and execution ordering
-          ;; shadow.cljs.live_reload does not exist immediately after goog.require('shadow.cljs.live_reload')
-          ;; only after the file with the require finishes loading.
-          (update-in [:sources "shadow/cljs/live_reload.cljs" :source] str "\n(setup " (pr-str config) ")\n")
-          (assoc-in [:sources "shadow/cljs/live_reload.cljs" :last-modified] (System/currentTimeMillis))
-          (assoc-in [:sources "shadow/cljs/live_reload.cljs" :cacheable] false) ;; FIXME: stop cache
+          (cljs/merge-resource
+            {:type  :cljs
+             :last-modified (System/currentTimeMillis)
+             :input (atom (str "(ns shadow.cljs.live-reload-init (:require [shadow.cljs.live-reload :as lr])) (lr/setup " (pr-str config) ")"))
+             :name "shadow/cljs/live_reload_init.cljs"
+             :js-name "shadow/cljs/llive_reload_init.js"
+             :requires #{'shadow.cljs.live-reload}
+             :provides #{'shadow.cljs.live-reload-init}
+             })
+          (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload-init)
           ))))
 
 (defn notify-live-reload [{:keys [live-reload] :as state} modified]
