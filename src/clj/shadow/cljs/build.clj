@@ -1,5 +1,5 @@
 (ns shadow.cljs.build
-  (:import [java.io File StringWriter FileOutputStream FileInputStream]
+  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph]
            (clojure.lang ExceptionInfo)
@@ -53,16 +53,16 @@
 
 
 (def a-resource
-  '{:input deref
-    :output string
-    :type (either :js :cljs)
-    :jar boolean
+  '{:input         deref
+    :output        string
+    :type          (either :js :cljs)
+    :jar           boolean
     :last-modified long
-    :requires #{name}
-    :provides #{name}
+    :requires      #{name}
+    :provides      #{name}
     ;; only :cljs
-    :ns name
-    :ns-info ns-info
+    :ns            name
+    :ns-info       ns-info
     })
 
 (defprotocol BuildLog
@@ -96,17 +96,18 @@
       (str/split sysp #":"))))
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
-  (or (= :cljs type) ;; cljs is always usable
-      (seq provides) ;; provides something is useful
-      (seq requires) ;; requires something is less useful?
-      (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
+  (or (= :cljs type)                                        ;; cljs is always usable
+      (seq provides)                                        ;; provides something is useful
+      (seq requires)                                        ;; requires something is less useful?
+      (= "goog/base.js" (:name rc))                         ;; doesnt provide/require anything but is useful
       ))
 
 (defn is-jar? [^String name]
   (.endsWith (str/lower-case name) ".jar"))
 
 (defn is-cljs-file? [^String name]
-  (.endsWith (str/lower-case name) ".cljs"))
+  (or (.endsWith (str/lower-case name) ".cljs")
+      (.endsWith (str/lower-case name) ".cljc")))
 
 (defn is-js-file? [^String name]
   (.endsWith (str/lower-case name) ".js"))
@@ -207,15 +208,23 @@
   [{:keys [logger] :as state} {:keys [name input source-path] :as rc}]
   {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
-        in (readers/indexing-push-back-reader @input 1 name)]
+        cljc? (.endsWith name ".cljc")
+        opts (merge
+               {:eof eof-sentinel}
+               (when cljc?
+                 {:read-cond :allow :features #{:cljs}}))
+        rdr (StringReader. @input)
+        in (readers/indexing-push-back-reader (PushbackReader. rdr) 1 name)]
     (binding [reader/*data-readers* tags/*cljs-data-readers*]
       (try
-        (let [peek (reader/read in nil eof-sentinel)]
+        (let [peek (reader/read opts in)]
           (if (identical? peek eof-sentinel)
             (do (log-warning logger (format "File: %s/%s is empty, skipped." source-path name))
                 rc)
             (let [ast (util/parse-ns peek)]
-              (update-rc-from-ns state rc ast))))
+              (-> state
+                  (update-rc-from-ns rc ast)
+                  (assoc :cljc cljc?)))))
         (catch Exception e
           (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
           (.printStackTrace e)
@@ -230,7 +239,7 @@
          (add-goog-dependencies state))
 
     (is-cljs-file? name)
-    (let [rc (assoc rc :type :cljs :js-name (str/replace name #"\.cljs$" ".js"))]
+    (let [rc (assoc rc :type :cljs :js-name (str/replace name #"\.clj(s|c)$" ".js"))]
       (if (= name "deps.cljs")
         rc
         (peek-into-cljs-resource state rc)))
@@ -270,17 +279,17 @@ normalize-resource-name
               name (.getName jar-entry)]
           (if (or (not (is-cljs-resource? name))
                   (.startsWith name "goog/demos/")
-                  (.endsWith name ".aot.js") ;; caching > special case aot core.cljs
+                  (.endsWith name ".aot.js")                ;; caching > special case aot core.cljs
                   (.endsWith name "_test.js"))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
                   rc (inspect-resource state
-                                       {:name (normalize-resource-name name)
-                                        :jar true
-                                        :source-path path
+                                       {:name          (normalize-resource-name name)
+                                        :jar           true
+                                        :source-path   path
                                         :last-modified last-modified
-                                        :url url
-                                        :input (atom (slurp-entry jar-entry))})]
+                                        :url           url
+                                        :input         (atom (slurp-entry jar-entry))})]
               (recur (assoc! result name rc))
               )))))))
 
@@ -379,14 +388,14 @@ normalize-resource-name
 
       (inspect-resource
         state
-        {:name (-> abs-path
-                   (.substring root-len)
-                   (normalize-resource-name))
-         :file file
-         :source-path path
+        {:name          (-> abs-path
+                            (.substring root-len)
+                            (normalize-resource-name))
+         :file          file
+         :source-path   path
          :last-modified (.lastModified file)
-         :url url
-         :input (delay (slurp file))}))))
+         :url           url
+         :input         (delay (slurp file))}))))
 
 (defn do-find-resources-in-path [state path]
   {:pre [(compiler-state? state)]}
@@ -478,18 +487,22 @@ normalize-resource-name
                         'ns (hijacked-parse-ns env form name opts)
                         (default-parse op env form name opts)))]
 
-        (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+        (-> (ana/empty-env)                                 ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
             (ana/analyze form ns state)
             (post-analyze state))))))
 
 (defn do-compile-cljs-string
-  [{:keys [name] :as init} reduce-fn cljs-source]
+  [{:keys [name] :as init} reduce-fn cljs-source cljc?]
   (let [eof-sentinel (Object.)
-        in (readers/indexing-push-back-reader cljs-source 1 name)]
+        opts (merge
+               {:eof eof-sentinel}
+               (when cljc?
+                 {:read-cond :allow :features #{:cljs}}))
+        in (readers/indexing-push-back-reader (PushbackReader. (StringReader. cljs-source)) 1 name)]
 
     (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
-                                            :gen-col 0
-                                            :gen-line 0})]
+                                            :gen-col    0
+                                            :gen-line   0})]
 
       (let [result
             (loop [{:keys [ns ns-info] :as compile-state} (assoc init :js "")]
@@ -500,7 +513,7 @@ normalize-resource-name
                                    reader/*alias-map* (merge reader/*alias-map*
                                                              (:requires ns-info)
                                                              (:require-macros ns-info))]
-                           (reader/read in nil eof-sentinel))]
+                           (reader/read opts in))]
 
                 (if (identical? form eof-sentinel)
                   ;; eof
@@ -525,8 +538,8 @@ normalize-resource-name
 
 (defn warning-collector [warnings warning-type env extra]
   (swap! warnings conj {:warning-type warning-type
-                        :env env
-                        :extra extra}))
+                        :env          env
+                        :extra        extra}))
 
 (defmacro with-warnings
   "given a body that produces a compilation result, collect all warnings and assoc into :warnings"
@@ -538,12 +551,13 @@ normalize-resource-name
      (assoc result# :warnings @warnings#)))
 
 (defn compile-cljs-string
-  [state cljs-source name]
+  [state cljs-source name cljc?]
   (with-warnings
     (do-compile-cljs-string
       {:name name :ns 'cljs.user}
       (partial default-compile-cljs state)
-      cljs-source)))
+      cljs-source
+      cljc?)))
 
 (defn compile-cljs-seq
   [state cljs-forms name]
@@ -556,7 +570,7 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [state {:keys [name input] :as rc}]
+  [state {:keys [name input cljc] :as rc}]
 
   (let [source @input]
     (with-logged-time
@@ -564,7 +578,7 @@ normalize-resource-name
       (let [{:keys [js ns requires source-map warnings]}
             (cond
               (string? source)
-              (compile-cljs-string state source name)
+              (compile-cljs-string state source name cljc)
               (vector? source)
               (compile-cljs-seq state source name)
               :else
@@ -601,7 +615,7 @@ normalize-resource-name
                                   #_ (map (fn [{:keys [name last-modified] :as src}]
                                          (prn [:last-mod name last-modified])
                                          last-modified))
-                                  (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
+                                  (remove nil?)             ;; might not have :last-modified (eg. runtime-setup)
                                   (reduce (fn [a b] (Math/max a b))))]
                  (> (.lastModified cache-file) min-age)))
 
@@ -768,10 +782,10 @@ normalize-resource-name
                                  (when-not url
                                    (throw (ex-info (format "Macro namespace: %s not found, required by %s" macro-ns used-by)
                                                    {:ns macro-ns :used-by used-by})))
-                                 {:ns macro-ns
+                                 {:ns      macro-ns
                                   :used-by used-by
-                                  :name name
-                                  :url url})))
+                                  :name    name
+                                  :url     url})))
                         (map (fn [{:keys [url] :as info}]
                                (if (not= "file" (.getProtocol url))
                                  info
@@ -828,11 +842,11 @@ normalize-resource-name
                                {:default default :wants-to-be-default module-name}))))
 
          mod (merge mod-attrs
-                    {:name module-name
-                     :js-name (str (name module-name) ".js")
-                     :mains module-mains
+                    {:name       module-name
+                     :js-name    (str (name module-name) ".js")
+                     :mains      module-mains
                      :depends-on depends-on
-                     :default is-default?})
+                     :default    is-default?})
 
          state (assoc-in state [:modules module-name] mod)
          state (if is-default?
@@ -861,7 +875,7 @@ normalize-resource-name
     (let [constants (with-out-str
                       (comp/emit-constants-table
                         (::ana/constant-table (:compiler-env state))))]
-      (update-in state [:sources "constants_table.js"] merge {:output constants
+      (update-in state [:sources "constants_table.js"] merge {:output      constants
                                                               :compiled-at (System/currentTimeMillis)})
       )))
 
@@ -874,7 +888,7 @@ normalize-resource-name
             :when (seq depends-on)]
       (when-not (set/subset? depends-on module-set)
         (throw (ex-info "module contains dependency on unknown modules"
-                        {:module name
+                        {:module  name
                          :unknown (set/difference depends-on module-set)})))))
 
   (apply lg/digraph
@@ -1012,14 +1026,14 @@ normalize-resource-name
          (string? externs-source)
          (seq externs-source)]}
 
-  (merge-resource state {:type :js
-                         :foreign true
-                         :name name
-                         :js-name name
-                         :provides provides
-                         :requires requires
-                         :output js-source
-                         :input (atom js-source)
+  (merge-resource state {:type           :js
+                         :foreign        true
+                         :name           name
+                         :js-name        name
+                         :provides       provides
+                         :requires       requires
+                         :output         js-source
+                         :input          (atom js-source)
                          :externs-source externs-source
                          }))
 
@@ -1029,12 +1043,12 @@ normalize-resource-name
                               :console "cljs.core.enable_console_print_BANG_();"
                               ;; Node.JS
                               :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
-    {:type :js
-     :name "runtime_setup.js"
-     :js-name "runtime_setup.js"
+    {:type     :js
+     :name     "runtime_setup.js"
+     :js-name  "runtime_setup.js"
      :provides #{'runtime-setup}
      :requires #{'cljs.core}
-     :input (atom src)}))
+     :input    (atom src)}))
 
 (defn generate-output-for-source [state {:keys [name type] :as src}]
   (if (seq (:output src))
@@ -1057,15 +1071,15 @@ normalize-resource-name
           source-names (mapcat :sources modules)
 
           state (with-compiler-env state
-                  (ana/load-core)
-                  (reduce
-                    (fn [state source-name]
-                      (let [src (get-in state [:sources source-name])
-                            src (generate-output-for-source state src)]
-                        (assoc-in state [:sources source-name] src)
-                        ))
-                    state
-                    source-names))]
+                                   (ana/load-core)
+                                   (reduce
+                                     (fn [state source-name]
+                                       (let [src (get-in state [:sources source-name])
+                                             src (generate-output-for-source state src)]
+                                         (assoc-in state [:sources source-name] src)
+                                         ))
+                                     state
+                                     source-names))]
 
       (-> state
           (assoc :build-modules modules)
@@ -1091,7 +1105,7 @@ normalize-resource-name
         ;; if that ever changes return result of sm/encode instead of reparsing it
         (-> (sm/encode merged
                        {:lines (+ (:lineCount sm-json) 2)
-                        :file (:file sm-json)})
+                        :file  (:file sm-json)})
             (json/read-str)
             (assoc "sources" (keys merged))
             ;; sm/encode pprints
@@ -1301,8 +1315,8 @@ normalize-resource-name
 
             ;; skip files we already have since source maps are kinda expensive to generate
             :when (or (not (.exists target))
-                      (nil? last-modified) ;; runtime-setup doesn't have last-modified
-                      (> (or (:compiled-at src) ;; js is not compiled but maybe modified
+                      (nil? last-modified)                  ;; runtime-setup doesn't have last-modified
+                      (> (or (:compiled-at src)             ;; js is not compiled but maybe modified
                              last-modified)
                          (.lastModified target)))]
 
@@ -1413,7 +1427,7 @@ normalize-resource-name
       (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
       (reload-source)
       (as-> src'
-        (inspect-resource config src'))
+            (inspect-resource config src'))
       (cond-> file
               (assoc :last-modified (.lastModified file)))))
 
@@ -1530,28 +1544,28 @@ normalize-resource-name
 (defn reload-modified-files!
   [{:keys [logger] :as state} scan-results]
   (as-> state $state
-    (reduce (fn [state {:keys [scan name file] :as rc}]
-              (case scan
-                :macro
-                (do (log-progress logger (format "Macro File modified: %s" name))
-                    (require (:ns rc) :reload-all)
-                    (assoc-in state [:macros name] (dissoc rc :scan)))
-                :delete
-                (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
-                    (unmerge-resource state (:name rc)))
-                :new
-                (do (log-progress logger (format "Found new file: %s -> %s" name file))
-                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
+        (reduce (fn [state {:keys [scan name file] :as rc}]
+                  (case scan
+                    :macro
+                    (do (log-progress logger (format "Macro File modified: %s" name))
+                        (require (:ns rc) :reload-all)
+                        (assoc-in state [:macros name] (dissoc rc :scan)))
+                    :delete
+                    (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
+                        (unmerge-resource state (:name rc)))
+                    :new
+                    (do (log-progress logger (format "Found new file: %s -> %s" name file))
+                        (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
 
-                :modified
-                (do (log-progress logger (format "File modified: %s -> %s" name file))
-                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
-            $state
-            scan-results)
+                    :modified
+                    (do (log-progress logger (format "File modified: %s -> %s" name file))
+                        (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+                $state
+                scan-results)
 
-    ;; FIXME: this is kinda ugly but need a way to discover newly required macros
-    (discover-macros $state)
-    ))
+        ;; FIXME: this is kinda ugly but need a way to discover newly required macros
+        (discover-macros $state)
+        ))
 
 (defn wait-and-reload!
   "wait for modified files, reload them and return reloaded state"
@@ -1564,13 +1578,13 @@ normalize-resource-name
   (-> state
       (assoc :emit-constants true)
       (assoc-in [:compiler-env :opts :emit-constants] true)
-      (merge-resource {:type :js
+      (merge-resource {:type      :js
                        :generated true
-                       :js-name "constants_table.js"
-                       :name "constants_table.js"
-                       :provides #{'constants-table}
-                       :requires #{}
-                       :input (atom "")})))
+                       :js-name   "constants_table.js"
+                       :name      "constants_table.js"
+                       :provides  #{'constants-table}
+                       :requires  #{}
+                       :input     (atom "")})))
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
@@ -1584,33 +1598,33 @@ normalize-resource-name
   ;; FIXME: can no longer do this here, intern-macros requires compiler env
   ;; (ana/load-core)
 
-  {:compiler-env {} ;; will become env/*compiler*
+  {:compiler-env       {}                                   ;; will become env/*compiler*
 
    ::is-compiler-state true
-   ::cc (make-closure-compiler)
+   ::cc                (make-closure-compiler)
 
-   :runtime {:print-fn :console}
-   :macros-loaded #{}
-   :use-file-min true
+   :runtime            {:print-fn :console}
+   :macros-loaded      #{}
+   :use-file-min       true
 
    :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest")]
                          (io/make-parents dir)
                          dir)
-   :cache-dir (io/file ".cljs-cache")
-   :cache-level :jars
+   :cache-dir          (io/file ".cljs-cache")
+   :cache-level        :jars
 
-   :source-paths {}
-   :closure-defines {"goog.DEBUG" false
-                     "goog.LOCALE" "en"}
-   :logger (reify BuildLog
-             (log-warning [_ msg]
-               (println (str "WARN: " msg)))
-             (log-time-start [_ msg]
-               (println (format "-> %s" msg)))
-             (log-time-end [_ msg ms]
-               (println (format "<- %s (%dms)" msg ms)))
-             (log-progress [_ msg]
-               (println msg)))
+   :source-paths       {}
+   :closure-defines    {"goog.DEBUG"  false
+                        "goog.LOCALE" "en"}
+   :logger             (reify BuildLog
+                         (log-warning [_ msg]
+                           (println (str "WARN: " msg)))
+                         (log-time-start [_ msg]
+                           (println (format "-> %s" msg)))
+                         (log-time-end [_ msg ms]
+                           (println (format "<- %s (%dms)" msg ms)))
+                         (log-progress [_ msg]
+                           (println msg)))
    })
 
 (defn watch-and-repeat! [state callback]
@@ -1669,20 +1683,20 @@ normalize-resource-name
   state)
 
 (defn setup-test-runner [state test-namespaces]
-  (let [test-runner-src {:name "test_runner.cljs"
-                         :js-name "test_runner.js"
-                         :type :cljs
+  (let [test-runner-src {:name     "test_runner.cljs"
+                         :js-name  "test_runner.js"
+                         :type     :cljs
                          :provides #{'test-runner}
                          :requires (into #{'cljs.test} test-namespaces)
-                         :ns 'test-runner
+                         :ns       'test-runner
                          ;; FIXME: there should a better way for this?
-                         :input (atom [(list 'ns 'test-runner
-                                             (concat
-                                               (list :require '[cljs.test])
-                                               (mapv vector test-namespaces)))
-                                       (concat (list 'cljs.test/run-tests '(cljs.test/empty-env))
-                                               (for [it test-namespaces]
-                                                 `(quote ~it)))])}]
+                         :input    (atom [(list 'ns 'test-runner
+                                                (concat
+                                                  (list :require '[cljs.test])
+                                                  (mapv vector test-namespaces)))
+                                          (concat (list 'cljs.test/run-tests '(cljs.test/empty-env))
+                                                  (for [it test-namespaces]
+                                                    `(quote ~it)))])}]
     (-> state
         (merge-resource test-runner-src)
         (reset-modules)

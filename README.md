@@ -14,8 +14,8 @@ Right now this really only is a library and not a tool like lein-cljsbuild. But 
 
 ```clojure
 :profiles {:dev {:source-paths ["dev"]
-                 :dependencies [[org.clojure/clojurescript "0.0-2913"]
-                                [thheller/shadow-build "1.0.0-alpha9"]]}}
+                 :dependencies [[org.clojure/clojurescript "0.0-3190"]
+                                [thheller/shadow-build "1.0.0-alpha11"]]}}
 ```
 
 I recommend putting it into the :dev profile since you usually don't need it in production. You'll also need to provide ClojureScript itself. Currently the minimum required version is 0.0-2127 (avoid releases 2197-2263).
