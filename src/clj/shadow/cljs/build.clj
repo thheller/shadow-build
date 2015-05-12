@@ -778,7 +778,12 @@ normalize-resource-name
                                 {})
                         (map (fn [[macro-ns used-by]]
                                (let [name (str (ns->path macro-ns) ".clj")
-                                     url (io/resource name)]
+                                     url (io/resource name)
+                                     ;; FIXME: clean this up, must look for .clj and .cljc
+                                     [name url] (if url
+                                                  [name url]
+                                                  (let [name (str name "c")]
+                                                    [name (io/resource name)]))]
                                  (when-not url
                                    (throw (ex-info (format "Macro namespace: %s not found, required by %s" macro-ns used-by)
                                                    {:ns macro-ns :used-by used-by})))
