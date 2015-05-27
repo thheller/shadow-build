@@ -197,13 +197,13 @@
               (cljs/step-find-resources-in-jars)
               (cljs/step-find-resources "cljs-data/dummy/src")
               (cljs/step-finalize-config)
-              (cljs/step-configure-module :test ['shadow.cljc] #{})
+              (cljs/step-configure-module :test ['cljs.repl] #{})
               (cljs/step-compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
               ;;(cljs/flush-unoptimized)
               )]
-    (println (get-in s [:sources "shadow/cljc.cljc" :output]))))
+    (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
 (deftest test-dev-api
   (-> (cljs/init-state)
