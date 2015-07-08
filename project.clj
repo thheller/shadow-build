@@ -15,7 +15,7 @@
                  "src/cljs"]
 
   :profiles {:dev {:source-paths ["dev"]
-                   :dependencies [[org.clojure/clojure "1.7.0-RC1"]
+                   :dependencies [[org.clojure/clojure "1.7.0"]
                                   [org.clojure/tools.namespace "0.2.4"]
                                   [org.clojure/clojurescript "0.0-3269"]
                                   ;; [thheller/clojurescript "0.0-2665+948"]

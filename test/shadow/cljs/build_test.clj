@@ -8,10 +8,12 @@
             [clojure.string :as str]
             [clojure.java.io :as io]
             [cljs.analyzer :as a]
-            [clojure.set :as set])
+            [clojure.set :as set]
+            [cljs.closure :as closure])
   (:import (java.util.regex Pattern)
            (java.io File)
-           (java.net URL)))
+           (java.net URL)
+           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile)))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -406,3 +408,21 @@
         read (do (cljs/write-cache out data)
                  (cljs/read-cache out))]
     (is (= data read))))
+
+
+(deftest test-es6-conversion
+  (let [cc (cljs/make-closure-compiler)
+        co (doto (CompilerOptions.)
+             (.setCodingConvention (ClosureCodingConvention.))
+             (.setProcessCommonJSModules true))
+        ]
+    (.compile cc [] [(SourceFile/fromCode "test.js" "var yo = require('something'); exports.hello = function(name) { return \"hello \" + yo(name); }")] co)
+
+    (prn [:co (.toSource cc)])
+    ))
+
+(deftest test-ignore-patterns
+  (let [state (cljs/init-state)]
+    (is (cljs/should-ignore-resource? state "node_modules/react/addons.js"))
+    (is (not (cljs/should-ignore-resource? state "shadow/dom.js")))
+    ))

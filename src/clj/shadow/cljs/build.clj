@@ -260,6 +260,16 @@ normalize-resource-name
     (update-in foreign-libs [0 :externs] concat externs)
     foreign-libs))
 
+(defn should-ignore-resource?
+[{:keys [ignore-patterns] :as state} name]
+(loop [patterns ignore-patterns]
+  (if-let [pattern (first patterns)]
+    (if (re-find pattern name)
+      true
+      (recur (rest patterns)))
+    false
+    )))
+
 (defn create-jar-manifest
   "returns a map of {source-name resource-info}"
   [state path]
@@ -278,9 +288,7 @@ normalize-resource-name
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
           (if (or (not (is-cljs-resource? name))
-                  (.startsWith name "goog/demos/")
-                  (.endsWith name ".aot.js") ;; caching > special case aot core.cljs
-                  (.endsWith name "_test.js"))
+                  (should-ignore-resource? state name))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
                   rc (inspect-resource state
@@ -374,7 +382,8 @@ normalize-resource-name
     (-> (process-deps-cljs state manifest)
         (vals))))
 
-(defn find-fs-resources [state ^String path]
+(defn find-fs-resources
+  [state ^String path]
   {:pre [(compiler-state? state)
          (seq path)]}
   (let [root (io/file path)
@@ -384,13 +393,15 @@ normalize-resource-name
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
                      (not (.isHidden file)))
-          :let [url (.toURL (.toURI file))]]
+          :let [url (.toURL (.toURI file))
+                name (-> abs-path
+                         (.substring root-len)
+                         (normalize-resource-name))]
+          :when (not (should-ignore-resource? state name))]
 
       (inspect-resource
         state
-        {:name (-> abs-path
-                   (.substring root-len)
-                   (normalize-resource-name))
+        {:name name
          :file file
          :source-path path
          :last-modified (.lastModified file)
@@ -1637,6 +1648,11 @@ normalize-resource-name
   ;; (ana/load-core)
 
   {:compiler-env {} ;; will become env/*compiler*
+
+   :ignore-patterns #{#"^node_modules/"
+                      #"^goog/demos/"
+                      #".aot.js$"
+                      #"_test.js$"}
 
    ::is-compiler-state true
    ::cc (make-closure-compiler)

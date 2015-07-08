@@ -20,7 +20,7 @@
     <orderEntry type="library" name="Leiningen: clojure-complete:0.2.3" level="project" />
     <orderEntry type="library" name="Leiningen: com.cognitect/transit-clj:0.8.269" level="project" />
     <orderEntry type="library" name="Leiningen: http-kit:2.1.18" level="project" />
-    <orderEntry type="library" name="Leiningen: org.clojure/clojure:1.7.0-RC1" level="project" />
+    <orderEntry type="library" name="Leiningen: org.clojure/clojure:1.7.0" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/clojurescript:0.0-3269" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/tools.namespace:0.2.4" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/tools.nrepl:0.2.6" level="project" />
