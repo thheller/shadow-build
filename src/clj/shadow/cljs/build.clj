@@ -261,14 +261,14 @@ normalize-resource-name
     foreign-libs))
 
 (defn should-ignore-resource?
-[{:keys [ignore-patterns] :as state} name]
-(loop [patterns ignore-patterns]
-  (if-let [pattern (first patterns)]
-    (if (re-find pattern name)
-      true
-      (recur (rest patterns)))
-    false
-    )))
+  [{:keys [ignore-patterns] :as state} name]
+  (loop [patterns ignore-patterns]
+    (if-let [pattern (first patterns)]
+      (if (re-find pattern name)
+        true
+        (recur (rest patterns)))
+      false
+      )))
 
 (defn create-jar-manifest
   "returns a map of {source-name resource-info}"

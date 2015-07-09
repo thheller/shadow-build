@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "1.0.0-alpha12"
+(defproject thheller/shadow-build "1.0.0-alpha13"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
@@ -6,7 +6,7 @@
 
   :dependencies [[aysylu/loom "0.5.0"]
                  [http-kit "2.1.18"]
-                 [com.cognitect/transit-clj "0.8.269"]
+                 [com.cognitect/transit-clj "0.8.275"]
                  ;; [org.clojure/core.typed "0.2.84"]
                  ]
 
