@@ -1,6 +1,7 @@
 (ns build
   (:require [shadow.cljs.build :as cljs]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [shadow.sass :as sass]))
 
 (defn workers
   [& args]
@@ -61,6 +62,14 @@
                 (not (empty? modified))
                 (cljs/execute-affected-tests! modified))
               ))) ))
+
+(def css-dir (io/file "assets" "css"))
+(def css-target-dir (io/file "tmp"))
+
+(defn build-css []
+  (sass/build-with-manifest
+    [(io/file css-dir "mod-a.scss")]
+    css-target-dir))
 
 (comment
   (defn repl
