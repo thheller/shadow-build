@@ -11,7 +11,7 @@
              :pretty-print false
              :work-dir (io/file "target/cljs-work")
              :public-dir (io/file "cljs-data/workers/out")
-             :public-path "out")
+             :public-path "/out")
       (cljs/step-find-resources-in-jars)
       (cljs/step-find-resources "cljs-data/workers/src")
       (cljs/step-finalize-config)
@@ -23,8 +23,10 @@
       (cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
 
       (cljs/step-compile-modules)
-      (cljs/closure-optimize)
-      (cljs/flush-modules-to-disk)
+      (cljs/flush-unoptimized)
+      
+      ;; (cljs/closure-optimize)
+      ;; (cljs/flush-modules-to-disk)
       ))
 
 (defn dev

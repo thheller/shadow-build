@@ -1403,7 +1403,7 @@ normalize-resource-name
     (flush-manifest public-dir build-modules)
 
     ;; flush fake modules
-    (doseq [{:keys [default js-name name prepend prepend-js append-js sources] :as mod} build-modules]
+    (doseq [{:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod} build-modules]
       (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
                                 sources)
             target (io/file public-dir js-name)
@@ -1413,9 +1413,11 @@ normalize-resource-name
                             (str "goog.require('" (comp/munge ns) "');")))
                      (str/join "\n"))
             out (str prepend prepend-js out append-js)
-            out (if default
+            out (if (or default web-worker)
                   ;; default mod needs closure related setup and goog.addDependency stuff
                   (str unoptimizable
+                       (when web-worker
+                         "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
                        (closure-defines-and-base state)
                        (closure-goog-deps state)
                        "\n\n"
