@@ -16,7 +16,6 @@
                  (.inheritIO)
                  (.start))]
     (.waitFor proc)
-    ;; FIXME: verify that we exited with 0?
     (when-not (zero? (.exitValue proc))
       (throw (ex-info (str "failed to build css module: " file) {})))))
 

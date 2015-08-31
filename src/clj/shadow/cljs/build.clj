@@ -487,8 +487,12 @@ normalize-resource-name
          (seq name)]}
   ;; (defmulti parse (fn [op & rest] op))
   (let [default-parse ana/parse]
-
     (binding [*ns* (create-ns ns)
+              ana/*passes* [ana/infer-type]
+              ;; [infer-type ns-side-effects] is default, we don't want the side effects
+              ;; altough it is great that the side effects are now optional
+              ;; the default still doesn't handle macros properly
+              ;; so we keep hijacking
               ana/*cljs-ns* ns
               ana/*cljs-file* name]
 
