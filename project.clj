@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "1.0.0-alpha15"
+(defproject thheller/shadow-build "1.0.0-alpha16"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license {:name "Eclipse Public License"
@@ -27,6 +27,7 @@
   :plugins [[codox "0.8.13"]]
   
   :codox {:sources ["src/clj"]
+          :exclude [shadow.cljs.util]
           :output-dir "doc/codox"}
 
   ;; this stuff is deprecated

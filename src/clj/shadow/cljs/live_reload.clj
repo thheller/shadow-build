@@ -6,7 +6,7 @@
             [org.httpkit.server :as hk]
             [cljs.compiler :as comp]))
 
-(defn start-server [{:keys [logger] :as state} {:keys [port host] :as config}]
+(defn- start-server [{:keys [logger] :as state} {:keys [port host] :as config}]
   (let [changes (atom {})
         handler (fn [ring-request]
                   (let [client-id (UUID/randomUUID)]
@@ -25,9 +25,9 @@
                                              (println (format "Closing WebSocket: %s [%s]" client-id status))
                                              (remove-watch changes client-id)))))
 
-                        (hk/send! channel {:status 200
+                        (hk/send! channel {:status 406 ;; not-acceptable
                                            :headers {"Content-Type" "text/plain"}
-                                           :body "Long polling?"})))))]
+                                           :body "websocket required"})))))]
 
     (add-watch changes :change-dump
                (fn [_ _ _ {:keys [js] :as new}]
@@ -44,36 +44,48 @@
        :changes changes
        })))
 
-(defn setup [{:keys [public-path] :as state} {:keys [before-load after-load] :as config}]
-  (if (not config)
-    state
-    (let [{:keys [host port] :as server} (start-server state config)
-          config (assoc config
-                        :socket-url (str "ws://" host ":" port "/socket")
-                        :public-path public-path
-                        :before-load (when before-load
-                                       (str (comp/munge before-load)))
-                        :after-load (when after-load
-                                      (str (comp/munge after-load))))]
-      (println (format "Live-Reload started: %s" (pr-str config)))
-      (-> state
-          (assoc :live-reload {:server server
-                               :config config})
-          ;; (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
-          (cljs/merge-resource
-            {:type  :cljs
-             :last-modified (System/currentTimeMillis)
-             :input (atom (str "(ns shadow.cljs.live-reload-init (:require [shadow.cljs.live-reload :as lr]))"
-                               "(lr/setup " (pr-str config) ")"))
-             :name "shadow/cljs/live_reload_init.cljs"
-             :js-name "shadow/cljs/live_reload_init.js"
-             :requires #{'shadow.cljs.live-reload}
-             :provides #{'shadow.cljs.live-reload-init}
-             })
-          (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload-init)
-          ))))
+(defn setup
+  "configure live-reload, use after cljs/finalize-config
 
-(defn notify! [{:keys [live-reload] :as state} modified]
+   config is a map with these options:
+   :host the interface to create the websocket server on (defaults to \"localhost\")
+   :port the port to listen to (defaults to random port)
+   :before-load fully qualified function name to execute BEFORE reloading new files
+   :after-load fully qualified function name to execute AFTER reloading ALL files
+
+   live-reload will only load namespaces that were already required"
+  [state config]
+  (let [{:keys [public-path logger]} state
+        {:keys [before-load after-load]} config]
+    (if (not config)
+      state
+      (let [{:keys [host port] :as server} (start-server state config)
+            config (assoc config
+                     :socket-url (str "ws://" host ":" port "/socket")
+                     :public-path public-path
+                     :before-load (when before-load
+                                    (str (comp/munge before-load)))
+                     :after-load (when after-load
+                                   (str (comp/munge after-load))))]
+        (cljs/log-progress logger (format "Live-Reload started: %s" (pr-str config)))
+        (-> state
+            (assoc :live-reload {:server server
+                                 :config config})
+            ;; (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
+            (cljs/merge-resource
+             {:type  :cljs
+              :last-modified (System/currentTimeMillis)
+              :input (atom (str "(ns shadow.cljs.live-reload-init (:require [shadow.cljs.live-reload :as lr]))"
+                                "(lr/setup " (pr-str config) ")"))
+              :name "shadow/cljs/live_reload_init.cljs"
+              :js-name "shadow/cljs/live_reload_init.js"
+              :requires #{'shadow.cljs.live-reload}
+              :provides #{'shadow.cljs.live-reload-init}
+              })
+            (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload-init)
+            )))))
+
+(defn- notify! [{:keys [live-reload] :as state} modified]
   (when (and live-reload (seq modified))
     (let [data (->> modified
                     (map (fn [name]
@@ -87,7 +99,9 @@
       ))
   state)
 
-(defn wrap [callback]
+(defn wrap
+  "wrap a watch-and-repeat! callback which will handle the live-reload notifications"
+  [callback]
   (fn [state modified]
     (-> state
         (callback modified)

@@ -51,19 +51,20 @@
       (transit/read r)
       )))
 
-
-(def a-resource
-  '{:input deref
-    :output string
-    :type (either :js :cljs)
-    :jar boolean
-    :last-modified long
-    :requires #{name}
-    :provides #{name}
-    ;; only :cljs
-    :ns name
-    :ns-info ns-info
-    })
+(comment
+  ;; maybe add some kind of type info later
+  (def a-resource
+    '{:input deref
+      :output string
+      :type (either :js :cljs)
+      :jar boolean
+      :last-modified long
+      :requires #{name}
+      :provides #{name}
+      ;; only :cljs
+      :ns name
+      :ns-info ns-info
+      }))
 
 (defprotocol BuildLog
   (log-warning [this log-string])
@@ -71,7 +72,9 @@
   (log-time-start [this log-string])
   (log-time-end [this log-string time-in-ms]))
 
-(def ^:dynamic *time-depth* 0)
+(def ^{:dynamic true
+       :private true}
+  *time-depth* 0)
 
 (defmacro with-logged-time
   [[logger msg] & body]
