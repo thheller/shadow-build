@@ -24,6 +24,12 @@
                                   ;; [thheller/clojurescript "0.0-2665+948"]
                                   ]}}
 
+  :plugins [[codox "0.8.13"]]
+  
+  :codox {:sources ["src/clj"]
+          :output-dir "doc/codox"}
+
+  ;; this stuff is deprecated
   :aliases {"cljs-dev" ["run" "-m" "shadow.cljs.api/build-dev" :project/cljs]
             "cljs-prod" ["run" "-m" "shadow.cljs.api/build-prod" :project/cljs]}
 

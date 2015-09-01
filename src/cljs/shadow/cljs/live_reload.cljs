@@ -16,8 +16,7 @@
       (.debug js/console a1 a2)))
   ([a1 a2 a3]
     (when (aget js/window "console" "debug")
-      (.debug js/console a1 a2 a3)))
-  )
+      (.debug js/console a1 a2 a3))))
 
 (def loaded? js/goog.isProvided_)
 
@@ -74,7 +73,4 @@
                                  (.warn js/console "LIVE RELOAD disconnected! (reload page to reconnect)")))
       (set! (.-onerror socket) (fn [e]))
       socket)))
-
-;; shadow.cljs.api/build-dev will append a
-;; (setup my-config) here
 
