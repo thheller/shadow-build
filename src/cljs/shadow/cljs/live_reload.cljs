@@ -1,5 +1,6 @@
 (ns shadow.cljs.live-reload
   (:require [cljs.reader :as reader]
+            [goog.dom :as gdom]
             [goog.net.jsloader :as loader]))
 
 
@@ -20,7 +21,8 @@
 
 (def loaded? js/goog.isProvided_)
 
-(defn handle-changes [{:keys [public-path before-load after-load] :as config} {:keys [js] :as changes}]
+
+(defn handle-js-changes [{:keys [public-path before-load after-load] :as config} js]
   (let [js-to-reload (->> js
                           ;; only reload things we actually require'd somewhere
                           (filter (fn [{:keys [provides]}]
@@ -55,6 +57,28 @@
                                   (.addBoth load-next)))
                           (after-load-fn)))]
         (load-next)))))
+
+(defn handle-css-changes [config data]
+  (doseq [[package-name package-info] data 
+          :let [{:keys [manifest path]} package-info]
+          [css-name css-path] manifest]
+    (when-let [node (js/document.querySelector (str "link[data-css-package=\"" package-name "\"][data-css-module=\"" css-name "\"]"))]
+      (let [parent (gdom/getParentElement node)
+            full-path (str path "/" css-path)
+            new-link (doto (js/document.createElement "link")
+                       (.setAttribute "rel" "stylesheet")
+                       (.setAttribute "href" (str full-path "?r=" (rand)))
+                       (.setAttribute "data-css-package" package-name)
+                       (.setAttribute "data-css-module" css-name))]
+        (debug (str "CSS: reload \"" full-path "\""))
+        (gdom/insertSiblingAfter new-link node)
+        (gdom/removeNode node)
+        ))))
+
+(defn handle-changes [config {:keys [type data] :as changes}]
+  (case type
+    :js (handle-js-changes config data)
+    :css (handle-css-changes config data)))
 
 (defn setup [{:keys [socket-url] :as config}]
   (debug "LIVE RELOAD:" (pr-str config))

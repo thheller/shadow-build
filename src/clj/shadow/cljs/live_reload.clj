@@ -3,19 +3,18 @@
   (:require [shadow.cljs.build :as cljs]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
+            [clojure.data.json :as json]
             [org.httpkit.server :as hk]
             [cljs.compiler :as comp]))
 
 (defn- start-server [{:keys [logger] :as state} {:keys [port host] :as config}]
-  (let [changes (atom {})
+  (let [clients (atom {})
         handler (fn [ring-request]
                   (let [client-id (UUID/randomUUID)]
                     (hk/with-channel
                       ring-request channel
                       (if (hk/websocket? channel)
-                        (do (add-watch changes client-id
-                                       (fn [_ _ _ new]
-                                         (hk/send! channel (pr-str new))))
+                        (do (swap! clients assoc client-id channel)
 
                             (doto channel
                               (hk/on-receive (fn [data]
@@ -23,17 +22,11 @@
 
                               (hk/on-close (fn [status]
                                              (println (format "Closing WebSocket: %s [%s]" client-id status))
-                                             (remove-watch changes client-id)))))
+                                             (swap! clients dissoc client-id)))))
 
                         (hk/send! channel {:status 406 ;; not-acceptable
                                            :headers {"Content-Type" "text/plain"}
                                            :body "websocket required"})))))]
-
-    (add-watch changes :change-dump
-               (fn [_ _ _ {:keys [js] :as new}]
-                 (doseq [{:keys [name]} js]
-                   (cljs/log-progress logger (format "RELOAD: %s" name)))))
-
 
     (let [host (or host "localhost")
           instance (hk/run-server handler {:ip host
@@ -41,8 +34,59 @@
       {:instance instance
        :port (:local-port (meta instance))
        :host host
-       :changes changes
+       :clients clients
+       :broadcast (fn [type data]
+                    (doseq [[client-id client] @clients]
+                      (try
+                        (hk/send! client (pr-str {:type type
+                                                  :data data}))
+                        (catch Exception e
+                          (prn [:failed-to-broadcast client-id e])))))
        })))
+
+(defn get-css-state [packages]
+  (reduce-kv
+   (fn [s k {:keys [manifest] :as v}]
+     (let [file (io/file manifest)]
+       (assoc s k (if (.exists file)
+                    (.lastModified file)
+                    0))))
+   {}
+   packages))
+
+(defn- read-css-manifest [{:keys [manifest path] :as package}]
+  (->> (io/file manifest)
+       (slurp)
+       (json/read-str)
+       (assoc package :manifest)))
+
+(defn- setup-css-watch [state packages]
+  (let [package-names (keys packages)
+        broadcast-fn (get-in state [:live-reload :server :broadcast])
+        css-watch (doto (Thread.
+                         (fn []
+                           (loop [css-state (get-css-state packages)]
+                             (Thread/sleep 500) ;; FIXME: don't use sleep 
+                             (let [new-state (get-css-state packages)
+                                   changed (reduce
+                                            (fn [changed package-name]
+                                              (let [old (get css-state package-name)
+                                                    new (get new-state package-name)]
+                                                (if (not= old new)
+                                                  (conj changed package-name)
+                                                  changed)))
+                                            #{}
+                                            package-names)]
+                               (when (seq changed)
+                                 (let [change-data (reduce (fn [data package-name]
+                                                             (assoc data package-name (read-css-manifest (get packages package-name))))
+                                                           {}
+                                                           changed)]
+                                   (broadcast-fn :css change-data)))
+                               (recur new-state)
+                               ))))
+                    (.start))]
+    (assoc-in state [:live-reload :css-watch] css-watch)))
 
 (defn setup
   "configure live-reload, use after cljs/finalize-config
@@ -56,7 +100,7 @@
    live-reload will only load namespaces that were already required"
   [state config]
   (let [{:keys [public-path logger]} state
-        {:keys [before-load after-load]} config]
+        {:keys [before-load after-load css-packages]} config]
     (if (not config)
       state
       (let [{:keys [host port] :as server} (start-server state config)
@@ -83,6 +127,9 @@
               :provides #{'shadow.cljs.live-reload-init}
               })
             (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload-init)
+            (cond->
+             css-packages
+             (setup-css-watch css-packages))
             )))))
 
 (defn- notify! [{:keys [live-reload] :as state} modified]
@@ -94,9 +141,8 @@
                               :js-name js-name
                               :provides (map #(str (comp/munge %)) provides)})))
                     (into []))
-          changes (get-in state [:live-reload :server :changes])]
-      (swap! changes assoc-in [:js] data)
-      ))
+          broadcast-fn (get-in state [:live-reload :server :broadcast])]
+      (broadcast-fn :js data)))
   state)
 
 (defn wrap
