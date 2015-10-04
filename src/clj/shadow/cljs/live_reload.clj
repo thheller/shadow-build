@@ -1,11 +1,22 @@
 (ns shadow.cljs.live-reload
-  (:import (java.util UUID))
+  (:import (java.util UUID)
+           (java.io InputStreamReader BufferedReader))
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.repl :as repl]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.data.json :as json]
             [org.httpkit.server :as hk]
-            [cljs.compiler :as comp]))
+            [cljs.compiler :as comp]
+            [clojure.edn :as edn]
+            [clojure.core.async :as async :refer (go <! >! <!! >!! alt! timeout)]
+            [shadow.cljs.repl :as repl]))
+
+(defn handle-client-data [msg]
+  (let [{:keys [value] :as msg} (edn/read-string msg)]
+    (println value)
+    (.format System/err "REPL-RESULT: %s%n" (object-array [(pr-str msg)]))
+    ))
 
 (defn- start-server [{:keys [logger] :as state} {:keys [port host] :as config}]
   (let [clients (atom {})
@@ -18,11 +29,12 @@
 
                             (doto channel
                               (hk/on-receive (fn [data]
-                                               (prn [:websocket-sending-me-things data])))
+                                               (handle-client-data data)))
 
                               (hk/on-close (fn [status]
                                              (println (format "Closing WebSocket: %s [%s]" client-id status))
-                                             (swap! clients dissoc client-id)))))
+                                             (swap! clients dissoc client-id))))
+                            )
 
                         (hk/send! channel {:status 406 ;; not-acceptable
                                            :headers {"Content-Type" "text/plain"}
@@ -46,13 +58,13 @@
 
 (defn get-css-state [packages]
   (reduce-kv
-   (fn [s k {:keys [manifest] :as v}]
-     (let [file (io/file manifest)]
-       (assoc s k (if (.exists file)
-                    (.lastModified file)
-                    0))))
-   {}
-   packages))
+    (fn [s k {:keys [manifest] :as v}]
+      (let [file (io/file manifest)]
+        (assoc s k (if (.exists file)
+                     (.lastModified file)
+                     0))))
+    {}
+    packages))
 
 (defn- read-css-manifest [{:keys [manifest path] :as package}]
   (->> (io/file manifest)
@@ -64,27 +76,27 @@
   (let [package-names (keys packages)
         broadcast-fn (get-in state [:live-reload :server :broadcast])
         css-watch (doto (Thread.
-                         (fn []
-                           (loop [css-state (get-css-state packages)]
-                             (Thread/sleep 500) ;; FIXME: don't use sleep 
-                             (let [new-state (get-css-state packages)
-                                   changed (reduce
-                                            (fn [changed package-name]
-                                              (let [old (get css-state package-name)
-                                                    new (get new-state package-name)]
-                                                (if (not= old new)
-                                                  (conj changed package-name)
-                                                  changed)))
-                                            #{}
-                                            package-names)]
-                               (when (seq changed)
-                                 (let [change-data (reduce (fn [data package-name]
-                                                             (assoc data package-name (read-css-manifest (get packages package-name))))
-                                                           {}
-                                                           changed)]
-                                   (broadcast-fn :css change-data)))
-                               (recur new-state)
-                               ))))
+                          (fn []
+                            (loop [css-state (get-css-state packages)]
+                              (Thread/sleep 500) ;; FIXME: don't use sleep
+                              (let [new-state (get-css-state packages)
+                                    changed (reduce
+                                              (fn [changed package-name]
+                                                (let [old (get css-state package-name)
+                                                      new (get new-state package-name)]
+                                                  (if (not= old new)
+                                                    (conj changed package-name)
+                                                    changed)))
+                                              #{}
+                                              package-names)]
+                                (when (seq changed)
+                                  (let [change-data (reduce (fn [data package-name]
+                                                              (assoc data package-name (read-css-manifest (get packages package-name))))
+                                                            {}
+                                                            changed)]
+                                    (broadcast-fn :css change-data)))
+                                (recur new-state)
+                                ))))
                     (.start))]
     (assoc-in state [:live-reload :css-watch] css-watch)))
 
@@ -117,19 +129,19 @@
                                  :config config})
             ;; (cljs/step-find-resources "src/cljs") ;; FIXME: will be in JAR!
             (cljs/merge-resource
-             {:type  :cljs
-              :last-modified (System/currentTimeMillis)
-              :input (atom (str "(ns shadow.cljs.live-reload-init (:require [shadow.cljs.live-reload :as lr]))"
-                                "(lr/setup " (pr-str config) ")"))
-              :name "shadow/cljs/live_reload_init.cljs"
-              :js-name "shadow/cljs/live_reload_init.js"
-              :requires #{'shadow.cljs.live-reload}
-              :provides #{'shadow.cljs.live-reload-init}
-              })
+              {:type :cljs
+               :last-modified (System/currentTimeMillis)
+               :input (atom (str "(ns shadow.cljs.live-reload-init (:require [shadow.cljs.live-reload :as lr]))"
+                                 "(lr/setup " (pr-str config) ")"))
+               :name "shadow/cljs/live_reload_init.cljs"
+               :js-name "shadow/cljs/live_reload_init.js"
+               :requires #{'shadow.cljs.live-reload}
+               :provides #{'shadow.cljs.live-reload-init}
+               })
             (update-in [:modules (:default-module state) :mains] conj 'shadow.cljs.live-reload-init)
             (cond->
-             css-packages
-             (setup-css-watch css-packages))
+              css-packages
+              (setup-css-watch css-packages))
             )))))
 
 (defn- notify! [{:keys [live-reload] :as state} modified]
@@ -152,3 +164,102 @@
     (-> state
         (callback modified)
         (notify! modified))))
+
+(defn setup-repl [state config]
+  (repl/prepare state))
+
+(defn handle-repl-input [{:keys [repl-state] :as state} repl-input repl-result]
+  (prn [:handle-repl-input repl-input])
+
+  (let [clients @(get-in state [:live-reload :server :clients])]
+
+    (cond
+      (> (count clients) 1)
+      (do (prn [:too-many-clients (count clients)])
+          state)
+
+      (zero? (count clients))
+      (do (prn [:no-browser-connected])
+          state)
+
+      :else
+      (let [[client-id channel] (first clients)
+            start-idx (count (:repl-actions repl-state))
+
+            {:keys [repl-state] :as state}
+            (try
+              (repl/process-input state repl-input)
+              (catch Throwable e
+                (prn [:failed-to-process-repl-input e])
+                (pprint repl-state)
+                state
+                ))
+
+            new-actions (subvec (:repl-actions repl-state) start-idx)]
+
+        (doseq [[idx action] (map-indexed vector new-actions)
+                :let [idx (+ idx start-idx)
+                      action (assoc action :id idx)]]
+
+          (prn [:invoke action])
+          (hk/send! channel (pr-str action)))
+
+        state
+        ))))
+
+(defn print-repl-result [state result]
+  (prn [:repl-result]))
+
+(defn start-repl [state config callback]
+  (let [repl-input (async/chan)
+        repl-result (async/chan)
+        state (-> state
+                  (setup config)
+                  (setup-repl config)
+                  (callback []))]
+
+    (go (loop [state state
+               i 0]
+          (alt!
+            repl-input
+            ([v]
+              (when-not (nil? v)
+                (recur (handle-repl-input state v repl-result) i)))
+
+            repl-result
+            ([v]
+              (when-not (nil? v)
+                (print-repl-result state v)
+                (recur state i)
+                ))
+
+            (timeout 500)
+            ([_]
+              (let [modified (cljs/scan-for-modified-files state)
+                    modified (if (zero? (mod i 5))
+                               (concat modified (cljs/scan-for-new-files state))
+                               modified)]
+                (if-not (seq modified)
+                  (recur state (inc i))
+                  (do (prn [:reloading-modified])
+                      (recur (-> state
+                                 (cljs/reload-modified-files! modified)
+                                 (callback (mapv :name modified))
+                                 (notify! modified))
+                             (inc i)))
+
+                  ))))))
+
+
+    (let [in (-> System/in
+                 (InputStreamReader.)
+                 (BufferedReader.))]
+      (prn [:repl-ready])
+      (loop []
+        (let [msg (.readLine in)]
+          (when-not (nil? msg)
+            (when (not= msg ":cljs/quit")
+              (>!! repl-input msg)
+              (recur)))))
+      (prn [:repl-quit])
+      )))

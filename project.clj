@@ -16,11 +16,12 @@
 
   :java-source-paths ["src/java"]
 
-  :profiles {:dev {:source-paths ["dev"]
+  :profiles {:dev {:source-paths ["src/dev"]
                    :dependencies [[org.clojure/clojure "1.7.0"]
                                   [org.clojure/tools.namespace "0.2.4"]
                                   [org.clojure/clojurescript "1.7.48"]
                                   [junit/junit "4.12"]
+                                  [org.clojure/core.async "0.1.346.0-17112a-alpha"]
                                   ;; [thheller/clojurescript "0.0-2665+948"]
                                   ]}}
 

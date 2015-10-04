@@ -1,7 +1,9 @@
 (ns build
   (:require [shadow.cljs.build :as cljs]
             [clojure.java.io :as io]
-            [shadow.sass :as sass]))
+            [shadow.sass :as sass]
+            [cljs.analyzer :as ana]
+            [cljs.env :as env]))
 
 (defn workers
   [& args]
@@ -15,8 +17,6 @@
       (cljs/step-find-resources-in-jars)
       (cljs/step-find-resources "cljs-data/workers/src")
       (cljs/step-finalize-config)
-      (cljs/step-compile-core)
-
       (cljs/step-configure-module :cljs ['cljs.core] #{})
       (cljs/step-configure-module :page ['page] #{:cljs})
       (cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
@@ -28,6 +28,15 @@
       ;; (cljs/closure-optimize)
       ;; (cljs/flush-modules-to-disk)
       ))
+
+(defn cold-compile-cljs
+  [& args]
+  (let [state
+        (-> (cljs/init-state)
+            (assoc :cache-level :off)
+            (cljs/step-find-resources-in-jars))]
+    (dotimes [i 10]
+      (cljs/compile-sources state ["cljs/core.cljs"]))))
 
 (defn dev
   [& args]

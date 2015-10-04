@@ -499,7 +499,10 @@ normalize-resource-name
               ana/*cljs-ns* ns
               ana/*cljs-file* name]
 
-      (with-redefs [ana/parse
+      (with-redefs [ana/load-core ;; no-op this, not exactly sure that the point is anyways
+                    (fn [])
+
+                    ana/parse
                     (fn shadow-parse [op env form name opts]
                       (condp = op
                         ;; the default ana/parse 'ns has way too many side effects we don't need or want
@@ -565,6 +568,12 @@ normalize-resource-name
                         :env env
                         :extra extra}))
 
+(defn warning->msg [{:keys [warning-type env extra] :as warning}]
+  (when (contains? ana/*cljs-warnings* warning-type)
+    (when-let [s (ana/error-message warning-type extra)]
+      (ana/message env s)
+      )))
+
 (defmacro with-warnings
   "given a body that produces a compilation result, collect all warnings and assoc into :warnings"
   [& body]
@@ -572,7 +581,7 @@ normalize-resource-name
          result# (ana/with-warning-handlers
                    [(partial warning-collector warnings#)]
                    ~@body)]
-     (assoc result# :warnings @warnings#)))
+     (assoc result# :warnings (mapv warning->msg @warnings#))))
 
 (defn compile-cljs-string
   [state cljs-source name cljc?]
@@ -871,7 +880,7 @@ normalize-resource-name
 
 
 (defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
-  (log-progress logger (format "Resolving deps for: %s" main-cljs))
+  ;; (log-progress logger (format "Resolving deps for: %s" main-cljs))
   (let [deps (get-deps-for-ns state main-cljs)]
     (assoc-in state [:main-deps main-cljs] deps)))
 
@@ -1055,21 +1064,26 @@ normalize-resource-name
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (log-warning logger (format "WARNINGS: %s (%d)" name (count warnings)))
-    (doseq [{:keys [warning-type env extra]} warnings]
-      (when (warning-type ana/*cljs-warnings*)
-        (when-let [s (ana/error-message warning-type extra)]
-          (log-warning logger (ana/message env s))))))
+    (doseq [warning warnings
+            :let [msg (warning->msg warning)]
+            :when msg]
+      (log-warning logger msg)
+      ))
   state)
+
+
+(defn get-deps-for-mains [state mains]
+  (let [state (reduce resolve-main-deps state mains)]
+    (->> mains
+         (mapcat #(get-in state [:main-deps %]))
+         (distinct)
+         (into []))))
 
 (defn do-analyze-module
   "resolve all deps for a given module, based on specified :mains
    will update state for each module with :sources, a list of sources needed to compile this module "
   [state {:keys [name mains] :as module}]
-  (let [state (reduce resolve-main-deps state mains)
-        module-deps (->> mains
-                         (mapcat #(get-in state [:main-deps %]))
-                         (distinct))]
-    (assoc-in state [:modules name :sources] module-deps)))
+  (assoc-in state [:modules name :sources] (get-deps-for-mains state mains)))
 
 (defn add-foreign
   [state name provides requires js-source externs-source]
@@ -1116,26 +1130,29 @@ normalize-resource-name
       (maybe-compile-cljs state src))))
 
 
+(defn compile-sources
+  "compile a list of sources by name"
+  [state source-names]
+  (with-compiler-env state
+    (ana/load-core)
+    (reduce
+      (fn [state source-name]
+        (let [src (get-in state [:sources source-name])
+              src (generate-output-for-source state src)]
+          (assoc-in state [:sources source-name] src)
+          ))
+      state
+      source-names)))
+
+
 (defn step-compile-modules [state]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
     (let [state (merge-resource state (make-runtime-setup state))
           state (reduce do-analyze-module state (-> state :modules (vals)))
-
           modules (sort-and-compact-modules state)
-
           source-names (mapcat :sources modules)
-
-          state (with-compiler-env state
-                                   (ana/load-core)
-                                   (reduce
-                                     (fn [state source-name]
-                                       (let [src (get-in state [:sources source-name])
-                                             src (generate-output-for-source state src)]
-                                         (assoc-in state [:sources source-name] src)
-                                         ))
-                                     state
-                                     source-names))]
+          state (compile-sources state source-names)]
 
       (-> state
           (assoc :build-modules modules)
@@ -1802,3 +1819,4 @@ normalize-resource-name
     ;; return unmodified state!
     state
     ))
+

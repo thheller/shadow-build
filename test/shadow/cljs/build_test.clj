@@ -2,6 +2,7 @@
   (:use clojure.test
         shadow.fix-test)
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.repl :as repl]
             [shadow.cljs.util :as util]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
@@ -426,3 +427,66 @@
     (is (cljs/should-ignore-resource? state "node_modules/react/addons.js"))
     (is (not (cljs/should-ignore-resource? state "shadow/dom.js")))
     ))
+
+
+(defn basic-repl-setup []
+  (-> (cljs/init-state)
+      (cljs/enable-source-maps)
+      (assoc :optimizations :none
+             :pretty-print true
+             :work-dir (io/file "target/cljs-work")
+             :cache-dir (io/file "target/cljs-cache")
+             :cache-level :jars
+             :public-dir (io/file "cljs-data/dummy/out")
+             :public-path "out")
+      (cljs/step-find-resources-in-jars)
+      (cljs/step-find-resources "src/cljs")
+      (cljs/step-find-resources "cljs-data/dummy/src")
+      (cljs/step-find-resources "cljs-data/dummy/test")
+
+      (cljs/step-finalize-config)
+      (cljs/step-compile-core)
+
+      (cljs/step-configure-module :cljs ['cljs.core] #{})
+      (repl/prepare)))
+
+
+(deftest test-plain-js
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(js/console.log \"yo\")"))
+        action (get-in s [:repl-state :repl-actions 0])]
+    (pprint repl-state)))
+
+(deftest test-repl-dump
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(repl-dump)"))]
+    (pprint repl-state)))
+
+
+(deftest test-basic-require
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(require 'basic)"))
+        action (get-in s [:repl-state :repl-actions 0])]
+    (pprint repl-state)
+    (pprint action)))
+
+
+(deftest test-basic-def
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(def x 1)")
+            (repl/process-input "(inc x)")
+            (repl/process-input "x"))]
+
+    (pprint repl-state)
+    ))
+
+(deftest test-require-with-reload
+  (let [s (-> (basic-repl-setup)
+              (repl/process-input "(require ['basic :as 'something] :reload-all)"))
+        action (get-in s [:repl-state :repl-actions 0])]
+    (pprint (:repl-state s))
+    (pprint action)))
