@@ -499,10 +499,7 @@ normalize-resource-name
               ana/*cljs-ns* ns
               ana/*cljs-file* name]
 
-      (with-redefs [ana/load-core ;; no-op this, not exactly sure that the point is anyways
-                    (fn [])
-
-                    ana/parse
+      (with-redefs [ana/parse
                     (fn shadow-parse [op env form name opts]
                       (condp = op
                         ;; the default ana/parse 'ns has way too many side effects we don't need or want
@@ -1134,6 +1131,7 @@ normalize-resource-name
   "compile a list of sources by name"
   [state source-names]
   (with-compiler-env state
+    (ana/load-core)
     (reduce
       (fn [state source-name]
         (let [src (get-in state [:sources source-name])
