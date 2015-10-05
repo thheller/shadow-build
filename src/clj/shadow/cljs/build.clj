@@ -1134,7 +1134,6 @@ normalize-resource-name
   "compile a list of sources by name"
   [state source-names]
   (with-compiler-env state
-    (ana/load-core)
     (reduce
       (fn [state source-name]
         (let [src (get-in state [:sources source-name])

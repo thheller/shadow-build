@@ -8,7 +8,8 @@
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [clojure.walk :as walk]
-            [shadow.cljs.util :as util])
+            [shadow.cljs.util :as util]
+            [cljs.env :as env])
   (:import (clojure.tools.reader.reader_types PushbackReader StringReader)))
 
 (comment
@@ -72,7 +73,8 @@
 (def repl-special-forms
   {'require
    (fn [{:keys [repl-state public-path] :as state} [quoted-require reload-flag] source]
-     (let [require (remove-quotes quoted-require)
+     (let [current-ns (get-in repl-state [:current :ns])
+           require (remove-quotes quoted-require)
            ;; parsing this twice to easily get a diff, could probably be simpler
            {:keys [requires]} (util/parse-ns-require-parts :requires {} [require])
            new-requires (into #{} (vals requires))
@@ -80,12 +82,21 @@
            ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
            deps (cljs/get-deps-for-mains state new-requires)
            old-deps (into #{} (:repl-sources repl-state))
-           new-deps (->> deps (remove old-deps) (into []))]
+           new-deps (->> deps (remove old-deps) (into []))
+
+           update-compiler-env
+           (fn [state]
+             ;; need to update the actual compiler env
+             ;; not the one in state, with-compiler-env will swap env/*compiler* into state
+             ;; FIXME: do we have to be in with-compiler-env?
+             (swap! env/*compiler* update-in [::ana/namespaces current-ns] merge ns-info)
+             state)]
 
        (-> state
            ;; FIXME: should assoc ns-info in :sources also so we can get it back later
            ;; FIXME: also needs to flush
            (cljs/compile-sources deps)
+           (update-compiler-env)
            (assoc-in [:repl-state :current :ns-info] ns-info)
            (update-in [:repl-state :repl-actions] conj {:type :repl/require
                                                         :sources new-deps
@@ -175,6 +186,7 @@
                     (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
                                                             :gen-col 0
                                                             :gen-line 0})]
+
                       {:type :repl/invoke
                        :js (let [ast (cljs/analyze state repl-rc form)
                                  ;; cheat and turn everything into an expr

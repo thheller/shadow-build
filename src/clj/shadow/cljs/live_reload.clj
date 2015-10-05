@@ -168,7 +168,7 @@
 (defn setup-repl [state config]
   (repl/prepare state))
 
-(defn handle-repl-input [{:keys [repl-state] :as state} repl-input repl-result]
+(defn handle-repl-input [{:keys [repl-state] :as state} repl-input]
   (prn [:handle-repl-input repl-input])
 
   (let [clients @(get-in state [:live-reload :server :clients])]
@@ -207,12 +207,8 @@
         state
         ))))
 
-(defn print-repl-result [state result]
-  (prn [:repl-result]))
-
 (defn start-repl [state config callback]
   (let [repl-input (async/chan)
-        repl-result (async/chan)
         state (-> state
                   (setup config)
                   (setup-repl config)
@@ -224,14 +220,7 @@
             repl-input
             ([v]
               (when-not (nil? v)
-                (recur (handle-repl-input state v repl-result) i)))
-
-            repl-result
-            ([v]
-              (when-not (nil? v)
-                (print-repl-result state v)
-                (recur state i)
-                ))
+                (recur (handle-repl-input state v) i)))
 
             (timeout 500)
             ([_]

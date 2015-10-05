@@ -484,6 +484,15 @@
     (pprint repl-state)
     ))
 
+(deftest test-basic-require-and-call
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(require '[clojure.string :as str])")
+            (repl/process-input "(str/trim \"hello world \")"))]
+
+    (pprint repl-state)
+    ))
+
 (deftest test-require-with-reload
   (let [s (-> (basic-repl-setup)
               (repl/process-input "(require ['basic :as 'something] :reload-all)"))
