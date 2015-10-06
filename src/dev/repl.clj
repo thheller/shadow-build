@@ -24,7 +24,7 @@
 
       (cljs/step-finalize-config)
 
-      (cljs/step-configure-module :cljs ['cljs.core 'cljs.user] #{})
+      (cljs/step-configure-module :cljs ['cljs.core] #{})
       (cljs/step-configure-module :basic ['basic] #{:cljs})
       (cljs/step-configure-module :other ['other] #{:cljs})
 

@@ -50,7 +50,10 @@
         ns-info (get-in state [:compiler-env ::ana/namespaces 'cljs.user])
 
         repl-state (-> repl-state
-                       (assoc :repl-sources repl-sources)
+                       (assoc :repl-sources repl-sources
+                              :repl-js-sources (->> repl-sources
+                                                    (map #(get-in state [:sources % :js-name]))
+                                                    (into [])))
                        (assoc-in [:current :ns-info] ns-info))
 
         state (assoc state :repl-state repl-state)]
@@ -96,11 +99,14 @@
            ;; FIXME: should assoc ns-info in :sources also so we can get it back later
            ;; FIXME: also needs to flush
            (cljs/compile-sources deps)
+           (cljs/flush-sources-by-name deps)
            (update-compiler-env)
            (assoc-in [:repl-state :current :ns-info] ns-info)
            (update-in [:repl-state :repl-actions] conj {:type :repl/require
                                                         :sources new-deps
-                                                        :source-paths (mapv #(str public-path "/" %) new-deps)
+                                                        :js-sources (->> new-deps
+                                                                         (map #(get-in state [:sources % :js-name]))
+                                                                         (into []))
                                                         :reload reload-flag
                                                         :source source}))))
 

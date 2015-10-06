@@ -1128,7 +1128,10 @@ normalize-resource-name
 
 
 (defn compile-sources
-  "compile a list of sources by name"
+  "compile a list of sources by name,
+   requires that the names are in dependency order
+   requires that ALL of the dependencies NOT in source names are already compiled
+   eg. you cannot just compile [\"clojure/string.cljs\"] as it requires other files to be compiled first"
   [state source-names]
   (with-compiler-env state
     (ana/load-core)
@@ -1371,52 +1374,50 @@ normalize-resource-name
                 "[" (ns-list-string requires) "]);")))
        (str/join "\n")))
 
-(defn flush-sources
+(defn flush-sources-by-name
+  [{:keys [public-dir] :as state} source-names]
+  (doseq [{:keys [type name input last-modified] :as src}
+          (->> source-names
+               (map #(get-in state [:sources %])))
+          :let [target (io/file public-dir "src" name)]
+
+          ;; skip files we already have since source maps are kinda expensive to generate
+          :when (or (not (.exists target))
+                    (nil? last-modified) ;; runtime-setup doesn't have last-modified
+                    (> (or (:compiled-at src) ;; js is not compiled but maybe modified
+                           last-modified)
+                       (.lastModified target)))]
+
+    (io/make-parents target)
+
+    (when (= :cljs type)
+      (let [{:keys [source-map js-name output]} src
+            target (io/file public-dir "src" js-name)]
+
+        (when (nil? output)
+          (throw (ex-info (format "no output for resource: %s" js-name) src)))
+        (spit target output)
+
+        (when source-map
+          (let [source-map-name (str js-name ".map")]
+            (spit (io/file public-dir "src" source-map-name)
+                  (sm/encode {name source-map} {}))
+            (spit target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))
+        ))
+
+    ;; spit original source, cljs needed for source maps
+    (spit target @input))
+
+  state)
+
+(defn flush-unoptimized
   [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (with-logged-time
     [(:logger state) "Flushing sources"]
 
-    (doseq [{:keys [type name input last-modified] :as src}
-            (->> (mapcat :sources build-modules)
-                 (map #(get-in state [:sources %])))
-            :let [target (io/file public-dir "src" name)]
-
-            ;; skip files we already have since source maps are kinda expensive to generate
-            :when (or (not (.exists target))
-                      (nil? last-modified) ;; runtime-setup doesn't have last-modified
-                      (> (or (:compiled-at src) ;; js is not compiled but maybe modified
-                             last-modified)
-                         (.lastModified target)))]
-
-      (io/make-parents target)
-
-      (when (= :cljs type)
-        (let [{:keys [source-map js-name output]} src
-              target (io/file public-dir "src" js-name)]
-
-          (when (nil? output)
-            (throw (ex-info (format "no output for resource: %s" js-name) src)))
-          (spit target output)
-
-          (when source-map
-            (let [source-map-name (str js-name ".map")]
-              (spit (io/file public-dir "src" source-map-name)
-                    (sm/encode {name source-map} {}))
-              (spit target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))
-          ))
-
-      ;; spit original source, cljs needed for source maps
-      (spit target @input)
-      ))
-  ;; return unmodified state
-  state)
-
-(defn flush-unoptimized
-  [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
-
-  (flush-sources state)
+    (flush-sources-by-name state (mapcat :sources build-modules)))
 
   (with-logged-time
     [(:logger state) "Flushing unoptimized modules"]
@@ -1455,7 +1456,7 @@ normalize-resource-name
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
 
-  (flush-sources state)
+  (flush-sources-by-name state (mapcat :sources build-modules))
 
   (with-logged-time
     [(:logger state) (format "Flushing node script: %s" (-> build-modules first :js-name))]

@@ -23,6 +23,25 @@
 (def loaded? js/goog.isProvided_)
 
 
+(defn load-scripts
+  [{:keys [public-path] :as config} filenames after-load-fn]
+  (swap! scripts-to-load into filenames)
+
+  (let [load-next (fn load-next []
+                    (if-let [next (first @scripts-to-load)]
+                      (do (swap! scripts-to-load (fn [remaining]
+                                                   ;; rest will result in () if nothing is left
+                                                   ;; we need to keep this a vector
+                                                   (into [] (rest remaining))))
+                          (debug "LOAD JS: " next)
+                          (-> (loader/load (str public-path "/src/" next "?r=" (rand)))
+                              (.addBoth (fn []
+                                          (aset js/goog.included_ next true)
+                                          (load-next)))))
+                      (after-load-fn)))]
+    (load-next)))
+
+
 (defn handle-js-changes [{:keys [public-path before-load after-load] :as config} js]
   (let [js-to-reload (->> js
                           ;; only reload things we actually require'd somewhere
@@ -37,27 +56,15 @@
           (fn)
           ))
 
-      (doseq [{:keys [name provides]} js-to-reload]
-        (debug "LOAD JS: " name (->> provides (map str) (into-array))))
-
-      (swap! scripts-to-load into (->> js-to-reload
-                                       (map :js-name)
-                                       (map #(str public-path "/src/" % "?r=" (rand)))
-                                       ))
-
       (let [after-load-fn (fn []
                             (when after-load
                               (let [fn (js/goog.getObjectByName after-load)]
                                 (debug "Executing :after-load " after-load)
-                                (fn))))
-
-            load-next (fn load-next []
-                        (if-let [next (first @scripts-to-load)]
-                          (do (swap! scripts-to-load rest)
-                              (-> (loader/load next)
-                                  (.addBoth load-next)))
-                          (after-load-fn)))]
-        (load-next)))))
+                                (fn))))]
+        (load-scripts
+          config
+          (map :js-name js-to-reload)
+          after-load-fn)))))
 
 (defn handle-css-changes [config data]
   (doseq [[package-name package-info] data
@@ -107,11 +114,33 @@
 
     (.send socket (pr-str result))))
 
+(defn repl-require [config {:keys [js-sources] :as msg}]
+  (js/console.log "repl/require" (pr-str js-sources) (pr-str msg))
+  (load-scripts
+    config
+    ;; don't load if already loaded
+    (->> js-sources
+         (remove #(aget js/goog.included_ %)))
+    (fn []
+      (js/console.log "repl-require finished"))))
+
+(defn repl-init [config {:keys [repl-state]}]
+  (js/console.log "repl config" (pr-str config))
+  (js/console.log "repl init" (pr-str repl-state))
+  (load-scripts
+    config
+    ;; don't load if already loaded
+    (->> (:repl-js-sources repl-state)
+         (remove #(aget js/goog.included_ %)))
+    (fn [] (js/console.log "repl init complete"))))
+
 (defn handle-message [config {:keys [type] :as msg}]
   (case type
     :js (handle-js-changes config (:data msg))
     :css (handle-css-changes config (:data msg))
-    :repl/invoke (repl-invoke config msg)))
+    :repl/invoke (repl-invoke config msg)
+    :repl/require (repl-require config msg)
+    :repl/init (repl-init config msg)))
 
 (defn setup [{:keys [socket-url] :as config}]
   (debug "LIVE RELOAD:" (pr-str config))
@@ -130,7 +159,7 @@
       (set! (.-onopen socket)
             (fn [e]
               ;; patch away the already declared exception
-              (set! (.-provide js/goog) (aget js/goog "exportPath_"))
+              (set! (.-provide js/goog) js/goog.constructNamespace_)
               (.log js/console "LIVE RELOAD: connected!")))
       (set! (.-onclose socket)
             (fn [e]
