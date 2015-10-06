@@ -158,13 +158,12 @@
 
    live-reload will only load namespaces that were already required"
   [{:keys [compiler-state] :as state} config]
-  (let [{:keys [public-path logger]} compiler-state
+  (let [{:keys [logger]} compiler-state
         {:keys [before-load after-load css-packages]} config]
 
     (let [{:keys [host port] :as server} (start-server state config)
           config (assoc config
                    :socket-url (str "ws://" host ":" port "/socket")
-                   :public-path public-path
                    :before-load (when before-load
                                   (str (comp/munge before-load)))
                    :after-load (when after-load
@@ -275,6 +274,7 @@
   state)
 
 (defmethod handle-server-control :connect [state [_ client-id client-out]]
+  (prn [:client-connect client-id])
   (let [init-state (get-in state [:compiler-state :repl-state])]
     (>!! client-out #(client-init-state % init-state))
     (update state :clients assoc client-id client-out)))

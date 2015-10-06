@@ -24,7 +24,7 @@
 
 
 (defn load-scripts
-  [{:keys [public-path] :as config} filenames after-load-fn]
+  [config filenames after-load-fn]
   (swap! scripts-to-load into filenames)
 
   (let [load-next (fn load-next []
@@ -34,7 +34,7 @@
                                                    ;; we need to keep this a vector
                                                    (into [] (rest remaining))))
                           (debug "LOAD JS: " next)
-                          (-> (loader/load (str public-path "/src/" next "?r=" (rand)))
+                          (-> (loader/load (str js/CLOSURE_BASE_PATH next "?r=" (rand)))
                               (.addBoth (fn []
                                           (aset js/goog.included_ next true)
                                           (load-next)))))

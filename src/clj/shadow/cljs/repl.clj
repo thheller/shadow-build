@@ -58,7 +58,7 @@
 
         state (assoc state :repl-state repl-state)]
 
-    state
+    (cljs/flush-sources-by-name state repl-sources)
     ))
 
 
