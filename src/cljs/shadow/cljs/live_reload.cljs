@@ -96,6 +96,9 @@
         result
         (try
           (js/console.log "eval" data)
+
+          ;; FIXME: I kinda want to remember each result so I can refer to it later
+          ;; (swap! repl-state update :results assoc id result)
           (let [ret (js/eval data)]
             (set! *3 *2)
             (set! *2 *1)
@@ -114,11 +117,11 @@
 
     (.send socket (pr-str result))))
 
-(defn repl-require [config {:keys [js-sources] :as msg}]
-  (js/console.log "repl/require" (pr-str js-sources) (pr-str msg))
+(defn repl-require [config {:keys [js-sources reload] :as msg}]
   (load-scripts
     config
     ;; don't load if already loaded
+    ;; FIXME: handle reload (nil, :reload or :reload-all)
     (->> js-sources
          (remove #(aget js/goog.included_ %)))
     (fn []
@@ -134,6 +137,7 @@
          (remove #(aget js/goog.included_ %)))
     (fn [] (js/console.log "repl init complete"))))
 
+;; FIXME: core.async-ify this
 (defn handle-message [config {:keys [type] :as msg}]
   (case type
     :js (handle-js-changes config (:data msg))

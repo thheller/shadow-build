@@ -14,16 +14,29 @@
             [shadow.cljs.repl :as repl]))
 
 (defn handle-client-data [client-state msg]
-  (let [{:keys [value] :as msg} (edn/read-string msg)]
-    (println value)
-    (.format System/err "REPL-RESULT: %s%n" (object-array [(pr-str msg)]))
-    client-state
-    ))
+  (let [{:keys [id] :as msg} (edn/read-string msg)
+        result-chan (get-in client-state [:pending id])]
+    (if (nil? result-chan)
+      (do (prn [:client-state client-state])
+          (prn [:result-for-unknown-action msg])
+          (.format System/err "REPL-RESULT: %s%n" (object-array [(pr-str msg)]))
+          client-state)
+      (do (>!! result-chan msg)
+          (update client-state :pending dissoc id))
+      )))
 
-(defn client-send-command [{:keys [channel] :as state} cmd]
+;; cast&call as in erlang (fire-and-forget, rpc-ish)
+
+(defn client-cast [{:keys [channel] :as state} cmd]
+  (let [msg (pr-str cmd)]
+    (hk/send! channel msg))
+  state)
+
+(defn client-call [{:keys [channel] :as state} cmd idx result-chan]
   (let [msg (pr-str cmd)]
     (hk/send! channel msg)
-    state))
+    (update state :pending assoc idx result-chan)
+    ))
 
 (defn client-init-state [{:keys [channel] :as client-state} repl-state]
   (hk/send! channel (pr-str {:type :repl/init
@@ -67,7 +80,6 @@
 
                           (hk/on-close channel
                                        (fn [status]
-                                         (println (format "Closing WebSocket: %s [%s]" client-id status))
                                          (>!! server-control [:disconnect client-id])
                                          (async/close! client-out)
                                          (async/close! client-in)
@@ -184,6 +196,18 @@
           ))))
 
 
+(defn shutdown-server [state]
+  (when-let [instance (get-in state [:server :instance])]
+    (try
+      (instance)
+      (catch Throwable t
+        ;; ignore
+        )))
+
+  (when-let [css-watch (:css-watch state)]
+    (.interrupt css-watch)))
+
+
 (defn- notify-clients-about-cljs-changes! [state modified]
   (when (seq modified)
     (let [data (->> modified
@@ -198,15 +222,13 @@
 
       (doseq [[client-id client-out] (:clients state)]
         (prn [:notify-about-cljs-changes! client-id])
-        (>!! client-out #(client-send-command % msg)))
+        (>!! client-out #(client-cast % msg)))
       )))
 
 (defn setup-repl [state config]
   (update state :compiler-state repl/prepare))
 
-(defn handle-repl-input [{:keys [compiler-state clients] :as state} repl-input]
-  (prn [:handle-repl-input repl-input])
-
+(defn handle-repl-input [{:keys [compiler-state clients] :as state} repl-input result-chan]
   (cond
     ;; FIXME: could send to all?
     (> (count clients) 1)
@@ -237,9 +259,8 @@
               :let [idx (+ idx start-idx)
                     action (assoc action :id idx)]]
 
-        (prn [:invoke action client-id client-out])
-        (>!! client-out #(client-send-command % action))
-        )
+        (prn [:invoke client-id action])
+        (>!! client-out #(client-call % action idx result-chan)))
 
       (assoc state :compiler-state compiler-state)
       )))
@@ -284,6 +305,7 @@
 
 (defn start-repl [state config callback]
   (let [repl-input (async/chan)
+        repl-output (async/chan)
 
         state (-> {:compiler-state state
                    :clients {}
@@ -314,7 +336,8 @@
               (when-not (nil? v)
                 (recur
                   (try
-                    (handle-repl-input state v)
+                    (let [[msg result-chan] v]
+                      (handle-repl-input state msg result-chan))
                     (catch Exception e
                       (prn [:repl-error e v])
                       state
@@ -330,7 +353,16 @@
                     state
                     ))))))
 
+        (shutdown-server state)
         (prn [:server-loop-death!!!]))
+
+
+    (go (loop []
+          (let [out (<! repl-output)]
+            (when-not (nil? out)
+              (prn [:repl-out out])
+              (recur)
+              ))))
 
     ;; this really sucks but I don't care much for the streaming nature of a REPL
     ;; still want to be able to eval multi-line forms though
@@ -343,8 +375,9 @@
         (let [msg (.next in)]
           (when-not (nil? msg)
             (when (not= msg ":cljs/quit")
-              (>!! repl-input msg)
+              (>!! repl-input [msg repl-output])
               (recur)))))
       (async/close! repl-input)
+      (async/close! repl-output)
       (prn [:repl-quit])
       )))

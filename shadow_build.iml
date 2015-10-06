@@ -20,7 +20,7 @@
     <orderEntry type="library" name="Leiningen: aysylu/loom:0.5.0" level="project" />
     <orderEntry type="library" name="Leiningen: clojure-complete:0.2.3" level="project" />
     <orderEntry type="library" name="Leiningen: com.cognitect/transit-clj:0.8.275" level="project" />
-    <orderEntry type="library" name="Leiningen: http-kit:2.1.18" level="project" />
+    <orderEntry type="library" name="Leiningen: http-kit:2.1.19" level="project" />
     <orderEntry type="library" name="Leiningen: junit:4.12" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/clojure:1.7.0" level="project" />
     <orderEntry type="library" name="Leiningen: org.clojure/clojurescript:1.7.48" level="project" />

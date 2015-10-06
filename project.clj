@@ -5,7 +5,7 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
 
   :dependencies [[aysylu/loom "0.5.0"]
-                 [http-kit "2.1.18"]
+                 [http-kit "2.1.19"]
                  [com.cognitect/transit-clj "0.8.275"]
                  ;; [org.clojure/core.typed "0.2.84"]
                  ]
