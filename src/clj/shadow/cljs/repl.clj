@@ -75,7 +75,7 @@
 
 (def repl-special-forms
   {'require
-   (fn [{:keys [repl-state public-path] :as state} [quoted-require reload-flag] source]
+   (fn [{:keys [repl-state] :as state} [quoted-require reload-flag] source]
      (let [current-ns (get-in repl-state [:current :ns])
            require (remove-quotes quoted-require)
            ;; parsing this twice to easily get a diff, could probably be simpler

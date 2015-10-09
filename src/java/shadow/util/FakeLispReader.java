@@ -78,7 +78,7 @@ public class FakeLispReader {
         }
     };
 
-    public String next() throws IOException {
+    public String next() throws Exception {
         final Object readerFn = RT.DEFAULT_DATA_READER_FN.deref();
 
         Object form;

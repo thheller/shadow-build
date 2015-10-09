@@ -1061,10 +1061,8 @@ normalize-resource-name
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (log-warning logger (format "WARNINGS: %s (%d)" name (count warnings)))
-    (doseq [warning warnings
-            :let [msg (warning->msg warning)]
-            :when msg]
-      (log-warning logger msg)
+    (doseq [warning warnings]
+      (log-warning logger warning)
       ))
   state)
 
