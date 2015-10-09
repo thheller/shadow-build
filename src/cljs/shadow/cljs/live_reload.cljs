@@ -83,13 +83,17 @@
         (gdom/removeNode node)
         ))))
 
+(defn socket-reply
+  [{:keys [socket] :as config} msg]
+  (.send socket (pr-str msg))
+  )
+
 (defn repl-print [value]
   (js/console.log "repl-print" value)
   (pr-str value))
 
 (defn repl-invoke
-  [{:keys [repl-state socket] :as config}
-   msg]
+  [config msg]
   (let [data (:js msg)
         result {:id (:id msg)
                 :type :repl/result}
@@ -115,9 +119,12 @@
             (js/console.log "repl/invoke error" (pr-str msg) e)
             (assoc result :error (pr-str e))))]
 
-    (.send socket (pr-str result))))
+    (socket-reply config result)
+    ))
 
-(defn repl-require [config {:keys [js-sources reload] :as msg}]
+(defn repl-require
+  [{:keys [socket] :as config}
+   {:keys [js-sources reload] :as msg}]
   (load-scripts
     config
     ;; don't load if already loaded
@@ -125,6 +132,8 @@
     (->> js-sources
          (remove #(aget js/goog.included_ %)))
     (fn []
+      (socket-reply config {:id (:id msg)
+                            :value nil})
       (js/console.log "repl-require finished"))))
 
 (defn repl-init [config {:keys [repl-state]}]

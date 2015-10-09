@@ -424,6 +424,10 @@ normalize-resource-name
        (filter usable-resource?)
        (into [])))
 
+(defn get-source-for-provide [state ns-sym]
+  (when-let [name (get-in state [:provide->source ns-sym])]
+    (get-in state [:sources name])))
+
 (defn- get-deps-for-ns* [state ns-sym]
   {:pre [(compiler-state? state)]}
   (let [name (get-in state [:provide->source ns-sym])]

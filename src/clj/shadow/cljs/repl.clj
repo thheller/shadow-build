@@ -120,6 +120,19 @@
      (prn [:load-file file-path])
      state)
 
+   'in-ns
+   (fn [state quoted-ns source]
+     ;; quoted-ns is ((quote the-ns))
+     (let [ns (-> quoted-ns first second)
+           rc (cljs/get-source-for-provide state ns)]
+       (if (nil? rc)
+         (do (prn [:did-not-find ns])
+             state)
+         ;; use rc
+         (do (prn [:ns ns rc])
+             state))
+       ))
+
    'ns
    (fn [state args source]
      state)})

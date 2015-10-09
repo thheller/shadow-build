@@ -499,3 +499,11 @@
         action (get-in s [:repl-state :repl-actions 0])]
     (pprint (:repl-state s))
     (pprint action)))
+
+
+(deftest test-in-ns
+  (let [s (-> (basic-repl-setup)
+              (repl/process-input "(in-ns 'basic)"))
+        action (get-in s [:repl-state :repl-actions 0])]
+    (pprint (:repl-state s))
+    (pprint action)))
