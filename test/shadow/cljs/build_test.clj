@@ -92,7 +92,7 @@
 
       (is (nil? (get-in state [:sources "test_b.cljs"])))
 
-      (cljs/step-compile-modules state) ;; no error is good enough for now
+      (cljs/step-compile-modules state)                     ;; no error is good enough for now
 
       ;; wait for a bit
       ;; otherwise the spit may end up in the same millisec as the previous one
@@ -445,8 +445,6 @@
       (cljs/step-find-resources "cljs-data/dummy/test")
 
       (cljs/step-finalize-config)
-      (cljs/step-compile-core)
-
       (cljs/step-configure-module :cljs ['cljs.core] #{})
       (repl/prepare)))
 
@@ -502,8 +500,17 @@
 
 
 (deftest test-in-ns
-  (let [s (-> (basic-repl-setup)
-              (repl/process-input "(in-ns 'basic)"))
-        action (get-in s [:repl-state :repl-actions 0])]
-    (pprint (:repl-state s))
-    (pprint action)))
+  (let [{:keys [repl-state] :as state}
+        (-> (basic-repl-setup)
+            (repl/process-input "(in-ns 'basic)"))
+
+        {:keys [repl-actions]} repl-state]
+
+    (is (= 2 (count repl-actions)))
+    (is (= :repl/require (-> repl-actions first :type)))
+    (is (= "basic.cljs" (-> repl-actions first :sources last)))
+    (is (= :repl/set-ns (-> repl-actions second :type)))
+    (is (= 'basic (-> repl-actions second :ns)))
+
+    ;; (pprint repl-state)
+    ))

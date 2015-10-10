@@ -8,6 +8,7 @@
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [clojure.walk :as walk]
+            [clojure.repl :as repl]
             [shadow.cljs.util :as util]
             [cljs.env :as env])
   (:import (clojure.tools.reader.reader_types PushbackReader StringReader)))
@@ -72,69 +73,101 @@
         ))
     quoted-form))
 
+(defn- remove-already-required-repl-deps
+  ;; FIXME: currently only removes deps required on repl init not those required by individual actions
+  [{:keys [repl-state] :as state} deps]
+  (let [old-deps (into #{} (:repl-sources repl-state))]
+    (->> deps (remove old-deps) (into []))))
+
+(defn repl-require
+  ([state source quoted-require]
+   (repl-require state source quoted-require nil))
+  ([{:keys [repl-state] :as state} source quoted-require reload-flag]
+    ;; FIXME: verify quoted
+   (let [current-ns (get-in repl-state [:current :ns])
+         require (remove-quotes quoted-require)
+         ;; parsing this twice to easily get a diff, could probably be simpler
+         {:keys [requires]} (util/parse-ns-require-parts :requires {} [require])
+         new-requires (into #{} (vals requires))
+         ;; returns the updated ns-info
+         ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
+         deps (cljs/get-deps-for-mains state new-requires)
+         new-deps (remove-already-required-repl-deps state deps)
+
+         update-compiler-env
+         (fn [state]
+           ;; need to update the actual compiler env
+           ;; not the one in state, with-compiler-env will swap env/*compiler* into state
+           ;; FIXME: do we have to be in with-compiler-env?
+           (swap! env/*compiler* update-in [::ana/namespaces current-ns] merge ns-info)
+           state)]
+
+     (-> state
+         ;; FIXME: should assoc ns-info in :sources also so we can get it back later
+         ;; FIXME: also needs to flush
+         (cljs/compile-sources deps)
+         (cljs/flush-sources-by-name deps)
+         (update-compiler-env)
+         (assoc-in [:repl-state :current :ns-info] ns-info)
+         (update-in [:repl-state :repl-actions] conj {:type :repl/require
+                                                      :sources new-deps
+                                                      :js-sources (->> new-deps
+                                                                       (map #(get-in state [:sources % :js-name]))
+                                                                       (into []))
+                                                      :reload reload-flag
+                                                      :source source})))))
 
 (def repl-special-forms
   {'require
-   (fn [{:keys [repl-state] :as state} [quoted-require reload-flag] source]
-     (let [current-ns (get-in repl-state [:current :ns])
-           require (remove-quotes quoted-require)
-           ;; parsing this twice to easily get a diff, could probably be simpler
-           {:keys [requires]} (util/parse-ns-require-parts :requires {} [require])
-           new-requires (into #{} (vals requires))
-           ;; returns the updated ns-info
-           ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
-           deps (cljs/get-deps-for-mains state new-requires)
-           old-deps (into #{} (:repl-sources repl-state))
-           new-deps (->> deps (remove old-deps) (into []))
-
-           update-compiler-env
-           (fn [state]
-             ;; need to update the actual compiler env
-             ;; not the one in state, with-compiler-env will swap env/*compiler* into state
-             ;; FIXME: do we have to be in with-compiler-env?
-             (swap! env/*compiler* update-in [::ana/namespaces current-ns] merge ns-info)
-             state)]
-
-       (-> state
-           ;; FIXME: should assoc ns-info in :sources also so we can get it back later
-           ;; FIXME: also needs to flush
-           (cljs/compile-sources deps)
-           (cljs/flush-sources-by-name deps)
-           (update-compiler-env)
-           (assoc-in [:repl-state :current :ns-info] ns-info)
-           (update-in [:repl-state :repl-actions] conj {:type :repl/require
-                                                        :sources new-deps
-                                                        :js-sources (->> new-deps
-                                                                         (map #(get-in state [:sources % :js-name]))
-                                                                         (into []))
-                                                        :reload reload-flag
-                                                        :source source}))))
+   repl-require
 
    'repl-dump
-   (fn [state args source]
+   (fn [state args]
      (pprint (:repl-state state))
      state)
 
    'load-file
-   (fn [state [file-path] source]
+   (fn [state source file-path]
      (prn [:load-file file-path])
      state)
 
    'in-ns
-   (fn [state quoted-ns source]
-     ;; quoted-ns is ((quote the-ns))
-     (let [ns (-> quoted-ns first second)
-           rc (cljs/get-source-for-provide state ns)]
-       (if (nil? rc)
-         (do (prn [:did-not-find ns])
-             state)
-         ;; use rc
-         (do (prn [:ns ns rc])
-             state))
-       ))
+   (fn repl-in-ns
+     [state source [q ns :as quoted-ns]]
+     ;; quoted-ns is (quote the-ns)
+     (if (nil? (get-in state [:provide->source ns]))
+       ;; FIXME: create empty ns and switch to it
+       (do (prn [:did-not-find ns])
+           state)
+       ;; ns exists, compile deps, switch :current
+       (let [deps (cljs/get-deps-for-ns state ns)
+             state (-> state
+                       (cljs/compile-sources deps)
+                       (cljs/flush-sources-by-name deps))
+             {:keys [name ns-info]} (cljs/get-resource-for-provide state ns)
+             new-deps (remove-already-required-repl-deps state deps)
+             action
+             {:type :repl/require
+              :sources new-deps
+              :js-sources (->> new-deps
+                               (map #(get-in state [:sources % :js-name]))
+                               (into []))
+              :reload nil}
+
+             set-ns-action
+             {:type :repl/set-ns
+              :ns ns
+              :name name}]
+
+         (-> state
+             (update-in [:repl-state :current] merge {:ns ns
+                                                      :name name
+                                                      :ns-info ns-info})
+             (update-in [:repl-state :repl-actions] conj action set-ns-action)
+             ))))
 
    'ns
-   (fn [state args source]
+   (fn [state source & args]
      state)})
 
 ;; https://github.com/clojure/tools.reader/blob/master/src/main/clojure/clojure/tools/reader/reader_types.clj#L47
@@ -160,73 +193,80 @@
 (defn process-input
   [{:keys [repl-state] :as state} repl-input]
   (let [eof-sentinel (Object.)
-        opts (merge
-               {:eof eof-sentinel}
-               {:read-cond :allow :features #{:cljs}})
+        opts {:eof eof-sentinel
+              :read-cond :allow :features #{:cljs}}
 
         reader (DerefStringReader. repl-input (count repl-input) 0)
         buf-len 1
         ;; https://github.com/clojure/tools.reader/blob/master/src/main/clojure/clojure/tools/reader/reader_types.clj#L271
         in (readers/indexing-push-back-reader (PushbackReader. reader (object-array buf-len) buf-len buf-len) 1 "repl-input.cljs")]
 
-    (cljs/with-compiler-env state
-      (loop [{:keys [repl-state] :as state} state]
+    (loop [{:keys [repl-state] :as state} state]
 
-        (let [{:keys [ns ns-info] :as repl-rc} (:current repl-state)
-              form-start @reader
-              form (binding [*ns* (create-ns ns)
-                             ana/*cljs-ns* ns
-                             ana/*cljs-file* name
-                             reader/*data-readers* tags/*cljs-data-readers*
-                             reader/*alias-map* (merge reader/*alias-map*
-                                                       (:requires ns-info)
-                                                       (:require-macros ns-info))]
-                     (reader/read opts in))
-              form-end @reader
-              ;; keep a reference to the source of the form
-              source (subs repl-input form-start form-end)]
-          (cond
-            (identical? form eof-sentinel)
-            ;; eof
-            state
+      (let [{:keys [ns ns-info] :as repl-rc} (:current repl-state)
+            form-start @reader
+            form (binding [*ns* (create-ns ns)
+                           ana/*cljs-ns* ns
+                           ana/*cljs-file* name
+                           reader/*data-readers* tags/*cljs-data-readers*
+                           reader/*alias-map* (merge reader/*alias-map*
+                                                     (:requires ns-info)
+                                                     (:require-macros ns-info))]
+                   (reader/read opts in))
+            form-end @reader
+            ;; keep a reference to the source of the form
+            source (subs repl-input form-start form-end)]
 
-            ;; ('special-fn ...)
-            (and (list? form)
-                 (contains? repl-special-forms (first form)))
-            (let [[special-fn & args] form
-                  handler (get repl-special-forms special-fn)]
-              (recur (handler state args source)))
+        (cond
+          ;; eof
+          (identical? form eof-sentinel)
+          state
 
-            ;; compile normally
-            :else
-            (let [repl-action
-                  ;; FIXME: what actually populates this? emit or analyze?
-                  (cljs/with-warnings
-                    (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
-                                                            :gen-col 0
-                                                            :gen-line 0})]
+          ;; ('special-fn ...)
+          ;; (require 'something)
+          (and (list? form)
+               (contains? repl-special-forms (first form)))
+          (let [[special-fn & args] form
+                handler (get repl-special-forms special-fn)]
+            (recur (try
+                     (apply handler state source args)
+                     (catch Exception e
+                       (prn [:special-fn-error source])
+                       (repl/pst e)
+                       state
+                       ))))
 
-                      {:type :repl/invoke
-                       :js (let [ast (cljs/analyze state repl-rc form)
-                                 ;; cheat and turn everything into an expr
-                                 ;; "(def x 1)"
-                                 ;; "x"
-                                 ;; since :context defaults to :statement and cljs.user.x is a useless :statement
-                                 ;; it will not generate any code
-                                 ;; with :expr it will correctly emit some code
-                                 ;; has the side effect of removing ";\n" from actual statements but since each
-                                 ;; snippet of code generated here is meant to directly eval(str) it doesn't matter
-                                 ;; FIXME: check if that breaks something
-                                 ;; FIXME: should probably to this to (ana/empty-env) before the actually analyze
-                                 ast (assoc-in ast [:env :context] :expr)]
+          ;; compile normally
+          :else
+          (-> (cljs/with-compiler-env state
+                (let [repl-action
+                      ;; FIXME: what actually populates this? emit or analyze?
+                      (cljs/with-warnings
+                        (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
+                                                                :gen-col 0
+                                                                :gen-line 0})]
 
-                             (with-out-str
-                               (comp/emit ast)))
-                       ;; FIXME: need actual json source map
-                       ;; :source-map (:source-map @comp/*source-map-data*)
-                       }))]
-              (-> state
-                  (update-in [:repl-state :repl-actions] conj repl-action)
-                  (recur))
-              )))))))
+                          {:type :repl/invoke
+                           :js (let [ast (cljs/analyze state repl-rc form)
+                                     ;; cheat and turn everything into an expr
+                                     ;; "(def x 1)"
+                                     ;; "x"
+                                     ;; since :context defaults to :statement and cljs.user.x is a useless :statement
+                                     ;; it will not generate any code
+                                     ;; with :expr it will correctly emit some code
+                                     ;; has the side effect of removing ";\n" from actual statements but since each
+                                     ;; snippet of code generated here is meant to directly eval(str) it doesn't matter
+                                     ;; FIXME: check if that breaks something
+                                     ;; FIXME: should probably to this to (ana/empty-env) before the actually analyze
+                                     ast (assoc-in ast [:env :context] :expr)]
+
+                                 (with-out-str
+                                   (comp/emit ast)))
+                           ;; FIXME: need actual json source map
+                           ;; :source-map (:source-map @comp/*source-map-data*)
+                           }))]
+                  (update-in state [:repl-state :repl-actions] conj repl-action)
+                  ))
+              (recur))
+          )))))
 

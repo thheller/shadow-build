@@ -424,7 +424,7 @@ normalize-resource-name
        (filter usable-resource?)
        (into [])))
 
-(defn get-source-for-provide [state ns-sym]
+(defn get-resource-for-provide [state ns-sym]
   (when-let [name (get-in state [:provide->source ns-sym])]
     (get-in state [:sources name])))
 
@@ -805,6 +805,8 @@ normalize-resource-name
 (def cljs-core-name "cljs/core.cljs")
 (def goog-base-name "goog/base.js")
 
+(def ^:dynamic *in-compiler-env* false)
+
 (defmacro with-compiler-env
   "compiler env is a rather big piece of dynamic state
    so we take it out when needed and put the updated version back when done
@@ -815,10 +817,13 @@ normalize-resource-name
 
    I don't touch the compiler env itself yet at all, might do for some metadata later"
   [state & body]
-  `(let [dyn-env# (atom (:compiler-env ~state))
-         new-state# (binding [env/*compiler* dyn-env#]
-                      ~@body)]
-     (assoc new-state# :compiler-env @dyn-env#)))
+  `(do (when *in-compiler-env*
+         (throw (ex-info "already in compiler env" {})))
+       (let [dyn-env# (atom (:compiler-env ~state))
+             new-state# (binding [env/*compiler* dyn-env#
+                                  *in-compiler-env* true]
+                          ~@body)]
+         (assoc new-state# :compiler-env @dyn-env#))))
 
 (defn ^:deprecated step-compile-core [state]
   ;; honestly not sure why this was ever here
@@ -1145,7 +1150,6 @@ normalize-resource-name
           ))
       state
       source-names)))
-
 
 (defn step-compile-modules [state]
   (with-logged-time
