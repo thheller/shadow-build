@@ -92,22 +92,14 @@
          ;; returns the updated ns-info
          ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
          deps (cljs/get-deps-for-mains state new-requires)
-         new-deps (remove-already-required-repl-deps state deps)
-
-         update-compiler-env
-         (fn [state]
-           ;; need to update the actual compiler env
-           ;; not the one in state, with-compiler-env will swap env/*compiler* into state
-           ;; FIXME: do we have to be in with-compiler-env?
-           (swap! env/*compiler* update-in [::ana/namespaces current-ns] merge ns-info)
-           state)]
+         new-deps (remove-already-required-repl-deps state deps) ]
 
      (-> state
          ;; FIXME: should assoc ns-info in :sources also so we can get it back later
          ;; FIXME: also needs to flush
          (cljs/compile-sources deps)
          (cljs/flush-sources-by-name deps)
-         (update-compiler-env)
+         (update-in [:compiler-env ::ana/namespaces current-ns] merge ns-info)
          (assoc-in [:repl-state :current :ns-info] ns-info)
          (update-in [:repl-state :repl-actions] conj {:type :repl/require
                                                       :sources new-deps

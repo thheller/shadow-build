@@ -425,6 +425,8 @@ normalize-resource-name
        (into [])))
 
 (defn get-resource-for-provide [state ns-sym]
+  {:pre [(compiler-state? state)
+         (symbol? ns-sym)]}
   (when-let [name (get-in state [:provide->source ns-sym])]
     (get-in state [:sources name])))
 
@@ -455,7 +457,8 @@ normalize-resource-name
   "returns names of all required sources for a given ns (in dependency order), does include self
    (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
   [state ns-sym]
-  {:pre [(compiler-state? state)]}
+  {:pre [(compiler-state? state)
+         (symbol? ns-sym)]}
   (-> state
       (assoc :deps-ordered []
              :deps-visited #{})
