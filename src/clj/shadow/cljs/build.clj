@@ -74,7 +74,7 @@
 
 (def ^{:dynamic true
        :private true}
-  *time-depth* 0)
+*time-depth* 0)
 
 (defmacro with-logged-time
   [[logger msg] & body]
@@ -649,9 +649,9 @@ normalize-resource-name
 
                (let [min-age (->> (get-deps-for-ns state ns)
                                   (map #(get-in state [:sources % :last-modified]))
-                                  #_ (map (fn [{:keys [name last-modified] :as src}]
-                                         (prn [:last-mod name last-modified])
-                                         last-modified))
+                                  #_(map (fn [{:keys [name last-modified] :as src}]
+                                           (prn [:last-mod name last-modified])
+                                           last-modified))
                                   (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
                                   (reduce (fn [a b] (Math/max a b))))]
                  (> (.lastModified cache-file) min-age)))
@@ -827,6 +827,13 @@ normalize-resource-name
                                   *in-compiler-env* true]
                           ~@body)]
          (assoc new-state# :compiler-env @dyn-env#))))
+
+(defn swap-compiler-env!
+  [state update-fn & args]
+  (if *in-compiler-env*
+    (do (swap! env/*compiler* (fn [current] (apply update-fn current args)))
+        state)
+    (update state :compiler-env (fn [current] (apply update-fn current args)))))
 
 (defn ^:deprecated step-compile-core [state]
   ;; honestly not sure why this was ever here

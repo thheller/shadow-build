@@ -91,16 +91,30 @@
          new-requires (into #{} (vals requires))
          ;; returns the updated ns-info
          ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
+
          deps (cljs/get-deps-for-mains state new-requires)
-         new-deps (remove-already-required-repl-deps state deps) ]
+         new-deps (remove-already-required-repl-deps state deps)
+
+         load-macros-and-set-ns-info
+         (fn [state]
+           (cljs/with-compiler-env state
+             (let [full-ns-info
+                   (-> ns-info
+                       ;; FIXME: these work with env/*compiler* but shouldn't
+                       (util/load-macros)
+                       (util/infer-macro-require)
+                       (util/infer-macro-use))]
+
+               ;; FIXME: util/check-uses!
+               (-> state
+                   (cljs/swap-compiler-env! update-in [::ana/namespaces current-ns] merge full-ns-info)
+                   (assoc-in [:repl-state :current :ns-info] full-ns-info))
+               )))]
 
      (-> state
-         ;; FIXME: should assoc ns-info in :sources also so we can get it back later
-         ;; FIXME: also needs to flush
          (cljs/compile-sources deps)
          (cljs/flush-sources-by-name deps)
-         (update-in [:compiler-env ::ana/namespaces current-ns] merge ns-info)
-         (assoc-in [:repl-state :current :ns-info] ns-info)
+         (load-macros-and-set-ns-info)
          (update-in [:repl-state :repl-actions] conj {:type :repl/require
                                                       :sources new-deps
                                                       :js-sources (->> new-deps
@@ -123,6 +137,7 @@
      (prn [:load-file file-path])
      state)
 
+   ;; FIXME: in-ns actually doesn't do any of this, just switch no compiler/eval
    'in-ns
    (fn repl-in-ns
      [state source [q ns :as quoted-ns]]

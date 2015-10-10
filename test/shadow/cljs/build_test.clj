@@ -498,6 +498,14 @@
     (pprint (:repl-state s))
     (pprint action)))
 
+(deftest test-basic-require-with-macro
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(require '[shadow.test-macro :as tm])")
+            (repl/process-input "(tm/hello)"))]
+
+    (pprint (:repl-actions repl-state))
+    ))
 
 (deftest test-in-ns
   (let [{:keys [repl-state] :as state}
