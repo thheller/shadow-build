@@ -632,7 +632,7 @@ normalize-resource-name
 
 (defn get-cache-file-for-rc
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
-  (io/file cache-dir "ana" (str name ".cache.edn")))
+  (io/file cache-dir "ana" (str name ".cache.transit.json")))
 
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
@@ -653,7 +653,7 @@ normalize-resource-name
                                   (reduce (fn [a b] (Math/max a b))))]
                  (> (.lastModified cache-file) min-age)))
 
-      (let [cache-data (edn/read-string (slurp cache-file))]
+      (let [cache-data (read-cache cache-file)]
 
         (when (= (cljs-util/clojurescript-version) (:version cache-data))
           (log-progress logger (format "Load cached cljs resource \"%s\"" name))
@@ -683,7 +683,7 @@ normalize-resource-name
           cache-js (io/file cache-dir "src" js-name)]
 
       (io/make-parents cache-file)
-      (spit cache-file (pr-str cache-data))
+      (write-cache cache-file cache-data)
 
       (io/make-parents cache-js)
       (spit cache-js (:output rc))
