@@ -5,11 +5,7 @@
             :url "http://www.eclipse.org/legal/epl-v10.html"}
 
   :dependencies [[aysylu/loom "0.5.0"]
-                 [http-kit "2.1.19"]
-                 [com.cognitect/transit-clj "0.8.275"]
-                 [org.clojure/clojure "1.7.0"]
-                 ;; [org.clojure/core.typed "0.2.84"]
-                 ]
+                 [com.cognitect/transit-clj "0.8.283"]]
 
 
   :source-paths ["src/clj"
@@ -18,11 +14,10 @@
   :java-source-paths ["src/java"]
 
   :profiles {:dev {:source-paths ["src/dev"]
-                   :dependencies [[org.clojure/tools.namespace "0.2.4"]
-                                  [org.clojure/clojurescript "1.7.48"]
+                   :dependencies [[org.clojure/tools.namespace "0.2.11"]
+                                  [org.clojure/clojurescript "1.7.122"]
+                                  [org.clojure/clojure "1.7.0"]
                                   [junit/junit "4.12"]
-                                  [org.clojure/core.async "0.1.346.0-17112a-alpha"]
-                                  ;; [thheller/clojurescript "0.0-2665+948"]
                                   ]}}
 
   :plugins [[codox "0.8.13"]]
