@@ -10,7 +10,8 @@
             [clojure.walk :as walk]
             [clojure.repl :as repl]
             [shadow.cljs.util :as util]
-            [cljs.env :as env])
+            [cljs.env :as env]
+            [clojure.java.io :as io])
   (:import (clojure.tools.reader.reader_types PushbackReader StringReader)))
 
 (comment
@@ -123,21 +124,52 @@
                                                       :reload reload-flag
                                                       :source source})))))
 
+(defn repl-load-file [{:keys [source-paths] :as state} source file-path]
+  (let [registered-src-paths
+        (->> source-paths
+             (vals)
+             (filter :abs-path)
+             (filter #(.startsWith file-path (:abs-path %)))
+             (into []))]
+    (if (not= 1 (count registered-src-paths))
+      ;; FIXME: configure it?
+      (do (prn [:not-on-registered-source-path file-path])
+          state)
+
+      ;; on registered source path
+      ;; FIXME: could just reload if it exists? might be a recently created file, this covers both cases
+      (let [{:keys [abs-path path] :as the-path} (first registered-src-paths)
+            rc-name (subs file-path (-> abs-path (count) (inc)))
+            rc (cljs/make-fs-resource state path rc-name (io/file file-path))
+            state (cljs/merge-resource state rc)
+            deps (cljs/get-deps-for-src state rc-name)
+            repl-deps (remove-already-required-repl-deps state deps)
+            action {:type :repl/require
+                    :source repl-deps
+                    :js-sources (->> repl-deps
+                                     (map #(get-in state [:sources % :js-name]))
+                                     (into []))
+                    :reload :reload}]
+
+        (-> state
+            (cljs/compile-sources deps)
+            (cljs/flush-sources-by-name deps)
+            (update-in [:repl-state :repl-actions] conj action))
+        ))))
+
 (def repl-special-forms
   {'require
    repl-require
 
-   'repl-dump
-   (fn [state args]
-     (pprint (:repl-state state))
-     state)
+   'cljs.core/require
+   repl-require
 
    'load-file
-   (fn [state source file-path]
-     (prn [:load-file file-path])
-     state)
+   repl-load-file
 
-   ;; FIXME: in-ns actually doesn't do any of this, just switch no compiler/eval
+   'cljs.core/load-file
+   repl-load-file
+
    'in-ns
    (fn repl-in-ns
      [state source [q ns :as quoted-ns]]
@@ -146,32 +178,26 @@
        ;; FIXME: create empty ns and switch to it
        (do (prn [:did-not-find ns])
            state)
-       ;; ns exists, compile deps, switch :current
-       (let [deps (cljs/get-deps-for-ns state ns)
-             state (-> state
-                       (cljs/compile-sources deps)
-                       (cljs/flush-sources-by-name deps))
-             {:keys [name ns-info]} (cljs/get-resource-for-provide state ns)
-             new-deps (remove-already-required-repl-deps state deps)
-             action
-             {:type :repl/require
-              :sources new-deps
-              :js-sources (->> new-deps
-                               (map #(get-in state [:sources % :js-name]))
-                               (into []))
-              :reload nil}
-
+       (let [{:keys [name ns-info]} (cljs/get-resource-for-provide state ns)
              set-ns-action
              {:type :repl/set-ns
               :ns ns
               :name name}]
-
          (-> state
+             ;; FIXME: clojure in-ns doesn't actually do the ns setup
+             ;; so we should merge an ns-info only if ns is already loaded
+             ;; otherwise keep it empty
              (update-in [:repl-state :current] merge {:ns ns
                                                       :name name
                                                       :ns-info ns-info})
-             (update-in [:repl-state :repl-actions] conj action set-ns-action)
+             (update-in [:repl-state :repl-actions] conj set-ns-action)
              ))))
+
+   'repl-dump
+   (fn [state source]
+     (pprint (:repl-state state))
+     state)
+
 
    'ns
    (fn [state source & args]
@@ -263,9 +289,9 @@
                                      ;; with :expr it will correctly emit some code
                                      ;; has the side effect of removing ";\n" from actual statements but since each
                                      ;; snippet of code generated here is meant to directly eval(str) it doesn't matter
-                                     ;; FIXME: check if that breaks something
-                                     ;; FIXME: should probably to this to (ana/empty-env) before the actually analyze
-                                     ast (assoc-in ast [:env :context] :expr)]
+                                     ast (if (= :var (:op ast))
+                                           (assoc-in ast [:env :context] :expr)
+                                           ast)]
 
                                  (with-out-str
                                    (comp/emit ast)))

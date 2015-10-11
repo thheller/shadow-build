@@ -452,16 +452,18 @@
 (deftest test-plain-js
   (let [{:keys [repl-state] :as s}
         (-> (basic-repl-setup)
-            (repl/process-input "(js/console.log \"yo\")"))
+            ;; (repl/process-input "(js/console.log \"yo\")")
+            (repl/process-input "(def x 1)")
+            (repl/process-input "x")
+            (repl/process-input "js/test"))
         action (get-in s [:repl-state :repl-actions 0])]
-    (pprint repl-state)))
+    (pprint action)))
 
 (deftest test-repl-dump
   (let [{:keys [repl-state] :as s}
         (-> (basic-repl-setup)
             (repl/process-input "(repl-dump)"))]
     (pprint repl-state)))
-
 
 (deftest test-basic-require
   (let [{:keys [repl-state] :as s}
@@ -502,6 +504,7 @@
   (let [{:keys [repl-state] :as s}
         (-> (basic-repl-setup)
             (repl/process-input "(require '[shadow.test-macro :as tm])")
+            ;; this is a macro that should emit (prn ...) not call shadow.test_macro.hello()
             (repl/process-input "(tm/hello)"))]
 
     (pprint (:repl-actions repl-state))
@@ -514,11 +517,20 @@
 
         {:keys [repl-actions]} repl-state]
 
-    (is (= 2 (count repl-actions)))
-    (is (= :repl/require (-> repl-actions first :type)))
-    (is (= "basic.cljs" (-> repl-actions first :sources last)))
-    (is (= :repl/set-ns (-> repl-actions second :type)))
-    (is (= 'basic (-> repl-actions second :ns)))
+    (is (= 1 (count repl-actions)))
+    (is (= :repl/set-ns (-> repl-actions first :type)))
+    (is (= 'basic (-> repl-actions first :ns)))
+    ))
 
-    ;; (pprint repl-state)
+
+(deftest test-load-file
+  (let [abs-path (.getAbsolutePath (io/file "cljs-data" "dummy" "src" "basic.cljs"))
+        {:keys [repl-state] :as state}
+        (-> (basic-repl-setup)
+            (repl/process-input (str "(load-file \"" abs-path "\")")))
+
+        {:keys [repl-actions]} repl-state]
+
+    (prn repl-state)
+    (pprint repl-actions)
     ))

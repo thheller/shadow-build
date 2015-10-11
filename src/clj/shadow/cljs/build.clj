@@ -385,6 +385,16 @@ normalize-resource-name
     (-> (process-deps-cljs state manifest)
         (vals))))
 
+(defn make-fs-resource [state source-path rc-name rc-file]
+  (inspect-resource
+    state
+    {:name rc-name
+     :file rc-file
+     :source-path source-path
+     :last-modified (.lastModified rc-file)
+     :url (.toURL (.toURI rc-file))
+     :input (delay (slurp rc-file))}))
+
 (defn find-fs-resources
   [state ^String path]
   {:pre [(compiler-state? state)
@@ -396,20 +406,14 @@ normalize-resource-name
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
                      (not (.isHidden file)))
-          :let [url (.toURL (.toURI file))
+          :let [
                 name (-> abs-path
                          (.substring root-len)
                          (normalize-resource-name))]
           :when (not (should-ignore-resource? state name))]
 
-      (inspect-resource
-        state
-        {:name name
-         :file file
-         :source-path path
-         :last-modified (.lastModified file)
-         :url url
-         :input (delay (slurp file))}))))
+      (make-fs-resource state path name file)
+      )))
 
 (defn do-find-resources-in-path [state path]
   {:pre [(compiler-state? state)]}
@@ -430,8 +434,41 @@ normalize-resource-name
   (when-let [name (get-in state [:provide->source ns-sym])]
     (get-in state [:sources name])))
 
-(defn- get-deps-for-ns* [state ns-sym]
-  {:pre [(compiler-state? state)]}
+(defn- get-deps-for-src* [state name]
+  {:pre [(compiler-state? state)
+         (string? name)]}
+  (if (contains? (:deps-visited state) name)
+    state
+    (let [requires (get-in state [:sources name :requires])]
+      (when-not requires
+        (throw (ex-info (format "cannot find required deps for \"%s\"" name) {:name name})))
+
+      (let [state (conj-in state [:deps-visited] name)
+            state (->> requires
+                       (map #(get-in state [:provide->source %]))
+                       (into #{})
+                       (reduce get-deps-for-src* state))]
+        (conj-in state [:deps-ordered] name)
+        ))))
+
+(defn get-deps-for-src
+  "returns names of all required sources for a given resource by name (in dependency order), does include self
+   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
+  [state src-name]
+  {:pre [(compiler-state? state)
+         (string? src-name)]}
+  (-> state
+      (assoc :deps-ordered []
+             :deps-visited #{})
+      (get-deps-for-src* src-name)
+      :deps-ordered))
+
+(defn get-deps-for-ns
+  "returns names of all required sources for a given ns (in dependency order), does include self
+   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
+  [state ns-sym]
+  {:pre [(compiler-state? state)
+         (symbol? ns-sym)]}
   (let [name (get-in state [:provide->source ns-sym])]
     (when-not name
       (let [reqs (->> state
@@ -442,28 +479,8 @@ normalize-resource-name
                       (into #{}))]
         (throw (ex-info (format "ns \"%s\" not available, required by %s" ns-sym reqs) {:ns ns-sym :required-by reqs}))))
 
-    (if (contains? (:deps-visited state) name)
-      state
-      (let [requires (get-in state [:sources name :requires])]
-        (when-not requires
-          (throw (ex-info "cannot find required namespace deps" {:ns ns-sym :name name})))
-
-        (let [state (conj-in state [:deps-visited] name)
-              state (reduce get-deps-for-ns* state requires)]
-          (conj-in state [:deps-ordered] name)
-          )))))
-
-(defn get-deps-for-ns
-  "returns names of all required sources for a given ns (in dependency order), does include self
-   (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
-  [state ns-sym]
-  {:pre [(compiler-state? state)
-         (symbol? ns-sym)]}
-  (-> state
-      (assoc :deps-ordered []
-             :deps-visited #{})
-      (get-deps-for-ns* ns-sym)
-      :deps-ordered))
+    (get-deps-for-src state name)
+    ))
 
 (defmulti post-analyze
           (fn [ast opts]
@@ -799,11 +816,17 @@ normalize-resource-name
   ([state path opts]
    (with-logged-time
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
-     (-> state
-         (assoc-in [:source-paths path] (assoc opts
-                                          :path path))
-         (merge-resources (do-find-resources-in-paths state [path]))
-         ))))
+     (let [file (io/file path)]
+       (if (or (not (.exists file))
+               (not (.isDirectory file)))
+         (throw (ex-info (format "\"%s\" does not exist or is not a directory" path) {:path path}))
+         (-> state
+             (assoc-in [:source-paths path] (assoc opts
+                                              :file file
+                                              :abs-path (.getAbsolutePath file)
+                                              :path path))
+             (merge-resources (do-find-resources-in-paths state [path]))
+             ))))))
 
 (def cljs-core-name "cljs/core.cljs")
 (def goog-base-name "goog/base.js")
