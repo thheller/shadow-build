@@ -31,9 +31,11 @@
                                           :ns 'cljs.user
                                           :name "cljs/user.cljs"
                                           :js-name "cljs/user.js"
-                                          :input (atom "(ns cljs.user)")
+                                          :input (atom
+                                                   (str "(ns cljs.user"
+                                                        "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
                                           :provides #{'cljs.user}
-                                          :requires #{'cljs.core 'runtime-setup}})
+                                          :requires #{'cljs.core 'runtime-setup 'cljs.repl}})
 
         repl-state {:current {:ns 'cljs.user
                               :name "cljs/user.cljs"

@@ -26,10 +26,6 @@
           :exclude [shadow.cljs.util]
           :output-dir "doc/codox"}
 
-  ;; this stuff is deprecated
-  :aliases {"cljs-dev" ["run" "-m" "shadow.cljs.api/build-dev" :project/cljs]
-            "cljs-prod" ["run" "-m" "shadow.cljs.api/build-prod" :project/cljs]}
-
   ;; make cursive happy, see https://github.com/cursiveclojure/cursive/issues/665
   ;; shadow-build has nothing to do with lein-cljsbuild!
   :cljsbuild {:builds {:main {:source-paths ["src/cljs" "test-data"]}}}

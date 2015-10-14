@@ -56,9 +56,23 @@ public class FileWatcher {
      * @throws InterruptedException
      */
     public IPersistentMap waitForChanges() throws IOException, InterruptedException {
+        return pollForChanges(true);
+    }
+
+    public IPersistentMap pollForChanges() throws IOException, InterruptedException {
+        return pollForChanges(false);
+    }
+
+    public IPersistentMap pollForChanges(boolean block) throws IOException, InterruptedException {
         ITransientMap changes = PersistentHashMap.EMPTY.asTransient();
 
-        WatchKey key = ws.take();
+        WatchKey key;
+        if (block) {
+            key = ws.take();
+        } else {
+            key = ws.poll();
+        }
+
         while (key != null) {
             Path dir = keys.get(key);
             if (dir == null) {
@@ -104,7 +118,7 @@ public class FileWatcher {
                 keys.remove(key);
             }
 
-            if (changes.count() == 0) {
+            if (block && changes.count() == 0) {
                 // if no interesting changes happened, continue to block
                 // eg. empty directory created, "unwanted" file created/deleted
                 key = ws.take();
