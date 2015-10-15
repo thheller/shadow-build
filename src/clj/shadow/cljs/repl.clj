@@ -200,9 +200,9 @@
      (pprint (:repl-state state))
      state)
 
-
    'ns
    (fn [state source & args]
+     (prn [:ns-not-yet-supported source])
      state)})
 
 ;; https://github.com/clojure/tools.reader/blob/master/src/main/clojure/clojure/tools/reader/reader_types.clj#L47

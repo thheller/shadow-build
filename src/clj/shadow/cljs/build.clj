@@ -434,6 +434,21 @@ normalize-resource-name
   (when-let [name (get-in state [:provide->source ns-sym])]
     (get-in state [:sources name])))
 
+(defn find-resource-by-js-name [state js-name]
+  {:pre [(compiler-state? state)
+         (string? js-name)]}
+  (let [rcs
+        (->> (:sources state)
+             (vals)
+             (filter #(= js-name (:js-name %)))
+             (into []))]
+    (when (not= 1 (count rcs))
+      ;; FIXME: this should be checked when scanning for resources
+      (throw (ex-info (format "multiple resources for js-name:%s" js-name)
+                      {:js-name js-name
+                       :resources rcs})))
+    (first rcs)))
+
 (defn- get-deps-for-src* [state name]
   {:pre [(compiler-state? state)
          (string? name)]}
@@ -1405,12 +1420,13 @@ normalize-resource-name
        (map #(str "'" (comp/munge %) "'"))
        (str/join ",")))
 
-(defn closure-goog-deps [{:keys [modules] :as state}]
-  (->> (for [src-name (mapcat :sources (vals modules))]
-         (let [{:keys [js-name requires provides]} (get-in state [:sources src-name])]
-           (str "goog.addDependency(\"" js-name "\","
-                "[" (ns-list-string provides) "],"
-                "[" (ns-list-string requires) "]);")))
+(defn closure-goog-deps [state]
+  (->> (:sources state)
+       (vals)
+       (map (fn [{:keys [js-name requires provides]}]
+              (str "goog.addDependency(\"" js-name "\","
+                   "[" (ns-list-string provides) "],"
+                   "[" (ns-list-string requires) "]);")))
        (str/join "\n")))
 
 (defn flush-sources-by-name
