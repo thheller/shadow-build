@@ -15,7 +15,7 @@ Right now this really only is a library and not a tool like lein-cljsbuild. But 
 ```clojure
 :profiles {:dev {:source-paths ["dev"]
                  :dependencies [[org.clojure/clojurescript "1.7.48"]
-                                [thheller/shadow-build "1.0.0-alpha15"]]}}
+                                [thheller/shadow-build "1.0.0-123"]]}}
 ```
 
 alpha11+ also require Clojure 1.7.0-RC1 and up!
