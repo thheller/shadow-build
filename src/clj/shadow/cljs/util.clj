@@ -232,7 +232,10 @@
 
       (binding [ana/*cljs-ns* name]
         (doseq [macro-ns macro-namespaces]
-          (require macro-ns)))
+          (try
+            (require macro-ns)
+            (catch Exception e
+              (throw (ex-info (format "failed to require macro-ns:%s, it was required by:%s" macro-ns name) {:ns-info ast} e))))))
 
       (if (contains? macro-namespaces name)
         (let [macros (find-macros-in-ns name)]

@@ -723,7 +723,7 @@ normalize-resource-name
       (io/make-parents cache-js)
       (spit cache-js (:output rc))
 
-      (log-progress logger (format "Wrote cache for \"%s\" to \"%s\"" name cache-file)))))
+      (log-progress logger (format "Wrote cache for \"%s\"" name)))))
 
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
@@ -879,7 +879,7 @@ normalize-resource-name
   state)
 
 
-(defn discover-macros [state]
+(defn discover-macros [{:keys [logger] :as state}]
   ;; build {macro-ns #{used-by-source-by-name ...}}
   (let [macro-info (->> (:sources state)
                         (vals)
@@ -898,20 +898,20 @@ normalize-resource-name
                                                   [name url]
                                                   (let [name (str name "c")]
                                                     [name (io/resource name)]))]
-                                 (when-not url
-                                   (throw (ex-info (format "Macro namespace: %s not found, required by %s" macro-ns used-by)
-                                                   {:ns macro-ns :used-by used-by})))
+                                 #_ (when-not url (log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
                                  {:ns macro-ns
                                   :used-by used-by
                                   :name name
                                   :url url})))
                         (map (fn [{:keys [url] :as info}]
-                               (if (not= "file" (.getProtocol url))
+                               (if (nil? url)
                                  info
-                                 (let [file (io/file (.getPath url))]
-                                   (assoc info
-                                     :file file
-                                     :last-modified (.lastModified file))))))
+                                 (if (not= "file" (.getProtocol url))
+                                   info
+                                   (let [file (io/file (.getPath url))]
+                                     (assoc info
+                                       :file file
+                                       :last-modified (.lastModified file)))))))
                         (map (juxt :name identity))
                         (into {}))]
     (assoc state :macros macro-info)
