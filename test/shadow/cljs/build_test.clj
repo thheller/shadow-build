@@ -105,8 +105,8 @@
 
       ;; FIXME: clojure 1.7 spit doesn't seem to "touch" the file anymore?
       (.setLastModified file-a (System/currentTimeMillis))
-
       (Thread/sleep 50)
+
       (let [modified (cljs/scan-for-modified-files state)
             new (cljs/scan-for-new-files state)]
         (prn [:modified modified])
