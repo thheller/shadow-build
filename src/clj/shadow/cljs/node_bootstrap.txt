@@ -62,7 +62,7 @@ global.goog = {};
  */
 global.CLOSURE_IMPORT_SCRIPT = function(src) {
   // @thheller: goog.require files are in src directory
-  require('./src/' + src);
+  require(path.resolve(__dirname, 'src') + '/' + src);
   return true;
 };
 

@@ -14,13 +14,13 @@
              :public-path "/out")
       (cljs/step-find-resources-in-jars)
       (cljs/step-find-resources "cljs-data/workers/src")
-      (cljs/step-finalize-config)
-      (cljs/step-configure-module :cljs ['cljs.core] #{})
-      (cljs/step-configure-module :page ['page] #{:cljs})
-      (cljs/step-configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
-      (cljs/step-configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
+      (cljs/finalize-config)
+      (cljs/configure-module :cljs ['cljs.core] #{})
+      (cljs/configure-module :page ['page] #{:cljs})
+      (cljs/configure-module :worker1 ['worker1] #{:cljs} {:web-worker true})
+      (cljs/configure-module :worker2 ['worker2] #{:cljs} {:web-worker true})
 
-      (cljs/step-compile-modules)
+      (cljs/compile-modules)
       (cljs/flush-unoptimized)
       
       ;; (cljs/closure-optimize)
@@ -51,17 +51,17 @@
       (cljs/step-find-resources "cljs-data/dummy/src")
       (cljs/step-find-resources "cljs-data/dummy/test")
 
-      (cljs/step-finalize-config)
+      (cljs/finalize-config)
       (cljs/step-compile-core)
 
-      (cljs/step-configure-module :cljs ['cljs.core] #{})
-      (cljs/step-configure-module :basic ['basic] #{:cljs})
-      (cljs/step-configure-module :other ['other] #{:cljs})
+      (cljs/configure-module :cljs ['cljs.core] #{})
+      (cljs/configure-module :basic ['basic] #{:cljs})
+      (cljs/configure-module :other ['other] #{:cljs})
 
       (cljs/watch-and-repeat!
         (fn [state modified]
           (-> state
-              (cljs/step-compile-modules)
+              (cljs/compile-modules)
               (cljs/flush-unoptimized)
               (cond->
                 ;; first pass, run all tests

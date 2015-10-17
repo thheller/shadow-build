@@ -3,6 +3,7 @@
         shadow.fix-test)
   (:require [shadow.cljs.build :as cljs]
             [shadow.cljs.repl :as repl]
+            [shadow.cljs.node :as node]
             [shadow.cljs.util :as util]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
@@ -19,9 +20,9 @@
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
   (let [state (-> (cljs/init-state)
-                  (cljs/step-find-resources-in-jars)
-                  (cljs/step-find-resources "test-data")
-                  (cljs/step-finalize-config))]
+                  (cljs/find-resources-in-classpath)
+                  (cljs/find-resources "test-data")
+                  (cljs/finalize-config))]
     (is (empty? (cljs/scan-for-modified-files state)))
     (.setLastModified (io/file "dev/shadow/test_macro.clj") (System/currentTimeMillis))
     (let [modded (cljs/scan-for-modified-files state)
@@ -34,8 +35,8 @@
 (deftest test-js-env
   (let [state (-> (cljs/init-state)
                   (cljs/enable-source-maps)
-                  (cljs/step-find-resources-in-jars)
-                  (cljs/step-find-resources "cljs-data/dummy/src")
+                  (cljs/find-resources-in-classpath)
+                  (cljs/find-resources "cljs-data/dummy/src")
                   ;; (cljs/step-find-resources "/Users/zilence/code/oss/closure-library/closure")
                   ;; (cljs/step-find-resources "/Users/zilence/code/oss/closure-library/third_party")
                   (assoc :optimizations :advanced
@@ -47,12 +48,12 @@
                          :pseudo-names true
                          :pretty-print true
                          :public-path "target/cljs")
-                  (cljs/step-finalize-config)
-                  (cljs/step-configure-module :loader ['goog.module.ModuleManager] #{})
+                  (cljs/finalize-config)
+                  (cljs/configure-module :loader ['goog.module.ModuleManager] #{})
                   ;; (cljs/step-configure-module :cljs ['cljs.core] #{:loader})
                   ;; (cljs/step-configure-module :basic ['basic] #{:cljs})
                   ;; (cljs/step-configure-module :other ['other] #{:cljs})
-                  (cljs/step-compile-modules)
+                  (cljs/compile-modules)
                   ;;(cljs/flush-unoptimized)
                   (cljs/closure-optimize)
                   (cljs/flush-modules-to-disk)
@@ -79,20 +80,19 @@
 
     (let [state (-> (cljs/init-state)
                     (cljs/enable-source-maps)
-                    (cljs/step-find-resources-in-jars)
-                    (cljs/step-find-resources "target/reload-test")
+                    (cljs/find-resources-in-classpath)
+                    (cljs/find-resources "target/reload-test")
                     (assoc :optimizations :whitespace
                            :pretty-print true
                            :work-dir (io/file "target/cljs-work")
                            :public-dir (io/file "target/cljs")
                            :public-path "target/cljs")
-                    (cljs/step-finalize-config)
-                    (cljs/step-compile-core)
-                    (cljs/step-configure-module :test ['test-a] #{}))]
+                    (cljs/finalize-config)
+                    (cljs/configure-module :test ['test-a] #{}))]
 
       (is (nil? (get-in state [:sources "test_b.cljs"])))
 
-      (cljs/step-compile-modules state)                     ;; no error is good enough for now
+      (cljs/compile-modules state)                     ;; no error is good enough for now
 
       ;; wait for a bit
       ;; otherwise the spit may end up in the same millisec as the previous one
@@ -102,8 +102,14 @@
       ;; now we modify it to depend on test-b
       (spit file-a (str/join "\n" ["(ns test-a (:require [test-b]))"
                                    foo-fn]))
+
+      ;; FIXME: clojure 1.7 spit doesn't seem to "touch" the file anymore?
+      (.setLastModified file-a (System/currentTimeMillis))
+
+      (Thread/sleep 50)
       (let [modified (cljs/scan-for-modified-files state)
             new (cljs/scan-for-new-files state)]
+        (prn [:modified modified])
         (is (empty? new))
         (is (= 1 (count modified)))
         (is (= :modified (-> modified first :scan)))
@@ -126,7 +132,7 @@
             (is (= 1 (count new)))
 
             ;; FIXME: test if everything is ok, no exception is good enough for now
-            (cljs/step-compile-modules state)
+            (cljs/compile-modules state)
             ))))))
 
 
@@ -141,12 +147,11 @@
                               :cache-dir (io/file "target/cljs-cache")
                               :public-dir (io/file "target/cljs")
                               :public-path "target/cljs")
-                       (cljs/step-find-resources-in-jars)
-                       (cljs/step-find-resources "cljs-data/dummy/src")
-                       (cljs/step-finalize-config)
-                       (cljs/step-compile-core)
-                       (cljs/step-configure-module :basic ['basic] #{})
-                       (cljs/step-compile-modules)
+                       (cljs/find-resources-in-classpath)
+                       (cljs/find-resources "cljs-data/dummy/src")
+                       (cljs/finalize-config)
+                       (cljs/configure-module :basic ['basic] #{})
+                       (cljs/compile-modules)
                        (cljs/flush-unoptimized)))]
     (println "--- ROUND 1")
     (.setLastModified (io/file "test-data/common.cljs") 1)
@@ -174,17 +179,16 @@
              :cache-dir (io/file "cljs-data/foreign/out/cljs-cache")
              :public-dir (io/file "cljs-data/foreign/out")
              :public-path "out")
-      (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "cljs-data/foreign/src")
+      (cljs/find-resources-in-classpath)
+      (cljs/find-resources "cljs-data/foreign/src")
       (cljs/add-foreign "jquery.js"
                         '#{jquery}
                         #{}
                         (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js"))
                         (slurp (io/file "cljs-data/foreign/lib/jquery.externs.js")))
-      (cljs/step-finalize-config)
-      (cljs/step-compile-core)
-      (cljs/step-configure-module :test ['wants-jquery] #{})
-      (cljs/step-compile-modules)
+      (cljs/finalize-config)
+      (cljs/configure-module :test ['wants-jquery] #{})
+      (cljs/compile-modules)
       ;; (cljs/closure-optimize)
       ;; (cljs/flush-modules-to-disk)
       (cljs/flush-unoptimized)
@@ -197,18 +201,19 @@
                      :work-dir (io/file "target/test-cljs-work")
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
-              (cljs/step-find-resources-in-jars)
-              (cljs/step-find-resources "cljs-data/dummy/src")
-              (cljs/step-finalize-config)
-              (cljs/step-configure-module :test ['cljs.repl] #{})
-              (cljs/step-compile-modules)
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :test ['cljs.repl] #{})
+              (cljs/compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
               ;;(cljs/flush-unoptimized)
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
-(deftest test-dev-api
+
+(deftest test-excute-affected-tests
   (-> (cljs/init-state)
       (assoc :optimizations :none
              :pretty-print true
@@ -217,11 +222,33 @@
              :cache-level :jars
              :public-dir (io/file "target/test-cljs")
              :public-path "target/test-cljs")
-      (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "cljs-data/dummy/src")
-      (cljs/step-find-resources "cljs-data/dummy/test")
-      (cljs/execute-affected-tests! ["basic.cljs"])))
+      (cljs/find-resources-in-classpath)
+      (cljs/find-resources "cljs-data/dummy/src")
+      (cljs/find-resources "cljs-data/dummy/test")
+      (node/execute-affected-tests! ["basic.cljs"])))
 
+
+(deftest test-nodejs-build
+  (let [state
+        (-> (cljs/init-state)
+            ;; (cljs/enable-emit-constants)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/node/src")
+
+            (cljs/set-build-options
+              {:cache-dir (io/file "target/test-cljs-cache")
+               :cache-level :jars})
+
+            (node/configure
+              {:main 'test.server/main
+               :output-to "cljs-data/node/out/my-app.js"})
+            (node/compile)
+            (node/flush))]
+
+    (println (slurp "cljs-data/node/out/my-app.js"))
+    ;; (println (slurp "cljs-data/node/out/src/test/server.js"))
+
+    ))
 
 (def ns-tests
   "taken from https://github.com/clojure/clojurescript/blob/master/test/clj/cljs/analyzer_tests.clj"
@@ -444,8 +471,8 @@
       (cljs/step-find-resources "cljs-data/dummy/src")
       (cljs/step-find-resources "cljs-data/dummy/test")
 
-      (cljs/step-finalize-config)
-      (cljs/step-configure-module :cljs ['cljs.core] #{})
+      (cljs/finalize-config)
+      (cljs/configure-module :cljs ['cljs.core] #{})
       (repl/prepare)))
 
 
