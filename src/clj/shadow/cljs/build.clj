@@ -98,25 +98,25 @@
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
   (or (= :cljs type) ;; cljs is always usable
-    (seq provides) ;; provides something is useful
-    (seq requires) ;; requires something is less useful?
-    (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
-    ))
+      (seq provides) ;; provides something is useful
+      (seq requires) ;; requires something is less useful?
+      (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
+      ))
 
 (defn is-jar? [^String name]
   (.endsWith (str/lower-case name) ".jar"))
 
 (defn is-cljs-file? [^String name]
   (or (.endsWith (str/lower-case name) ".cljs")
-    (.endsWith (str/lower-case name) ".cljc")))
+      (.endsWith (str/lower-case name) ".cljc")))
 
 (defn is-js-file? [^String name]
   (.endsWith (str/lower-case name) ".js"))
 
 (defn is-cljs-resource? [^String name]
   (or (is-cljs-file? name)
-    (is-js-file? name)
-    ))
+      (is-js-file? name)
+      ))
 
 (defn cljs->js-name [name]
   (str/replace name #"\.cljs$" ".js"))
@@ -289,7 +289,7 @@ normalize-resource-name
         (let [^JarEntry jar-entry (.nextElement entries)
               name (.getName jar-entry)]
           (if (or (not (is-cljs-resource? name))
-                (should-ignore-resource? state name))
+                  (should-ignore-resource? state name))
             (recur result)
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
                   rc (inspect-resource state
@@ -374,7 +374,7 @@ normalize-resource-name
         mfile (io/file manifest-cache-dir manifest-name)
         jar-file (io/file path)
         manifest (if (and (.exists mfile)
-                       (>= (.lastModified mfile) (.lastModified jar-file)))
+                          (>= (.lastModified mfile) (.lastModified jar-file)))
                    (read-jar-manifest mfile)
                    (let [manifest (create-jar-manifest state path)]
                      (io/make-parents mfile)
@@ -403,7 +403,7 @@ normalize-resource-name
     (for [file (file-seq root)
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
-                  (not (.isHidden file)))
+                     (not (.isHidden file)))
           :let [
                 name (-> abs-path
                          (.substring root-len)
@@ -673,18 +673,18 @@ normalize-resource-name
         cache-js (io/file cache-dir "src" js-name)]
 
     (when (and (.exists cache-file)
-            (> (.lastModified cache-file) last-modified)
-            (.exists cache-js)
-            (> (.lastModified cache-js) last-modified)
+               (> (.lastModified cache-file) last-modified)
+               (.exists cache-js)
+               (> (.lastModified cache-js) last-modified)
 
-            (let [min-age (->> (get-deps-for-ns state ns)
-                               (map #(get-in state [:sources % :last-modified]))
-                               #_(map (fn [{:keys [name last-modified] :as src}]
-                                        (prn [:last-mod name last-modified])
-                                        last-modified))
-                               (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
-                               (reduce (fn [a b] (Math/max a b))))]
-              (> (.lastModified cache-file) min-age)))
+               (let [min-age (->> (get-deps-for-ns state ns)
+                                  (map #(get-in state [:sources % :last-modified]))
+                                  #_(map (fn [{:keys [name last-modified] :as src}]
+                                           (prn [:last-mod name last-modified])
+                                           last-modified))
+                                  (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
+                                  (reduce (fn [a b] (Math/max a b))))]
+                 (> (.lastModified cache-file) min-age)))
 
       (let [cache-data (read-cache cache-file)]
 
@@ -728,17 +728,17 @@ normalize-resource-name
    make sure you are in with-compiler-env"
   [{:keys [cache-dir cache-level] :as state} {:keys [jar] :as src}]
   (let [cache? (and cache-dir
-                 ;; i don't trust the register-constant! stuff for now
-                 (not (:emit-constants state))
-                 (or (= cache-level :all)
-                   (and (= cache-level :jars)
-                     jar)))]
+                    ;; i don't trust the register-constant! stuff for now
+                    (not (:emit-constants state))
+                    (or (= cache-level :all)
+                        (and (= cache-level :jars)
+                             jar)))]
     (or (when cache?
           (load-cached-cljs-resource state src))
-      (let [src (do-compile-cljs-resource state src)]
-        (when cache?
-          (write-cached-cljs-resource state src))
-        src))))
+        (let [src (do-compile-cljs-resource state src)]
+          (when cache?
+            (write-cached-cljs-resource state src))
+          src))))
 
 (defn merge-provides [state provided-by provides]
   (reduce
@@ -764,10 +764,10 @@ normalize-resource-name
 
 (defn valid-resource? [{:keys [type input name provides requires] :as src}]
   (and (contains? #{:js :cljs} type)
-    (instance? clojure.lang.IDeref input)
-    (string? name)
-    (set? provides)
-    (set? requires)))
+       (instance? clojure.lang.IDeref input)
+       (string? name)
+       (set? provides)
+       (set? requires)))
 
 (defn is-cljc? [^String name]
   (.endsWith name ".cljc"))
@@ -831,7 +831,7 @@ normalize-resource-name
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
      (let [file (io/file path)]
        (if (or (not (.exists file))
-             (not (.isDirectory file)))
+               (not (.isDirectory file)))
          (throw (ex-info (format "\"%s\" does not exist or is not a directory" path) {:path path}))
          (-> state
              (assoc-in [:source-paths path] (assoc opts
@@ -985,7 +985,7 @@ normalize-resource-name
     [(:logger state) (format "Flushing to disk")]
     (doseq [{:keys [type name compiled] :as src} (vals sources)
             :when (and (= :cljs type)
-                    compiled)]
+                       compiled)]
 
       (let [{:keys [js-name output]} src
             target (io/file work-dir js-name)]
@@ -1445,10 +1445,10 @@ normalize-resource-name
 
           ;; skip files we already have since source maps are kinda expensive to generate
           :when (or (not (.exists target))
-                  (nil? last-modified) ;; runtime-setup doesn't have last-modified
-                  (> (or (:compiled-at src) ;; js is not compiled but maybe modified
-                       last-modified)
-                    (.lastModified target)))]
+                    (nil? last-modified) ;; runtime-setup doesn't have last-modified
+                    (> (or (:compiled-at src) ;; js is not compiled but maybe modified
+                           last-modified)
+                      (.lastModified target)))]
 
     (io/make-parents target)
 
