@@ -9,6 +9,7 @@
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [clojure.java.io :as io]
+            [clojure.repl :refer (pst)]
             [cljs.analyzer :as a]
             [clojure.set :as set]
             [cljs.closure :as closure])
@@ -16,7 +17,8 @@
            (java.io File)
            (java.net URL)
            (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile ProcessCommonJSModules TransformAMDToCJSModule ES6ModuleLoader)
-           (com.google.javascript.jscomp.parsing Config$LanguageMode)))
+           (com.google.javascript.jscomp.parsing Config$LanguageMode)
+           (clojure.lang ExceptionInfo)))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -212,6 +214,27 @@
               ;;(cljs/flush-unoptimized)
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
+
+(deftest test-compiler-error
+  (let [s (-> (cljs/init-state)
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :test ['broken] #{}))]
+    (try
+      (cljs/compile-modules s)
+      (catch Exception e
+        (is (instance? ExceptionInfo e))
+        (let [data (ex-data e)]
+          (is (= :reader-exception (:type data)))
+          (is (contains? data :line))
+          (is (contains? data :column))
+          (is (contains? data :file)))
+
+        ;; (pst e)
+        ))
+    ))
+
 
 
 (deftest test-excute-affected-tests

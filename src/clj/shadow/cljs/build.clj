@@ -1719,6 +1719,7 @@ normalize-resource-name
    :macros-loaded #{}
    :use-file-min true
 
+
    :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest")]
                          (io/make-parents dir)
                          dir)
@@ -1727,6 +1728,8 @@ normalize-resource-name
 
    :public-dir (io/file "public" "js")
    :public-path "js"
+
+   :optimizations :none
 
    :source-paths {}
    :closure-defines {"goog.DEBUG" false
