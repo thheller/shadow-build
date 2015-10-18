@@ -17,3 +17,4 @@ pom.xml.asc
 /lib/js-closure
 /lib/closure-library
 out/
+node_modules/

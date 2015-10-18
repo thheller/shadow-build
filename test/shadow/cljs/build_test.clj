@@ -15,7 +15,8 @@
   (:import (java.util.regex Pattern)
            (java.io File)
            (java.net URL)
-           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile)))
+           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile ProcessCommonJSModules TransformAMDToCJSModule ES6ModuleLoader)
+           (com.google.javascript.jscomp.parsing Config$LanguageMode)))
 
 (deftest test-initial-scan
   (.setLastModified (io/file "dev/shadow/test_macro.clj") 0)
@@ -438,16 +439,41 @@
     (is (= data read))))
 
 
-(deftest test-es6-conversion
-  (let [cc (cljs/make-closure-compiler)
-        co (doto (CompilerOptions.)
-             (.setCodingConvention (ClosureCodingConvention.))
-             (.setProcessCommonJSModules true))
-        ]
-    (.compile cc [] [(SourceFile/fromCode "test.js" "var yo = require('something'); exports.hello = function(name) { return \"hello \" + yo(name); }")] co)
+(comment
+  ;; node.js hurts my head .. how is this node_modules/thing/node_modules/other/node_modules/thing/node_modules shit ok?
+  (defn get-module-roots []
+    (->> (file-seq (io/file "cljs-data/commonjs/node_modules"))
+         (filter #(.isDirectory %))
+         (filter #(re-find #"node_modules/[^/]+$" (.getAbsolutePath %)))
+         (map #(.getAbsolutePath %))
+         (distinct)
+         (into [])
+         ))
 
-    (prn [:co (.toSource cc)])
-    ))
+  (deftest test-es6-conversion
+    (let [cc (cljs/make-closure-compiler)
+          co (doto (CompilerOptions.)
+               (.setPrettyPrint true)
+               (.setModuleRoots (get-module-roots))
+               (.setCodingConvention (ClosureCodingConvention.))
+               (.setParseJsDocDocumentation false)
+               (.setProcessCommonJSModules true))
+
+          file (io/file "cljs-data/commonjs/node_modules/react")
+          files (->> (file-seq file)
+                     (filter #(.isFile %))
+                     (filter #(.endsWith (.getName %) ".js"))
+                     (remove #(.contains (.getAbsolutePath %) "/test"))
+                     (remove #(.contains (.getAbsolutePath %) "__tests__"))
+                     (map #(SourceFile/fromFile %))
+                     (into []))]
+      (.compile cc [] files co)
+
+
+      ;; (pprint (.getInputsById cc))
+
+      (spit "tmp/wahnsinn.js" (.toSource cc))
+      )))
 
 (deftest test-ignore-patterns
   (let [state (cljs/init-state)]

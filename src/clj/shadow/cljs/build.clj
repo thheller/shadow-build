@@ -1482,8 +1482,15 @@ normalize-resource-name
 
   state)
 
+(defn directory? [^File x]
+  (and (instance? File x)
+       (or (not (.exists x))
+           (.isDirectory x))))
+
 (defn flush-unoptimized
-  [{:keys [build-modules public-dir public-path unoptimizable] :as state}]
+  [{:keys [build-modules public-dir unoptimizable] :as state}]
+  {:pre [(directory? public-dir)]}
+
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
   (with-logged-time
@@ -1715,12 +1722,16 @@ normalize-resource-name
    :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest")]
                          (io/make-parents dir)
                          dir)
-   :cache-dir (io/file ".cljs-cache")
+   :cache-dir (io/file "target" "shadow-build" "cljs-cache")
    :cache-level :jars
+
+   :public-dir (io/file "public" "js")
+   :public-path "js"
 
    :source-paths {}
    :closure-defines {"goog.DEBUG" false
                      "goog.LOCALE" "en"}
+
    :logger (reify BuildLog
              (log-warning [_ msg]
                (println (str "WARN: " msg)))

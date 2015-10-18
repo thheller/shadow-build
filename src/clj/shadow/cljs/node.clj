@@ -19,13 +19,6 @@
 
         main (symbol main-ns main-fn)]
 
-    (pprint {:output-to output-to
-             :output-name output-name
-             :output-dir output-dir
-             :module-name module-name
-             :main-ns main-ns
-             :main-fn main-fn})
-
     (-> state
         (assoc :public-dir output-dir
                ;; FIXME: figure out if any optimization actually makes sense
@@ -52,6 +45,7 @@
 
 (defn flush
   [{:keys [build-modules public-dir unoptimizable] :as state}]
+  {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
 
