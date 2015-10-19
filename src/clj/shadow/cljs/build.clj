@@ -689,7 +689,7 @@ normalize-resource-name
       (let [cache-data (read-cache cache-file)]
 
         (when (= (cljs-util/clojurescript-version) (:version cache-data))
-          (log-progress logger (format "Load cached cljs resource \"%s\"" name))
+          (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
           ;; restore analysis data
           (let [ana-data (:analyzer cache-data)]
@@ -721,16 +721,19 @@ normalize-resource-name
       (io/make-parents cache-js)
       (spit cache-js (:output rc))
 
-      (log-progress logger (format "Wrote cache for \"%s\"" name)))))
+      (log-progress logger (format "[CACHE] write: \"%s\"" name)))))
 
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
    make sure you are in with-compiler-env"
-  [{:keys [cache-dir cache-level] :as state} {:keys [jar] :as src}]
+  [{:keys [cache-dir cache-level] :as state} {:keys [jar file] :as src}]
   (let [cache? (and cache-dir
                     ;; i don't trust the register-constant! stuff for now
                     (not (:emit-constants state))
-                    (or (= cache-level :all)
+                    ;; even with :all only cache resources that are in jars or have a file
+                    ;; cljs.user (from repl) or runtime-setup should never be cached
+                    (or (and (= cache-level :all)
+                             (or jar file))
                         (and (= cache-level :jars)
                              jar)))]
     (or (when cache?
@@ -762,12 +765,14 @@ normalize-resource-name
     ;; else: not present
     state))
 
-(defn valid-resource? [{:keys [type input name provides requires] :as src}]
+(defn valid-resource? [{:keys [type input name provides requires last-modified] :as src}]
   (and (contains? #{:js :cljs} type)
        (instance? clojure.lang.IDeref input)
        (string? name)
        (set? provides)
-       (set? requires)))
+       (set? requires)
+       (number? last-modified)
+       ))
 
 (defn is-cljc? [^String name]
   (.endsWith name ".cljc"))
@@ -776,10 +781,11 @@ normalize-resource-name
   (.endsWith name ".cljs"))
 
 (defn merge-resource
-  [{:keys [logger] :as state} {:keys [name provides] :as src}]
+  [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (when-not (valid-resource? src)
     (pprint (dissoc src :input))
     (throw (ex-info "not a valid resource" src)))
+
   (let [cljc? (is-cljc? name)
         cljc-name (when (is-cljs? name)
                     (str/replace name #"cljs$" "cljc"))
@@ -788,12 +794,12 @@ normalize-resource-name
     (cond
       ;; don't merge .cljc file if a .cljs of the same name exists
       (and cljc? (contains? (:sources state) cljs-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name url))
           state)
 
       ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
       (and (is-cljs? name) (contains? (:sources state) cljc-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name url))
           (-> state
               (unmerge-resource cljc-name)
               (assoc-in [:sources name] src)
@@ -1175,7 +1181,9 @@ normalize-resource-name
      :js-name "runtime_setup.js"
      :provides #{'runtime-setup}
      :requires #{'cljs.core}
-     :input (atom src)}))
+     :input (atom src)
+     :last-modified 0 ;; this file should never cause recompiles
+     }))
 
 (defn generate-output-for-source [state {:keys [name type] :as src}]
   (if (seq (:output src))

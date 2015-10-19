@@ -35,7 +35,8 @@
                                                    (str "(ns cljs.user"
                                                         "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
                                           :provides #{'cljs.user}
-                                          :requires #{'cljs.core 'runtime-setup 'cljs.repl}})
+                                          :requires #{'cljs.core 'runtime-setup 'cljs.repl}
+                                          :last-modified (System/currentTimeMillis)})
 
         repl-state {:current {:ns 'cljs.user
                               :name "cljs/user.cljs"
