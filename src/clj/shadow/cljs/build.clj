@@ -1499,9 +1499,13 @@ normalize-resource-name
       ;; js just needs itself
       ;; FIXME: needs to flush more when js processing is added
       :js
-      (spit target (:output src))
+      (do (spit target (:output src))
+          ;; foreign libs should play nice with goog require/import and tell what they provide
+          (when (:foreign src)
+            (spit target (make-foreign-js-source src) :append true)
+            ))
 
-      (throw (ex-info "cannot flush" src))
+      (throw (ex-info "cannot flush" (dissoc src :input :output)))
       ))
 
   state)

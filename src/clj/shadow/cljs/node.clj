@@ -15,7 +15,7 @@
         output-to (io/file output-to)
         output-name (.getName output-to)
         module-name (-> output-name (str/replace #".js$" "") (keyword))
-        output-dir (.getParent output-to)
+        output-dir (.getParentFile output-to)
 
         main (symbol main-ns main-fn)]
 
