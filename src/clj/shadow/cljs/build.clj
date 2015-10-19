@@ -57,7 +57,7 @@
     '{:input deref
       :output string
       :type (either :js :cljs)
-      :jar boolean
+      :from-jar boolean
       :last-modified long
       :requires #{name}
       :provides #{name}
@@ -294,7 +294,7 @@ normalize-resource-name
             (let [url (URL. (str "jar:file:" abs-path "!/" name))
                   rc (inspect-resource state
                        {:name (normalize-resource-name name)
-                        :jar true
+                        :from-jar true
                         :source-path path
                         :last-modified last-modified
                         :url url
@@ -448,8 +448,10 @@ normalize-resource-name
     (first rcs)))
 
 (defn- get-deps-for-src* [state name]
-  {:pre [(compiler-state? state)
-         (string? name)]}
+  {:pre [(compiler-state? state)]}
+  (when-not (string? name)
+    (throw (ex-info (format "trying to get deps for \"%s\"" (pr-str name)) {})))
+
   (if (contains? (:deps-visited state) name)
     state
     (let [requires (get-in state [:sources name :requires])]
@@ -458,7 +460,16 @@ normalize-resource-name
 
       (let [state (conj-in state [:deps-visited] name)
             state (->> requires
-                       (map #(get-in state [:provide->source %]))
+                       (map (fn [require-sym]
+                              (let [src-name (get-in state [:provide->source require-sym])]
+                                (when-not src-name
+                                  (throw
+                                    (ex-info
+                                      (format "ns \"%s\" not available, required by %s" require-sym name)
+                                      {:ns require-sym
+                                       :src name})))
+                                src-name
+                                )))
                        (into #{})
                        (reduce get-deps-for-src* state))]
         (conj-in state [:deps-ordered] name)
@@ -663,9 +674,14 @@ normalize-resource-name
           :warnings warnings
           :source-map source-map)))))
 
+
+;; FIXME: must manually bump if anything cache related changes
+;; use something similar to clojurescript-version
+(def cache-file-version "v1")
+
 (defn get-cache-file-for-rc
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
-  (io/file cache-dir "ana" (str name ".cache.transit.json")))
+  (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
@@ -726,16 +742,16 @@ normalize-resource-name
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
    make sure you are in with-compiler-env"
-  [{:keys [cache-dir cache-level] :as state} {:keys [jar file] :as src}]
+  [{:keys [cache-dir cache-level] :as state} {:keys [from-jar file] :as src}]
   (let [cache? (and cache-dir
                     ;; i don't trust the register-constant! stuff for now
                     (not (:emit-constants state))
                     ;; even with :all only cache resources that are in jars or have a file
                     ;; cljs.user (from repl) or runtime-setup should never be cached
                     (or (and (= cache-level :all)
-                             (or jar file))
+                             (or from-jar file))
                         (and (= cache-level :jars)
-                             jar)))]
+                             from-jar)))]
     (or (when cache?
           (load-cached-cljs-resource state src))
         (let [src (do-compile-cljs-resource state src)]
@@ -794,12 +810,12 @@ normalize-resource-name
     (cond
       ;; don't merge .cljc file if a .cljs of the same name exists
       (and cljc? (contains? (:sources state) cljs-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name url))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
           state)
 
       ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
       (and (is-cljs? name) (contains? (:sources state) cljc-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name url))
+      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
           (-> state
               (unmerge-resource cljc-name)
               (assoc-in [:sources name] src)
@@ -1728,11 +1744,11 @@ normalize-resource-name
    :use-file-min true
 
 
-   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest")]
+   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v1")]
                          (io/make-parents dir)
                          dir)
    :cache-dir (io/file "target" "shadow-build" "cljs-cache")
-   :cache-level :jars
+   :cache-level :all
 
    :public-dir (io/file "public" "js")
    :public-path "js"
