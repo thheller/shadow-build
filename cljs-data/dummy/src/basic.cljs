@@ -1,6 +1,6 @@
 (ns basic
-  (:require-macros [shadow.test-macro :as tm])
-  (:require [clojure.string :as str]
+  (:require [shadow.test-macro :as tm]
+            [clojure.string :as str]
             [common :as c]))
 
 (defn ^:export hello []

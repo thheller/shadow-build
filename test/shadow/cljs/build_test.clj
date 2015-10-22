@@ -215,6 +215,26 @@
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
+(deftest test-macro-reloading
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :pretty-print true
+                     :work-dir (io/file "target/test-cljs-work")
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :test ['basic] #{})
+              (cljs/compile-modules)
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
+
+    (pprint (cljs/find-resources-using-macro s 'shadow.test-macro))
+    ))
+
 (deftest test-compiler-error
   (let [s (-> (cljs/init-state)
               (cljs/find-resources-in-classpath)

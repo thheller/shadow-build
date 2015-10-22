@@ -19,6 +19,7 @@
             [cljs.env :as env]
             [cljs.tagged-literals :as tags]
             [cljs.util :as cljs-util]
+            [clojure.repl :refer (pst)]
             [clojure.core.reducers :as r]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
@@ -683,6 +684,23 @@ normalize-resource-name
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
+(defn get-max-last-modified-by-name
+  "get the max last modified of a src and all the macros it depends on"
+  [state name]
+  (let [{:keys [last-modified macros] :as rc} (get-in state [:sources name])]
+    (reduce
+      (fn [^long max macro-ns]
+        (let [{:keys [file ^long last-modified] :as macro} (get-in state [:macros macro-ns])]
+          (if (and macro file)
+            (Math/max max last-modified)
+            ;; if we do not have the file for the macro
+            ;; do not consider it relevant since you are probably
+            ;; not dependent on only a macro without any of the cljs
+            max
+            )))
+      last-modified
+      macros)))
+
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
@@ -694,11 +712,13 @@ normalize-resource-name
                (> (.lastModified cache-js) last-modified)
 
                (let [min-age (->> (get-deps-for-ns state ns)
-                                  (map #(get-in state [:sources % :last-modified]))
+                                  (map #(get-max-last-modified-by-name state %))
                                   #_(map (fn [{:keys [name last-modified] :as src}]
                                            (prn [:last-mod name last-modified])
                                            last-modified))
-                                  (remove nil?) ;; might not have :last-modified (eg. runtime-setup)
+                                  ;; zero is sort of reserved for runtime-setup
+                                  ;; since it should never cause a recompile
+                                  (remove zero?)
                                   (reduce (fn [a b] (Math/max a b))))]
                  (> (.lastModified cache-file) min-age)))
 
@@ -902,7 +922,6 @@ normalize-resource-name
   ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
   state)
 
-
 (defn discover-macros [{:keys [logger] :as state}]
   ;; build {macro-ns #{used-by-source-by-name ...}}
   (let [macro-info (->> (:sources state)
@@ -927,23 +946,29 @@ normalize-resource-name
                                   :used-by used-by
                                   :name name
                                   :url url})))
+                        ;; always get last modified for macro source
+                        (map (fn [{:keys [url] :as info}]
+                               (if (nil? url)
+                                 info
+                                 (let [con (.openConnection url)]
+                                   (assoc info :last-modified (.getLastModified con)))
+                                 )))
+                        ;; get file (if not in jar)
                         (map (fn [{:keys [url] :as info}]
                                (if (nil? url)
                                  info
                                  (if (not= "file" (.getProtocol url))
                                    info
                                    (let [file (io/file (.getPath url))]
-                                     (assoc info
-                                       :file file
-                                       :last-modified (.lastModified file)))))))
-                        (map (juxt :name identity))
+                                     (assoc info :file file))))))
+                        (map (juxt :ns identity))
                         (into {}))]
     (assoc state :macros macro-info)
     ))
 
-
-
-(defn finalize-config [state]
+(defn finalize-config
+  "should be called AFTER all resources have been discovers (ie. after find-resources...)"
+  [state]
   (-> state
       (discover-macros)
       (assoc :configured true
@@ -1055,14 +1080,14 @@ normalize-resource-name
                (get-in state [:sources goog-base-name]))))
 
     (str "var CLOSURE_NO_DEPS = true;\n"
-      ;; goog.findBasePath_() requires a base.js which we dont have
-      ;; this is usually only needed for unoptimized builds anyways
-      "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
-      "var CLOSURE_DEFINES = "
-      (json/write-str (:closure-defines state {}))
-      ";\n"
-      goog-base
-      "\n")))
+         ;; goog.findBasePath_() requires a base.js which we dont have
+         ;; this is usually only needed for unoptimized builds anyways
+         "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
+         "var CLOSURE_DEFINES = "
+         (json/write-str (:closure-defines state {}))
+         ";\n"
+         goog-base
+         "\n")))
 
 (defn make-foreign-js-source
   "only need this because we can't control which goog.require gets emitted"
@@ -1363,8 +1388,8 @@ normalize-resource-name
                     (str (str/join "\n" (for [other modules
                                               :when (contains? deps (:name other))]
                                           (str "importScripts('" (:js-name other) "');")))
-                      "\n\n"
-                      out))
+                         "\n\n"
+                         out))
                   out)
             out (str prepend (foreign-js-source-for-mod state mod) out)]
 
@@ -1456,8 +1481,8 @@ normalize-resource-name
        (vals)
        (map (fn [{:keys [js-name requires provides]}]
               (str "goog.addDependency(\"" js-name "\","
-                "[" (ns-list-string provides) "],"
-                "[" (ns-list-string requires) "]);")))
+                   "[" (ns-list-string provides) "],"
+                   "[" (ns-list-string requires) "]);")))
        (str/join "\n")))
 
 (defn flush-sources-by-name
@@ -1545,12 +1570,12 @@ normalize-resource-name
             out (if (or default web-worker)
                   ;; default mod needs closure related setup and goog.addDependency stuff
                   (str unoptimizable
-                    (when web-worker
-                      "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
-                    (closure-defines-and-base state)
-                    (closure-goog-deps state)
-                    "\n\n"
-                    out)
+                       (when web-worker
+                         "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
+                       (closure-defines-and-base state)
+                       (closure-goog-deps state)
+                       "\n\n"
+                       out)
                   ;; else
                   out)]
 
@@ -1578,6 +1603,55 @@ normalize-resource-name
       (cond-> file
         (assoc :last-modified (.lastModified file)))))
 
+
+(defn reset-resource-by-name [state name]
+  (let [rc (-> (get-in state [:sources name])
+               (reset-resource state))]
+    (merge-resource state rc)
+    ))
+
+(defn find-dependent-names
+  [state ns-sym]
+  (->> (:sources state)
+       (vals)
+       (filter (fn [{:keys [requires]}]
+                 (contains? requires ns-sym)))
+       (map :name)
+       (into #{})
+       ))
+
+(defn find-dependent-resources [{:keys [provide->source] :as state} source-names]
+  (let [graph (apply lg/digraph (for [{:keys [name requires]} (vals (:sources state))
+                                      require requires]
+                                  [(get provide->source require) name]))]
+    (reduce (fn [deps source-name]
+              (into deps (la/pre-traverse graph source-name)))
+      #{}
+      source-names)))
+
+(defn find-resources-using-macro
+  "returns a set of names using the macro ns"
+  [state macro-ns]
+  (let [direct-dependents (->> (:sources state)
+                               (vals)
+                               (filter (fn [{:keys [macros] :as rc}]
+                                         (contains? macros macro-ns)))
+                               (map :name)
+                               (into #{}))]
+
+    ;; macro has a companion .cljs file
+    ;; FIXME: should check if that file actually self references
+    (if (get-resource-for-provide state macro-ns)
+      (-> (find-dependent-names state macro-ns)
+          (set/union direct-dependents))
+      direct-dependents
+      )))
+
+(defn reset-resources-using-macro [state macro-ns]
+  (let [names (find-resources-using-macro state macro-ns)]
+    (reduce reset-resource-by-name state names)
+    ))
+
 (defn scan-for-new-files
   "scans the reloadable paths for new files
 
@@ -1599,44 +1673,53 @@ normalize-resource-name
 (defn scan-for-modified-files
   "scans known sources for modified or deleted files
 
-  returns a seq of resource maps with a :scan key which is either :modified :delete"
+  returns a seq of resource maps with a :scan key which is either :modified :delete
+
+  modified macros will cause all files using to to be returned as well
+  although the files weren't modified physically the macro output may have changed"
   [{:keys [sources macros] :as state}]
   (let [reloadable-paths (get-reloadable-source-paths state)]
 
-    ;; editing a macro namespace will invalidate cljs files that depend on it
-    (let [modified-macros (->> macros
-                               (vals)
-                               (filter :file)
-                               (reduce (fn [result {:keys [used-by file last-modified] :as macro}]
-                                         (let [new-mod (.lastModified file)]
-                                           (if (<= new-mod last-modified)
-                                             result
-                                             (let [macro (assoc macro
-                                                           :scan :macro
-                                                           :last-modified new-mod)]
-                                               (->> used-by
-                                                    (map #(get-in state [:sources %]))
-                                                    (map (fn [rc]
-                                                           (assoc rc
-                                                             :scan :modified
-                                                             :last-modified new-mod)))
-                                                    (into (conj result macro)))
-                                               ))))
-                                 []))]
+    ;; FIXME: separate macro scanning from normal scanning
+    (let [modified-macros
+          (->> macros
+               (vals)
+               (filter :file)
+               (reduce
+                 (fn [result {:keys [ns file last-modified] :as macro}]
+                   (let [new-mod (.lastModified file)]
+                     (if (<= new-mod last-modified)
+                       result
+                       (let [macro (assoc macro
+                                     :scan :macro
+                                     :last-modified new-mod)]
+
+                         (conj result macro)))))
+                 []))
+
+          affected-by-macros
+          (->> modified-macros
+               (map :ns)
+               (map #(find-resources-using-macro state %))
+               (reduce set/union))]
 
       (->> (vals sources)
-           (filter :file)
            (filter #(contains? reloadable-paths (:source-path %)))
-           (reduce (fn [result {:keys [^File file last-modified] :as rc}]
-                     (cond
-                       (not (.exists file))
-                       (conj result (assoc rc :scan :delete))
+           (filter :file)
+           (reduce
+             (fn [result {:keys [name ^File file last-modified] :as rc}]
+               (cond
+                 (not (.exists file))
+                 (conj result (assoc rc :scan :delete))
 
-                       (> (.lastModified file) last-modified)
-                       (conj result (assoc rc :scan :modified))
+                 (contains? affected-by-macros name)
+                 (conj result (assoc rc :scan :modified))
 
-                       :else
-                       result))
+                 (> (.lastModified file) last-modified)
+                 (conj result (assoc rc :scan :modified))
+
+                 :else
+                 result))
              modified-macros)))))
 
 (defn scan-files
@@ -1670,22 +1753,29 @@ normalize-resource-name
 (defn reload-modified-files!
   [{:keys [logger] :as state} scan-results]
   (as-> state $state
-    (reduce (fn [state {:keys [scan name file] :as rc}]
-              (case scan
-                :macro
-                (do (log-progress logger (format "Macro File modified: %s" name))
-                    (require (:ns rc) :reload-all)
-                    (assoc-in state [:macros name] (dissoc rc :scan)))
-                :delete
-                (do (log-progress logger (format "Found deleted file: %s -> %s" name file))
-                    (unmerge-resource state (:name rc)))
-                :new
-                (do (log-progress logger (format "Found new file: %s -> %s" name file))
-                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
+    (reduce
+      (fn [state {:keys [scan name file ns] :as rc}]
+        (case scan
+          :macro
+          (do (log-progress logger (format "[RELOAD] macro: %s" ns))
+              (try
+                ;; FIXME: :reload enough probably?
+                (require ns :reload-all)
+                (catch Exception e
+                  (let [st (with-out-str (pst e))]
+                    (log-warning logger
+                      (format "MACRO-RELOAD FAILED %s!%n%s" name st)))))
+              (assoc-in state [:macros ns] (dissoc rc :scan)))
+          :delete
+          (do (log-progress logger (format "[RELOAD] del: %s" file))
+              (unmerge-resource state (:name rc)))
+          :new
+          (do (log-progress logger (format "[RELOAD] new: %s" file))
+              (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
 
-                :modified
-                (do (log-progress logger (format "File modified: %s -> %s" name file))
-                    (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+          :modified
+          (do (log-progress logger (format "[RELOAD] mod: %s" file))
+              (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
       $state
       scan-results)
 
@@ -1788,11 +1878,4 @@ normalize-resource-name
 (defn has-tests? [{:keys [requires] :as rc}]
   (contains? requires 'cljs.test))
 
-(defn find-dependent-resources [{:keys [provide->source] :as state} source-names]
-  (let [graph (apply lg/digraph (for [{:keys [name requires]} (vals (:sources state))
-                                      require requires]
-                                  [(get provide->source require) name]))]
-    (reduce (fn [deps source-name]
-              (into deps (la/pre-traverse graph source-name)))
-      #{}
-      source-names)))
+
