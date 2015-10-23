@@ -235,6 +235,26 @@
     (pprint (cljs/find-resources-using-macro s 'shadow.test-macro))
     ))
 
+(deftest test-find-dependents
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :test ['basic] #{})
+              (cljs/compile-modules)
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
+
+    (pprint (cljs/find-dependent-names s 'common))
+    (pprint (cljs/find-dependents-for-names s ["common.cljs"]))
+
+    ))
+
 (deftest test-compiler-error
   (let [s (-> (cljs/init-state)
               (cljs/find-resources-in-classpath)

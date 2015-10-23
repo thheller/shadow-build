@@ -1226,8 +1226,10 @@ normalize-resource-name
      :last-modified 0 ;; this file should never cause recompiles
      }))
 
-(defn generate-output-for-source [state {:keys [name type] :as src}]
-  (if (seq (:output src))
+(defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
+  (if (and (seq output)
+           ;; always recompile files with warnings
+           (not (seq warnings)))
     src
     (case type
       :js
@@ -1247,15 +1249,21 @@ normalize-resource-name
     (reduce
       (fn [state source-name]
         (let [src (get-in state [:sources source-name])
-              src (generate-output-for-source state src)]
-          (assoc-in state [:sources source-name] src)
-          ))
-      state
+              compiled-src (generate-output-for-source state src)]
+          (-> state
+              (assoc-in [:sources source-name] compiled-src)
+              (cond->
+                (not= (:compiled-at src)
+                      (:compiled-at compiled-src))
+                (update :compiled conj source-name)
+                ))))
+      (assoc state :compiled [])
       source-names)))
 
 (defn compile-modules [state]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
+    ;; this makes me want to use a state monad, just to lazy to rewrite
     (let [state (merge-resource state (make-runtime-setup state))
           state (reduce do-analyze-module state (-> state :modules (vals)))
           modules (sort-and-compact-modules state)
@@ -1620,14 +1628,13 @@ normalize-resource-name
        (into #{})
        ))
 
-(defn find-dependent-resources [{:keys [provide->source] :as state} source-names]
-  (let [graph (apply lg/digraph (for [{:keys [name requires]} (vals (:sources state))
-                                      require requires]
-                                  [(get provide->source require) name]))]
-    (reduce (fn [deps source-name]
-              (into deps (la/pre-traverse graph source-name)))
-      #{}
-      source-names)))
+(defn find-dependents-for-names [state source-names]
+  (->> source-names
+       (map #(get-in state [:sources % :provides]))
+       (reduce set/union)
+       (map #(find-dependent-names state %))
+       (reduce set/union)
+       (into #{})))
 
 (defn find-resources-using-macro
   "returns a set of names using the macro ns"
@@ -1775,7 +1782,11 @@ normalize-resource-name
 
           :modified
           (do (log-progress logger (format "[RELOAD] mod: %s" file))
-              (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))))
+              (let [dependents (find-dependent-names state ns)
+                    state (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))])]
+                ;; modified files also trigger recompile of all its dependents
+                (reduce reset-resource-by-name state dependents)
+                ))))
       $state
       scan-results)
 
@@ -1806,7 +1817,10 @@ normalize-resource-name
                        :name "constants_table.js"
                        :provides #{'constants-table}
                        :requires #{}
-                       :input (atom "")})))
+                       :input (atom "")
+                       ;; FIXME: this forces a recompile always
+                       ;; intended to break cache since using emit-constants require a complete recompile
+                       :last-modified (System/currentTimeMillis)})))
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))

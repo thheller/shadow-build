@@ -66,11 +66,11 @@
             out (str prepend prepend-js out append-js)
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                  "\n\n"
-                  out
-                  "\n\n"
-                  (when main-fn
-                    (make-main-call-js main-fn)))
+                     "\n\n"
+                     out
+                     "\n\n"
+                     (when main-fn
+                       (make-main-call-js main-fn)))
             goog-js (io/file public-dir "src" "goog" "base.js")
             deps-js (io/file public-dir "src" "deps.js")]
         (spit goog-js @(get-in state [:sources "goog/base.js" :input]))
@@ -138,12 +138,13 @@
 
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]
-  (let [test-namespaces (->> source-names
-                             (cljs/find-dependent-resources state)
-                             (filter #(cljs/has-tests? (get-in state [:sources %])))
-                             (map #(get-in state [:sources % :ns]))
-                             (distinct)
-                             (into []))]
+  (let [test-namespaces
+        (->> source-names
+             (cljs/find-dependents-for-names state)
+             (filter #(cljs/has-tests? (get-in state [:sources %])))
+             (map #(get-in state [:sources % :ns]))
+             (distinct)
+             (into []))]
     (if (empty? test-namespaces)
       (do (cljs/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
           state)
