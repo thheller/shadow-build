@@ -259,7 +259,7 @@ normalize-resource-name
 (defn normalize-foreign-libs [{:keys [foreign-libs externs] :as deps}]
   (if (seq externs)
     ;; FIXME: :externs at top level
-    (update-in foreign-libs [0 :externs] concat externs)
+    (update-in foreign-libs [0 :externs] #(into (or % []) externs))
     foreign-libs))
 
 (defn should-ignore-resource?
@@ -335,33 +335,39 @@ normalize-resource-name
 
         (reduce
           (fn [result {:keys [externs provides requires] :as foreign-lib}]
-            (let [[lib-key lib-other] (cond
-                                        (and use-file-min (contains? foreign-lib :file-min))
-                                        [:file-min :file]
-                                        (:file foreign-lib)
-                                        [:file :file-min])
-                  lib-name (get foreign-lib lib-key)
-                  rc (get result lib-name)]
-              (when (nil? rc)
-                (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
+            (if-not (or (contains? foreign-lib :file)
+                        (contains? foreign-lib :file-min))
+              ;; FIXME: {:externs ["om/externs.js"]}
+              ;; doesn't contains any foreign, only externs, need a way to propagate it to the top
+              (do (prn [:probably-ignoring-externs foreign-lib])
+                  result)
+              (let [[lib-key lib-other] (cond
+                                          (and use-file-min (contains? foreign-lib :file-min))
+                                          [:file-min :file]
+                                          (:file foreign-lib)
+                                          [:file :file-min])
+                    lib-name (get foreign-lib lib-key)
+                    rc (get result lib-name)]
+                (when (nil? rc)
+                  (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
 
-              (let [dissoc-all (fn [m list]
-                                 (apply dissoc m list))
-                    ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
-                    rc (assoc rc
-                         :foreign true
-                         :requires (set (map symbol requires))
-                         :provides (set (map symbol provides))
-                         :externs-source (->> externs
-                                              (map #(get result %))
-                                              (map :input)
-                                              (map deref)
-                                              (str/join "\n")))]
-                (-> result
-                    (dissoc-all externs)
-                    ;; remove :file or :file-min
-                    (dissoc (get foreign-lib lib-other))
-                    (assoc lib-name rc)))))
+                (let [dissoc-all (fn [m list]
+                                   (apply dissoc m list))
+                      ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
+                      rc (assoc rc
+                           :foreign true
+                           :requires (set (map symbol requires))
+                           :provides (set (map symbol provides))
+                           :externs-source (->> externs
+                                                (map #(get result %))
+                                                (map :input)
+                                                (map deref)
+                                                (str/join "\n")))]
+                  (-> result
+                      (dissoc-all externs)
+                      ;; remove :file or :file-min
+                      (dissoc (get foreign-lib lib-other))
+                      (assoc lib-name rc))))))
           (dissoc manifest "deps.cljs")
           foreign-libs)))))
 
@@ -1502,7 +1508,7 @@ normalize-resource-name
 
           ;; skip files we already have since source maps are kinda expensive to generate
           :when (or (not (.exists target))
-                    (nil? last-modified) ;; runtime-setup doesn't have last-modified
+                    (zero? last-modified)
                     (> (or (:compiled-at src) ;; js is not compiled but maybe modified
                            last-modified)
                       (.lastModified target)))]
