@@ -1584,6 +1584,7 @@ normalize-resource-name
             out (if (or default web-worker)
                   ;; default mod needs closure related setup and goog.addDependency stuff
                   (str unoptimizable
+                       "var SHADOW_MODULES = {};\n"
                        (when web-worker
                          "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
                        (closure-defines-and-base state)
@@ -1591,7 +1592,9 @@ normalize-resource-name
                        "\n\n"
                        out)
                   ;; else
-                  out)]
+                  out)
+
+            out (str out "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n")]
 
         (spit target out))))
   ;; return unmodified state
