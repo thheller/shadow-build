@@ -4,7 +4,20 @@
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
-            [cljs.compiler :as comp]))
+            [cljs.compiler :as comp])
+  (:import (java.io File)))
+
+;; FIXME: this is very very ugly, probably breaks easily
+(defn make-main-call-js [main-fn]
+  (str/join
+    "\n"
+    ["(function() {"
+     "var proc = require('process');"
+     "cljs.core.apply.cljs$core$IFn$_invoke$arity$2(" (comp/munge main-fn) ","
+     "process.argv.slice(2)"
+     ");"
+     "})();"]
+    ))
 
 (defn configure
   [state {:keys [main output-to] :as opts}]
@@ -20,41 +33,31 @@
         main (symbol main-ns main-fn)]
 
     (-> state
-        (assoc :public-dir output-dir
-               ;; FIXME: figure out if any optimization actually makes sense
-               :optimizations :none)
+        (assoc :public-dir output-dir)
         (cljs/reset-modules)
-        (cljs/configure-module module-name [(symbol main-ns)] #{} {:main-fn main})
+        (cljs/configure-module module-name [(symbol main-ns)] #{} {:append-js (make-main-call-js main)})
         )))
 
 (defn compile [state]
-  (-> state
-      (cljs/compile-modules)))
+  (cljs/compile-modules state))
 
-;; FIXME: this is very very ugly, probably breaks easily
-(defn make-main-call-js [main-fn]
-  (str/join
-    "\n"
-    ["(function() {"
-     "var proc = require('process');"
-     "cljs.core.apply.cljs$core$IFn$_invoke$arity$2(" (comp/munge main-fn) ","
-     "process.argv.slice(2)"
-     ");"
-     "})();"]
-    ))
+(defn optimize [state]
+  (cljs/closure-optimize state))
 
-(defn flush
-  [{:keys [build-modules public-dir unoptimizable] :as state}]
+(defn flush-unoptimized
+  [{:keys [build-modules public-dir] :as state}]
   {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
+
+  ;; FIXME: does node need the imul.js fix? probably not
 
   (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
   (cljs/with-logged-time
     [(:logger state) (format "Flushing node script: %s" (-> build-modules first :js-name))]
 
-    (let [{:keys [main-fn js-name prepend prepend-js append-js sources]} (first build-modules)]
+    (let [{:keys [js-name prepend prepend-js append-js sources]} (first build-modules)]
       (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
                           sources)
             target (io/file public-dir js-name)
@@ -67,10 +70,7 @@
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
                      "\n\n"
-                     out
-                     "\n\n"
-                     (when main-fn
-                       (make-main-call-js main-fn)))
+                     out)
             goog-js (io/file public-dir "src" "goog" "base.js")
             deps-js (io/file public-dir "src" "deps.js")]
         (spit goog-js @(get-in state [:sources "goog/base.js" :input]))
@@ -78,6 +78,50 @@
         (spit target out))))
   ;; return unmodified state
   state)
+
+
+(defn flush-optimized
+  [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state}]
+  (cljs/with-logged-time
+    [(:logger state) "Flushing to disk"]
+
+    (when (not= 1 (count modules))
+      (throw (ex-info "node builds can only have one module!" {})))
+
+    (when-not (seq modules)
+      (throw (ex-info "flush before optimize?" {})))
+
+    (when-not public-dir
+      (throw (ex-info "missing :public-dir" {})))
+
+    (let [{:keys [output prepend append source-map-name name js-name] :as mod} (first modules)
+          target (io/file public-dir js-name)
+
+          out (str prepend
+                   (cljs/foreign-js-source-for-mod state mod)
+                   output
+                   append)]
+
+      (io/make-parents target)
+      (spit target out)
+
+      (cljs/log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count out)))
+
+      ;; FIXME: add source-map support for node
+      #_(when source-map-name
+          (spit target (str "\n//# sourceMappingURL=src/" (cljs/file-basename source-map-name) "\n")
+            :append true))
+      ))
+
+  #_(when (:source-map state)
+      (flush-source-maps state))
+
+  state)
+
+(defn flush [{:keys [optimizations] :as state}]
+  (if (= optimizations :none)
+    (flush-unoptimized state)
+    (flush-optimized state)))
 
 (defn execute! [{:keys [logger public-dir] :as state} program & args]
   (when (not= 1 (-> state :build-modules count))
