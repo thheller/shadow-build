@@ -204,7 +204,7 @@
     (do-build "cljs-data/dummy/lib/hello-world-v1.jar")
 
     (println "--- ROUND 3")
-    ;; touch one file which should cause a recompile of all dependents too
+    ;; v2 is older than our previous build, but must still trigger a recompile
     (do-build "cljs-data/dummy/lib/hello-world-v2.jar")
     ))
 
