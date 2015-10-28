@@ -4,7 +4,6 @@
 /test-projects
 pom.xml
 pom.xml.asc
-*.jar
 *.class
 .DS_Store
 /.cljs-cache

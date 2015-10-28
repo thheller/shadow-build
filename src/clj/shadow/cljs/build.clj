@@ -684,28 +684,26 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v1")
+(def cache-file-version "v2")
 
 (defn get-cache-file-for-rc
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
-(defn get-max-last-modified-by-name
-  "get the max last modified of a src and all the macros it depends on"
-  [state name]
-  (let [{:keys [last-modified macros] :as rc} (get-in state [:sources name])]
-    (reduce
-      (fn [^long max macro-ns]
-        (let [{:keys [file ^long last-modified] :as macro} (get-in state [:macros macro-ns])]
-          (if (and macro file)
-            (Math/max max last-modified)
-            ;; if we do not have the file for the macro
-            ;; do not consider it relevant since you are probably
-            ;; not dependent on only a macro without any of the cljs
-            max
-            )))
-      last-modified
-      macros)))
+(defn make-age-map
+  "procudes a map of {source-name last-modified} for caching to identify
+   whether a cache is safe to use (if any last-modifieds to not match if is safer to recompile)"
+  [state ns]
+  (reduce
+    (fn [age-map source-name]
+      (let [last-modified (get-in state [:sources source-name :last-modified])]
+        ;; zero? is a pretty ugly indicator for deps that should not affect cache
+        ;; eg. runtime-setup
+        (if (pos? last-modified)
+          (assoc age-map source-name last-modified)
+          age-map)))
+    {}
+    (get-deps-for-ns state ns)))
 
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
@@ -715,34 +713,34 @@ normalize-resource-name
     (when (and (.exists cache-file)
                (> (.lastModified cache-file) last-modified)
                (.exists cache-js)
-               (> (.lastModified cache-js) last-modified)
+               (> (.lastModified cache-js) last-modified))
 
-               (let [min-age (->> (get-deps-for-ns state ns)
-                                  (map #(get-max-last-modified-by-name state %))
-                                  #_(map (fn [{:keys [name last-modified] :as src}]
-                                           (prn [:last-mod name last-modified])
-                                           last-modified))
-                                  ;; zero is sort of reserved for runtime-setup
-                                  ;; since it should never cause a recompile
-                                  (remove zero?)
-                                  (reduce (fn [a b] (Math/max a b))))]
-                 (> (.lastModified cache-file) min-age)))
+      (let [cache-data (read-cache cache-file)
+            age-of-deps (make-age-map state ns)]
 
-      (let [cache-data (read-cache cache-file)]
+        ;; just checking the "maximum" last-modified of all dependencies is not enough
+        ;; must check times of all deps, mostly to guard against jar changes
+        ;; lib-A v1 was released 3 days ago
+        ;; lib-A v2 was released 1 day ago
+        ;; we depend on lib-A and compile against v1 today
+        ;; realize that a new version exists and update deps
+        ;; compile again .. since we were compiled today the min-age is today
+        ;; which is larger than v2 release date thereby using cache if only checking one timestamp
 
-        (when (= (cljs-util/clojurescript-version) (:version cache-data))
-          (log-progress logger (format "[CACHE] read: \"%s\"" name))
+        (when (= age-of-deps (:age-of-deps cache-data))
+          (when (= (cljs-util/clojurescript-version) (:version cache-data))
+            (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
-          ;; restore analysis data
-          (let [ana-data (:analyzer cache-data)]
+            ;; restore analysis data
+            (let [ana-data (:analyzer cache-data)]
 
-            (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
-            (util/load-macros ana-data))
+              (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
+              (util/load-macros ana-data))
 
-          ;; merge resource data & return it
-          (-> (merge rc cache-data)
-              (dissoc :analyzer :version)
-              (assoc :output (slurp cache-js))))))))
+            ;; merge resource data & return it
+            (-> (merge rc cache-data)
+                (dissoc :analyzer :version)
+                (assoc :output (slurp cache-js)))))))))
 
 (defn write-cached-cljs-resource
   [{:keys [logger cache-dir] :as state} {:keys [ns name js-name] :as rc}]
@@ -754,6 +752,7 @@ normalize-resource-name
           cache-data (-> rc
                          (dissoc :file :output :input :url)
                          (assoc :version (cljs-util/clojurescript-version)
+                                :age-of-deps (make-age-map state ns)
                                 :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
           cache-js (io/file cache-dir "src" js-name)]
 
@@ -878,14 +877,17 @@ normalize-resource-name
    (with-logged-time
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
      (let [file (io/file path)]
-       (if (or (not (.exists file))
-               (not (.isDirectory file)))
-         (throw (ex-info (format "\"%s\" does not exist or is not a directory" path) {:path path}))
+       (when-not (.exists file)
+         (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
+
+       (let [state
+             (if (.isDirectory file)
+               (assoc-in state [:source-paths path] (assoc opts
+                                                      :file file
+                                                      :abs-path (.getAbsolutePath file)
+                                                      :path path))
+               state)]
          (-> state
-             (assoc-in [:source-paths path] (assoc opts
-                                              :file file
-                                              :abs-path (.getAbsolutePath file)
-                                              :path path))
              (merge-resources (do-find-resources-in-paths state [path]))
              ))))))
 

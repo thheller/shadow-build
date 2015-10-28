@@ -95,7 +95,7 @@
 
       (is (nil? (get-in state [:sources "test_b.cljs"])))
 
-      (cljs/compile-modules state)                     ;; no error is good enough for now
+      (cljs/compile-modules state) ;; no error is good enough for now
 
       ;; wait for a bit
       ;; otherwise the spit may end up in the same millisec as the previous one
@@ -141,23 +141,24 @@
 
 
 (deftest test-caching
-  (let [do-build (fn []
-                   (-> (cljs/init-state)
-                       (cljs/enable-source-maps)
-                       (assoc :optimizations :none
-                              :pretty-print false
-                              :work-dir (io/file "target/cljs-work")
-                              :cache-dir (io/file "target/cljs-cache")
-                              :public-dir (io/file "target/cljs")
-                              :public-path "target/cljs")
-                       (cljs/find-resources-in-classpath)
-                       (cljs/find-resources "cljs-data/dummy/src")
-                       (cljs/finalize-config)
-                       (cljs/configure-module :basic ['basic] #{})
-                       (cljs/compile-modules)
-                       (cljs/flush-unoptimized)))]
+  (let [do-build
+        (fn []
+          (-> (cljs/init-state)
+              (cljs/enable-source-maps)
+              (assoc :optimizations :none
+                     :pretty-print false
+                     :work-dir (io/file "target/cljs-work")
+                     :cache-dir (io/file "target/cljs-cache")
+                     :public-dir (io/file "target/cljs")
+                     :public-path "target/cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :basic ['basic] #{})
+              (cljs/compile-modules)
+              (cljs/flush-unoptimized)))]
     (println "--- ROUND 1")
-    (.setLastModified (io/file "test-data/common.cljs") 1)
+    (.setLastModified (io/file "cljs-data/dummy/src/common.cljs") 1)
     (do-build)
     ;; all files should be cached now
 
@@ -167,10 +168,44 @@
 
     (println "--- ROUND 3")
     ;; touch one file which should cause a recompile of all dependents too
-    (.setLastModified (io/file "test-data/common.cljs") (System/currentTimeMillis))
+    (.setLastModified (io/file "cljs-data/dummy/src/common.cljs") (System/currentTimeMillis))
     (do-build)
 
     ;; FIXME: checkout output that basic and common were recompiled, not just common
+    ))
+
+
+(deftest test-caching-with-jars
+  (let [do-build
+        (fn [jar-path]
+          (-> (cljs/init-state)
+              (cljs/enable-source-maps)
+              (assoc :optimizations :none
+                     :pretty-print false
+                     :work-dir (io/file "target/cljs-work")
+                     :cache-dir (io/file "target/cljs-cache")
+                     :public-dir (io/file "target/cljs")
+                     :public-path "target/cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/find-resources jar-path)
+              (cljs/finalize-config)
+              (cljs/configure-module :basic ['basic
+                                             'hello-world] #{})
+              (cljs/compile-modules)
+              (cljs/flush-unoptimized)))]
+
+    (println "--- ROUND 1")
+    (do-build "cljs-data/dummy/lib/hello-world-v1.jar")
+    ;; all files should be cached now
+
+    (println "--- ROUND 2")
+    ;; should load only cached
+    (do-build "cljs-data/dummy/lib/hello-world-v1.jar")
+
+    (println "--- ROUND 3")
+    ;; touch one file which should cause a recompile of all dependents too
+    (do-build "cljs-data/dummy/lib/hello-world-v2.jar")
     ))
 
 (deftest test-optimized-build
@@ -185,10 +220,10 @@
       (cljs/find-resources-in-classpath)
       (cljs/find-resources "cljs-data/foreign/src")
       (cljs/add-foreign "jquery.js"
-                        '#{jquery}
-                        #{}
-                        (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js"))
-                        (slurp (io/file "cljs-data/foreign/lib/jquery.externs.js")))
+        '#{jquery}
+        #{}
+        (slurp (io/file "cljs-data/foreign/lib/jquery-2.1.3.min.js"))
+        (slurp (io/file "cljs-data/foreign/lib/jquery.externs.js")))
       (cljs/finalize-config)
       (cljs/configure-module :test ['wants-jquery] #{})
       (cljs/compile-modules)
@@ -388,7 +423,7 @@
     (comment
       ;; cljs actually drops the docstring if separate from meta
       (is (= (meta (:name a))
-             (meta (:name b))))))
+            (meta (:name b))))))
 
 
   (is (thrown-with-msg?
