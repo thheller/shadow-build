@@ -258,6 +258,7 @@
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
               (cljs/find-resources "/Users/zilence/.m2/repository/org/omcljs/om/1.0.0-alpha12/om-1.0.0-alpha12.jar")
+              (cljs/find-resources "cljs-data/dummy/src")
               (cljs/finalize-config)
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))

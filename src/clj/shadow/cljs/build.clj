@@ -829,13 +829,16 @@ normalize-resource-name
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (cond
     (not (valid-resource? src))
-    (do (pprint (dissoc src :input))
-        (log-warning logger (format "skipped invalid resource: %s via %s" name url))
+    (do (log-warning logger (format "skipped invalid resource: %s via %s" name url))
         state)
 
     (and (= :cljs (:type src))
          (symbol? (:ns src))
-         (not= name (ns->cljs-file (:ns src))))
+         (let [expected-name (ns->cljs-file (:ns src))
+               expected-cljc (str/replace expected-name #".cljs$" ".cljc")]
+           (not (or (= name expected-name)
+                    (= name expected-cljc)
+                    ))))
     (do (log-warning logger (format "ns did not match file-path: %s -> %s (via %s)" name (:ns src) url))
         state)
 
