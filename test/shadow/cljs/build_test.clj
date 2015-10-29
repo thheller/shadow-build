@@ -250,6 +250,18 @@
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
+(deftest test-bad-jar
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :pretty-print true
+                     :work-dir (io/file "target/test-cljs-work")
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/find-resources "/Users/zilence/.m2/repository/org/omcljs/om/1.0.0-alpha12/om-1.0.0-alpha12.jar")
+              (cljs/finalize-config)
+              )]
+    (println (get-in s [:sources "cljs/repl.cljc" :output]))))
+
 (deftest test-macro-reloading
   (let [s (-> (cljs/init-state)
               (assoc :optimizations :none

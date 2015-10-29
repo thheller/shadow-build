@@ -223,10 +223,14 @@
           (if (identical? peek eof-sentinel)
             (do (log-warning logger (format "File: %s/%s is empty, skipped." source-path name))
                 rc)
-            (let [ast (util/parse-ns peek)]
-              (-> state
-                  (update-rc-from-ns rc ast)
-                  (assoc :cljc cljc?)))))
+            (if (not (and (list? peek)
+                          (= 'ns (first peek))))
+              (do (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (pr-str peek)))
+                  rc)
+              (let [ast (util/parse-ns peek)]
+                (-> state
+                    (update-rc-from-ns rc ast)
+                    (assoc :cljc cljc?))))))
         (catch Exception e
           (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
           (.printStackTrace e)
@@ -823,34 +827,43 @@ normalize-resource-name
 
 (defn merge-resource
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
-  (when-not (valid-resource? src)
-    (pprint (dissoc src :input))
-    (throw (ex-info "not a valid resource" src)))
+  (cond
+    (not (valid-resource? src))
+    (do (pprint (dissoc src :input))
+        (log-warning logger (format "skipped invalid resource: %s via %s" name url))
+        state)
 
-  (let [cljc? (is-cljc? name)
-        cljc-name (when (is-cljs? name)
-                    (str/replace name #"cljs$" "cljc"))
-        cljs-name (when cljc?
-                    (str/replace name #"cljc$" "cljs"))]
-    (cond
-      ;; don't merge .cljc file if a .cljs of the same name exists
-      (and cljc? (contains? (:sources state) cljs-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
-          state)
+    (and (= :cljs (:type src))
+         (symbol? (:ns src))
+         (not= name (ns->cljs-file (:ns src))))
+    (do (log-warning logger (format "ns did not match file-path: %s -> %s (via %s)" name (:ns src) url))
+        state)
 
-      ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
-      (and (is-cljs? name) (contains? (:sources state) cljc-name))
-      (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
-          (-> state
-              (unmerge-resource cljc-name)
-              (assoc-in [:sources name] src)
-              (merge-provides name provides)))
+    :valid-resource
+    (let [cljc? (is-cljc? name)
+          cljc-name (when (is-cljs? name)
+                      (str/replace name #"cljs$" "cljc"))
+          cljs-name (when cljc?
+                      (str/replace name #"cljc$" "cljs"))]
+      (cond
+        ;; don't merge .cljc file if a .cljs of the same name exists
+        (and cljc? (contains? (:sources state) cljs-name))
+        (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name))
+            state)
 
-      :no-conflict
-      (-> state
-          (unmerge-resource name)
-          (assoc-in [:sources name] src)
-          (merge-provides name provides)))))
+        ;; if a .cljc exists for a .cljs file unmerge the .cljc and merge the .cljs
+        (and (is-cljs? name) (contains? (:sources state) cljc-name))
+        (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
+            (-> state
+                (unmerge-resource cljc-name)
+                (assoc-in [:sources name] src)
+                (merge-provides name provides)))
+
+        :no-conflict
+        (-> state
+            (unmerge-resource name)
+            (assoc-in [:sources name] src)
+            (merge-provides name provides))))))
 
 (defn merge-resources [state srcs]
   (reduce merge-resource state srcs))
