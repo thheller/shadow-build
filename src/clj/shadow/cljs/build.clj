@@ -6,29 +6,29 @@
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level))
-  (:require [clojure.pprint :refer (pprint)]
-            [clojure.data.json :as json]
-            [clojure.java.io :as io]
-            [clojure.set :as set]
-            [clojure.string :as str]
-            [clojure.edn :as edn]
-            [cljs.analyzer :as ana]
-            [cljs.closure :as closure]
-            [cljs.compiler :as comp]
-            [cljs.source-map :as sm]
-            [cljs.env :as env]
-            [cljs.tagged-literals :as tags]
-            [cljs.util :as cljs-util]
-            [clojure.repl :refer (pst)]
-            [clojure.core.reducers :as r]
-            [clojure.tools.reader :as reader]
-            [clojure.tools.reader.reader-types :as readers]
-            [clojure.core.reducers :as r]
-            [loom.graph :as lg]
-            [loom.alg :as la]
-            [cognitect.transit :as transit]
-            [clojure.java.shell :as shell]
-            [shadow.cljs.util :as util]))
+  (:require ;; [clojure.pprint :refer (pprint)]
+    [clojure.data.json :as json]
+    [clojure.java.io :as io]
+    [clojure.set :as set]
+    [clojure.string :as str]
+    [clojure.edn :as edn]
+    [cljs.analyzer :as ana]
+    [cljs.closure :as closure]
+    [cljs.compiler :as comp]
+    [cljs.source-map :as sm]
+    [cljs.env :as env]
+    [cljs.tagged-literals :as tags]
+    [cljs.util :as cljs-util]
+    [clojure.repl :refer (pst)]
+    [clojure.core.reducers :as r]
+    [clojure.tools.reader :as reader]
+    [clojure.tools.reader.reader-types :as readers]
+    [clojure.core.reducers :as r]
+    [loom.graph :as lg]
+    [loom.alg :as la]
+    [cognitect.transit :as transit]
+    [clojure.java.shell :as shell]
+    [shadow.cljs.util :as util]))
 
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
   (com.google.javascript.jscomp.Compiler/setLoggingLevel Level/WARNING)
@@ -203,11 +203,20 @@
       :macros (macros-from-ns-ast state ast)
       :requires (requires-from-ns-ast state ast))))
 
+(defn error-report
+  ([state e]
+   (.flush *out*)
+   (.write *err* "====== ERROR ==============\n")
+   (pst e)
+   (.write *err* "===========================\n")
+   (.flush *err*))
+  ([state e rc]
+   (error-report state e)))
 
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
-  [{:keys [logger] :as state} {:keys [name input source-path] :as rc}]
+  [{:keys [logger] :as state} {:keys [name input] :as rc}]
   {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
         cljc? (.endsWith name ".cljc")
@@ -221,20 +230,22 @@
       (try
         (let [peek (reader/read opts in)]
           (if (identical? peek eof-sentinel)
-            (do (log-warning logger (format "File: %s/%s is empty, skipped." source-path name))
-                rc)
-            (if (not (and (list? peek)
-                          (= 'ns (first peek))))
-              (do (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (pr-str peek)))
-                  rc)
-              (let [ast (util/parse-ns peek)]
-                (-> state
-                    (update-rc-from-ns rc ast)
-                    (assoc :cljc cljc?))))))
+            (throw (ex-info "file is empty" {:name name}))
+            (let [ast (util/parse-ns peek)]
+              (-> state
+                  (update-rc-from-ns rc ast)
+                  (assoc :cljc cljc?)))))
         (catch Exception e
-          (log-warning logger (format "NS form of %s/%s can't be parsed: %s" source-path name (.getMessage e)))
-          (.printStackTrace e)
-          rc)))))
+          ;; could not parse NS
+          ;; be silent about it until we actually require and attempt to compile the file
+          ;; make best estimate guess what the file might provide based on name
+          (let [guessed-ns (cljs-file->ns name)]
+            (assoc rc
+              :ns guessed-ns
+              :requires #{'cljs.core}
+              :provides #{guessed-ns}
+              :type :cljs
+              )))))))
 
 (defn inspect-resource
   [state {:keys [name] :as rc}]
@@ -415,8 +426,7 @@ normalize-resource-name
           :let [abs-path (.getAbsolutePath file)]
           :when (and (is-cljs-resource? abs-path)
                      (not (.isHidden file)))
-          :let [
-                name (-> abs-path
+          :let [name (-> abs-path
                          (.substring root-len)
                          (normalize-resource-name))]
           :when (not (should-ignore-resource? state name))]
@@ -829,7 +839,7 @@ normalize-resource-name
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (cond
     (not (valid-resource? src))
-    (do (log-warning logger (format "skipped invalid resource: %s via %s" name url))
+    (do (log-warning logger (format "ERROR in resource: %s via %s" name url))
         state)
 
     (and (= :cljs (:type src))
@@ -839,7 +849,7 @@ normalize-resource-name
            (not (or (= name expected-name)
                     (= name expected-cljc)
                     ))))
-    (do (log-warning logger (format "ns did not match file-path: %s -> %s (via %s)" name (:ns src) url))
+    (do (log-warning logger (format "ns did not match file-path: %s -> \"%s\" (via \"%s\")" (:ns src) name url))
         state)
 
     :valid-resource
@@ -858,13 +868,11 @@ normalize-resource-name
         (and (is-cljs? name) (contains? (:sources state) cljc-name))
         (do (log-warning logger (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljc-name name))
             (-> state
-                (unmerge-resource cljc-name)
                 (assoc-in [:sources name] src)
                 (merge-provides name provides)))
 
         :no-conflict
         (-> state
-            (unmerge-resource name)
             (assoc-in [:sources name] src)
             (merge-provides name provides))))))
 
@@ -948,45 +956,46 @@ normalize-resource-name
 
 (defn discover-macros [{:keys [logger] :as state}]
   ;; build {macro-ns #{used-by-source-by-name ...}}
-  (let [macro-info (->> (:sources state)
-                        (vals)
-                        (filter #(seq (:macros %)))
-                        (reduce (fn [macro-info {:keys [macros name]}]
-                                  (reduce (fn [macro-info macro-ns]
-                                            (update-in macro-info [macro-ns] set-conj name))
-                                    macro-info
-                                    macros))
-                          {})
-                        (map (fn [[macro-ns used-by]]
-                               (let [name (str (ns->path macro-ns) ".clj")
-                                     url (io/resource name)
-                                     ;; FIXME: clean this up, must look for .clj and .cljc
-                                     [name url] (if url
-                                                  [name url]
-                                                  (let [name (str name "c")]
-                                                    [name (io/resource name)]))]
-                                 #_(when-not url (log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
-                                 {:ns macro-ns
-                                  :used-by used-by
-                                  :name name
-                                  :url url})))
-                        ;; always get last modified for macro source
-                        (map (fn [{:keys [url] :as info}]
-                               (if (nil? url)
-                                 info
-                                 (let [con (.openConnection url)]
-                                   (assoc info :last-modified (.getLastModified con)))
-                                 )))
-                        ;; get file (if not in jar)
-                        (map (fn [{:keys [url] :as info}]
-                               (if (nil? url)
-                                 info
-                                 (if (not= "file" (.getProtocol url))
-                                   info
-                                   (let [file (io/file (.getPath url))]
-                                     (assoc info :file file))))))
-                        (map (juxt :ns identity))
-                        (into {}))]
+  (let [macro-info
+        (->> (:sources state)
+             (vals)
+             (filter #(seq (:macros %)))
+             (reduce (fn [macro-info {:keys [macros name]}]
+                       (reduce (fn [macro-info macro-ns]
+                                 (update-in macro-info [macro-ns] set-conj name))
+                         macro-info
+                         macros))
+               {})
+             (map (fn [[macro-ns used-by]]
+                    (let [name (str (ns->path macro-ns) ".clj")
+                          url (io/resource name)
+                          ;; FIXME: clean this up, must look for .clj and .cljc
+                          [name url] (if url
+                                       [name url]
+                                       (let [name (str name "c")]
+                                         [name (io/resource name)]))]
+                      #_(when-not url (log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
+                      {:ns macro-ns
+                       :used-by used-by
+                       :name name
+                       :url url})))
+             ;; always get last modified for macro source
+             (map (fn [{:keys [url] :as info}]
+                    (if (nil? url)
+                      info
+                      (let [con (.openConnection url)]
+                        (assoc info :last-modified (.getLastModified con)))
+                      )))
+             ;; get file (if not in jar)
+             (map (fn [{:keys [url] :as info}]
+                    (if (nil? url)
+                      info
+                      (if (not= "file" (.getProtocol url))
+                        info
+                        (let [file (io/file (.getPath url))]
+                          (assoc info :file file))))))
+             (map (juxt :ns identity))
+             (into {}))]
     (assoc state :macros macro-info)
     ))
 
@@ -996,7 +1005,6 @@ normalize-resource-name
   (-> state
       (discover-macros)
       (assoc :configured true
-             :main-deps {}
              :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
                               (slurp imul))
              ;; populate index with known sources
@@ -1007,15 +1015,10 @@ normalize-resource-name
 
 (def step-finalize-config finalize-config)
 
-(defn resolve-main-deps [{:keys [logger] :as state} main-cljs]
-  ;; (log-progress logger (format "Resolving deps for: %s" main-cljs))
-  (let [deps (get-deps-for-ns state main-cljs)]
-    (assoc-in state [:main-deps main-cljs] deps)))
-
 (defn reset-modules [state]
   (-> state
       (assoc :modules {})
-      (dissoc :default-module :main-deps :build-modules)
+      (dissoc :default-module :build-modules)
       ))
 
 (defn configure-module
@@ -1199,13 +1202,11 @@ normalize-resource-name
       ))
   state)
 
-
 (defn get-deps-for-mains [state mains]
-  (let [state (reduce resolve-main-deps state mains)]
-    (->> mains
-         (mapcat #(get-in state [:main-deps %]))
-         (distinct)
-         (into []))))
+  (->> mains
+       (mapcat #(get-deps-for-ns state %))
+       (distinct)
+       (into [])))
 
 (defn do-analyze-module
   "resolve all deps for a given module, based on specified :mains
@@ -1233,6 +1234,7 @@ normalize-resource-name
                          :output js-source
                          :input (atom js-source)
                          :externs-source externs-source
+                         :last-modified 0
                          }))
 
 (defn make-runtime-setup [{:keys [runtime] :as state}]
@@ -1251,6 +1253,7 @@ normalize-resource-name
      }))
 
 (defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
+  {:pre [(valid-resource? src)]}
   (if (and (seq output)
            ;; always recompile files with warnings
            (not (seq warnings)))
@@ -1288,6 +1291,7 @@ normalize-resource-name
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
     ;; this makes me want to use a state monad, just to lazy to rewrite
+
     (let [state (merge-resource state (make-runtime-setup state))
           state (reduce do-analyze-module state (-> state :modules (vals)))
           modules (sort-and-compact-modules state)
@@ -1629,20 +1633,19 @@ normalize-resource-name
 (defn reload-source [{:keys [url] :as rc}]
   (assoc rc :input (delay (slurp url))))
 
-(defn reset-resource [{:keys [^File file] :as src} config]
-  (-> src
-      (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
-      (reload-source)
-      (as-> src'
-        (inspect-resource config src'))
-      (cond-> file
-        (assoc :last-modified (.lastModified file)))))
-
-
 (defn reset-resource-by-name [state name]
-  (let [rc (-> (get-in state [:sources name])
-               (reset-resource state))]
-    (merge-resource state rc)
+  (let [{:keys [file] :as rc} (get-in state [:sources name])
+        new-rc
+        (-> rc
+            (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
+            (reload-source)
+            (as-> src'
+              (inspect-resource state src'))
+            (cond-> file
+              (assoc :last-modified (.lastModified file))))]
+    (-> state
+        (unmerge-resource name)
+        (merge-resource new-rc))
     ))
 
 (defn find-dependent-names
@@ -1784,39 +1787,38 @@ normalize-resource-name
             (recur state
               (inc i)))))))
 
+(defn reload-modified-resource
+  [{:keys [logger] :as state} {:keys [scan name file ns] :as rc}]
+  (case scan
+    :macro
+    (do (log-progress logger (format "[RELOAD] macro: %s" ns))
+        (try
+          ;; FIXME: :reload enough probably?
+          (require ns :reload-all)
+          (catch Exception e
+            (let [st (with-out-str (pst e))]
+              (log-warning logger
+                (format "MACRO-RELOAD FAILED %s!%n%s" name st)))))
+        (assoc-in state [:macros ns] (dissoc rc :scan)))
+    :delete
+    (do (log-progress logger (format "[RELOAD] del: %s" file))
+        (unmerge-resource state (:name rc)))
+
+    :new
+    (do (log-progress logger (format "[RELOAD] new: %s" file))
+        (merge-resource state (inspect-resource state (dissoc rc :scan))))
+
+    :modified
+    (do (log-progress logger (format "[RELOAD] mod: %s" file))
+        (let [dependents (find-dependent-names state ns)]
+          ;; modified files also trigger recompile of all its dependents
+          (reduce reset-resource-by-name state (cons name dependents))
+          ))))
+
 (defn reload-modified-files!
-  [{:keys [logger] :as state} scan-results]
+  [state scan-results]
   (as-> state $state
-    (reduce
-      (fn [state {:keys [scan name file ns] :as rc}]
-        (case scan
-          :macro
-          (do (log-progress logger (format "[RELOAD] macro: %s" ns))
-              (try
-                ;; FIXME: :reload enough probably?
-                (require ns :reload-all)
-                (catch Exception e
-                  (let [st (with-out-str (pst e))]
-                    (log-warning logger
-                      (format "MACRO-RELOAD FAILED %s!%n%s" name st)))))
-              (assoc-in state [:macros ns] (dissoc rc :scan)))
-          :delete
-          (do (log-progress logger (format "[RELOAD] del: %s" file))
-              (unmerge-resource state (:name rc)))
-          :new
-          (do (log-progress logger (format "[RELOAD] new: %s" file))
-              (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))]))
-
-          :modified
-          (do (log-progress logger (format "[RELOAD] mod: %s" file))
-              (let [dependents (find-dependent-names state ns)
-                    state (merge-resources state [(-> rc (dissoc :scan) (reset-resource state))])]
-                ;; modified files also trigger recompile of all its dependents
-                (reduce reset-resource-by-name state dependents)
-                ))))
-      $state
-      scan-results)
-
+    (reduce reload-modified-resource $state scan-results)
     ;; FIXME: this is kinda ugly but need a way to discover newly required macros
     (discover-macros $state)
     ))
@@ -1838,16 +1840,17 @@ normalize-resource-name
       (assoc-in [:compiler-env :opts :optimize-constants] true)
       (assoc-in [:compiler-env :options :emit-constants] true)
       (assoc-in [:compiler-env :options :optimize-constants] true)
-      (merge-resource {:type :js
-                       :generated true
-                       :js-name "constants_table.js"
-                       :name "constants_table.js"
-                       :provides #{'constants-table}
-                       :requires #{}
-                       :input (atom "")
-                       ;; FIXME: this forces a recompile always
-                       ;; intended to break cache since using emit-constants require a complete recompile
-                       :last-modified (System/currentTimeMillis)})))
+      (merge-resource
+        {:type :js
+         :generated true
+         :js-name "constants_table.js"
+         :name "constants_table.js"
+         :provides #{'constants-table}
+         :requires #{}
+         :input (atom "")
+         ;; FIXME: this forces a recompile always
+         ;; intended to break cache since using emit-constants require a complete recompile
+         :last-modified (System/currentTimeMillis)})))
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
@@ -1856,8 +1859,7 @@ normalize-resource-name
   (merge state opts))
 
 (defn init-state []
-  ;; static fns dont work in repl env, but i never used a cljs repl
-  ;; need to look into cljs repl, otherwise I see no downside to using static fns
+  ;; I do not understand why this is not the default?
   (alter-var-root #'ana/*cljs-static-fns* (fn [_] true))
 
   ;; load cljs.core macros, we are probably going to use them
@@ -1877,7 +1879,6 @@ normalize-resource-name
    :runtime {:print-fn :console}
    :macros-loaded #{}
    :use-file-min true
-
 
    :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v1")]
                          (io/make-parents dir)

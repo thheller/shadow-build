@@ -102,16 +102,20 @@
       ;; which wait-and-reload can't detect
       (Thread/sleep 50)
 
+      (prn [:before (.lastModified file-a)])
       ;; now we modify it to depend on test-b
       (spit file-a (str/join "\n" ["(ns test-a (:require [test-b]))"
                                    foo-fn]))
 
-      ;; FIXME: clojure 1.7 spit doesn't seem to "touch" the file anymore?
-      (.setLastModified file-a (System/currentTimeMillis))
+
       (Thread/sleep 50)
+      (.setLastModified file-a (System/currentTimeMillis))
+      ;; FIXME: last modified somehow broken ... same as before ...
+      (prn [:after (.lastModified (io/file "target/reload-test/test_a.cljs"))])
 
       (let [modified (cljs/scan-for-modified-files state)
             new (cljs/scan-for-new-files state)]
+
         (prn [:modified modified])
         (is (empty? new))
         (is (= 1 (count modified)))
@@ -249,6 +253,18 @@
               ;;(cljs/flush-unoptimized)
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
+
+(deftest test-bad-files
+  (let [s (-> (cljs/init-state)
+              (cljs/find-resources-in-classpath)
+              ;; this should not fail, although there are broken files
+              (cljs/find-resources "cljs-data/bad/src")
+              (cljs/finalize-config)
+              (cljs/configure-module :test ['bad-ns] #{})
+              ;; should throw an error
+              (cljs/compile-modules)
+              )]
+    ))
 
 (deftest test-bad-jar
   (let [s (-> (cljs/init-state)
