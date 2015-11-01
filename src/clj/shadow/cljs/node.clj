@@ -159,16 +159,16 @@
                          :js-name "test_runner.js"
                          :type :cljs
                          :provides #{'test-runner}
-                         :requires (into #{'cljs.test} test-namespaces)
+                         :requires (into #{'cljs.core 'cljs.test} test-namespaces)
                          :ns 'test-runner
-                         ;; FIXME: there should a better way for this?
-                         :input (atom [(list 'ns 'test-runner
-                                         (concat
-                                           (list :require '[cljs.test])
-                                           (mapv vector test-namespaces)))
-                                       (concat (list 'cljs.test/run-tests '(cljs.test/empty-env))
-                                         (for [it test-namespaces]
-                                           `(quote ~it)))])}]
+                         :input (atom [`(~'ns ~'test-runner
+                                          (:require [cljs.test]
+                                            ~@(mapv vector test-namespaces)))
+                                       `(cljs.test/run-tests (cljs.test/empty-env)
+                                          ~@(for [it test-namespaces]
+                                              `(quote ~it)))])
+                         :last-modified (System/currentTimeMillis)}]
+
     (-> state
         (cljs/merge-resource test-runner-src)
         (cljs/reset-modules)
@@ -183,12 +183,12 @@
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]
   (let [test-namespaces
-        (->> source-names
-             (cljs/find-dependents-for-names state)
+        (->> (concat source-names (cljs/find-dependents-for-names state source-names))
              (filter #(cljs/has-tests? (get-in state [:sources %])))
              (map #(get-in state [:sources % :ns]))
              (distinct)
              (into []))]
+
     (if (empty? test-namespaces)
       (do (cljs/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
           state)
@@ -212,5 +212,4 @@
     ;; return unmodified state!
     state
     ))
-
 

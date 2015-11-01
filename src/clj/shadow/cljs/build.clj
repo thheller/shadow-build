@@ -1290,9 +1290,8 @@ normalize-resource-name
 (defn compile-modules [state]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
-    ;; this makes me want to use a state monad, just to lazy to rewrite
-
-    (let [state (merge-resource state (make-runtime-setup state))
+    (let [state (finalize-config state)
+          state (merge-resource state (make-runtime-setup state))
           state (reduce do-analyze-module state (-> state :modules (vals)))
           modules (sort-and-compact-modules state)
           source-names (mapcat :sources modules)
