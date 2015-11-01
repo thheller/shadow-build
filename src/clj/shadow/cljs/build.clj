@@ -704,13 +704,26 @@ normalize-resource-name
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
+
+(defn get-max-last-modified-for-source [state source-name]
+  (let [{:keys [last-modified macros] :as rc} (get-in state [:sources source-name])]
+
+    (transduce
+      (map #(get-in state [:macros % :last-modified]))
+      (completing
+        (fn [a b]
+          (Math/max a b)))
+      last-modified
+      macros
+      )))
+
 (defn make-age-map
   "procudes a map of {source-name last-modified} for caching to identify
    whether a cache is safe to use (if any last-modifieds to not match if is safer to recompile)"
   [state ns]
   (reduce
     (fn [age-map source-name]
-      (let [last-modified (get-in state [:sources source-name :last-modified])]
+      (let [last-modified (get-max-last-modified-for-source state source-name)]
         ;; zero? is a pretty ugly indicator for deps that should not affect cache
         ;; eg. runtime-setup
         (if (pos? last-modified)
