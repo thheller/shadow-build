@@ -894,17 +894,23 @@ normalize-resource-name
 
 ;;; COMPILE STEPS
 
+(defn should-exclude-classpath [exclude path]
+  (boolean (some #(re-find % path) exclude)))
+
 (defn find-resources-in-classpath
-  "finds all cljs resources in .jar files in the classpath
-   ignores PATHS in classpath, add manually if you expect to find cljs there"
-  [state]
-  (with-logged-time
-    [(:logger state) "Find cljs resources in jars"]
-    (->> (classpath-entries)
-         (filter is-jar?)
-         (do-find-resources-in-paths state)
-         (merge-resources state)
-         )))
+  "finds all cljs resources in the classpath (ignores resources)"
+  ([state]
+    (find-resources-in-classpath state {:exclude [#"resources(/?)$"
+                                                  #"classes(/?)$"
+                                                  #"java(/?)$"]}))
+  ([state {:keys [exclude]}]
+   (with-logged-time
+     [(:logger state) "Find cljs resources in classpath"]
+     (->> (classpath-entries)
+          (remove #(should-exclude-classpath exclude %))
+          (do-find-resources-in-paths state)
+          (merge-resources state)
+          ))))
 
 (defn find-resources
   "finds cljs resources in the given path"
