@@ -6,29 +6,27 @@
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level))
-  (:require ;; [clojure.pprint :refer (pprint)]
-    [clojure.data.json :as json]
-    [clojure.java.io :as io]
-    [clojure.set :as set]
-    [clojure.string :as str]
-    [clojure.edn :as edn]
-    [cljs.analyzer :as ana]
-    [cljs.closure :as closure]
-    [cljs.compiler :as comp]
-    [cljs.source-map :as sm]
-    [cljs.env :as env]
-    [cljs.tagged-literals :as tags]
-    [cljs.util :as cljs-util]
-    [clojure.repl :refer (pst)]
-    [clojure.core.reducers :as r]
-    [clojure.tools.reader :as reader]
-    [clojure.tools.reader.reader-types :as readers]
-    [clojure.core.reducers :as r]
-    [loom.graph :as lg]
-    [loom.alg :as la]
-    [cognitect.transit :as transit]
-    [clojure.java.shell :as shell]
-    [shadow.cljs.util :as util]))
+  (:require [clojure.data.json :as json]
+            [clojure.java.io :as io]
+            [clojure.set :as set]
+            [clojure.string :as str]
+            [clojure.edn :as edn]
+            [cljs.analyzer :as ana]
+            [cljs.closure :as closure]
+            [cljs.compiler :as comp]
+            [cljs.source-map :as sm]
+            [cljs.env :as env]
+            [cljs.tagged-literals :as tags]
+            [cljs.util :as cljs-util]
+            [clojure.repl :refer (pst)]
+            [clojure.tools.reader :as reader]
+            [clojure.tools.reader.reader-types :as readers]
+            [loom.graph :as lg]
+            [loom.alg :as la]
+            [cognitect.transit :as transit]
+            [shadow.cljs.util :as util]
+    ;; [clojure.pprint :refer (pprint)]
+            ))
 
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
   (com.google.javascript.jscomp.Compiler/setLoggingLevel Level/WARNING)
@@ -422,17 +420,18 @@ normalize-resource-name
   (let [root (io/file path)
         root-path (.getAbsolutePath root)
         root-len (inc (count root-path))]
-    (for [file (file-seq root)
-          :let [abs-path (.getAbsolutePath file)]
-          :when (and (is-cljs-resource? abs-path)
-                     (not (.isHidden file)))
-          :let [name (-> abs-path
-                         (.substring root-len)
-                         (normalize-resource-name))]
-          :when (not (should-ignore-resource? state name))]
+    (into [] (for [file (file-seq root)
+                   :let [abs-path (.getAbsolutePath file)]
+                   :when (and (is-cljs-resource? abs-path)
+                              (not (.isHidden file)))
+                   :let [name (-> abs-path
+                                  (.substring root-len)
+                                  (normalize-resource-name))]
+                   :when (not (should-ignore-resource? state name))]
 
-      (make-fs-resource state path name file)
-      )))
+               (make-fs-resource state path name file)
+               ))))
+
 (defn get-resource-for-provide [state ns-sym]
   {:pre [(compiler-state? state)
          (symbol? ns-sym)]}
@@ -684,7 +683,7 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v2")
+(def cache-file-version "v3")
 
 (defn get-cache-file-for-rc
   [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
@@ -841,6 +840,8 @@ normalize-resource-name
     (do (log-warning logger (format "ERROR in resource: %s via %s" name url))
         state)
 
+    ;; no not merge files that don't have the expected path for their ns
+    ;; not really needed but cljs does this, so we should enforce it as well
     (and (= :cljs (:type src))
          (symbol? (:ns src))
          (let [expected-name (ns->cljs-file (:ns src))
@@ -849,8 +850,25 @@ normalize-resource-name
                     (= name expected-cljc)
                     ))))
     (do (log-warning logger (format "ns did not match file-path: %s -> \"%s\" (via \"%s\")" (:ns src) name url))
+        ;; still want to remember the resource so it doesn't get detected as new all the time
+        (assoc-in state [:sources name] src))
+
+    ;; do not merge files that are already present from a different source path
+    (let [existing (get-in state [:sources name])]
+      (and existing
+           (or (not= (:source-path existing)
+                     (:source-path src))
+               (not= (:url existing)
+                     (:url src)))))
+    (do (log-warning logger (format
+                              "duplicate file on classpath \"%s\" (using A)%nA: %s%nB: %s"
+                              name
+                              (get-in state [:sources name :source-path])
+                              (:source-path src)))
         state)
 
+    ;; now we need to handle conflicts for cljc/cljs files
+    ;; only use cljs if both exist
     :valid-resource
     (let [cljc? (is-cljc? name)
           cljc-name (when (is-cljs? name)
@@ -891,9 +909,10 @@ normalize-resource-name
 
 (defn merge-resources-in-path
   ([state path]
-    (merge-resources-in-path state path {:reloadable true}))
+   (merge-resources-in-path state path {:reloadable true}))
   ([state path path-opts]
-   (let [file (io/file path)]
+   (let [file (io/file path)
+         resources (do-find-resources-in-path state path)]
      (-> state
          (cond->
            (.isDirectory file)
@@ -902,7 +921,7 @@ normalize-resource-name
                :file file
                :abs-path (.getAbsolutePath file)
                :path path)))
-         (merge-resources (do-find-resources-in-path state path))))))
+         (merge-resources resources)))))
 
 (defn find-resources
   "finds cljs resources in the given path"
@@ -1817,6 +1836,7 @@ normalize-resource-name
               (log-warning logger
                 (format "MACRO-RELOAD FAILED %s!%n%s" name st)))))
         (assoc-in state [:macros ns] (dissoc rc :scan)))
+
     :delete
     (do (log-progress logger (format "[RELOAD] del: %s" file))
         (unmerge-resource state (:name rc)))
@@ -1897,7 +1917,7 @@ normalize-resource-name
    :macros-loaded #{}
    :use-file-min true
 
-   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v1")]
+   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v2")]
                          (io/make-parents dir)
                          dir)
    :cache-dir (io/file "target" "shadow-build" "cljs-cache")
