@@ -91,11 +91,15 @@
                            :public-dir (io/file "target/cljs")
                            :public-path "target/cljs")
                     (cljs/finalize-config)
-                    (cljs/configure-module :test ['test-a] #{}))]
+                    (cljs/configure-module :test
+                      ['test-a
+                       'shadow.ns-on-classpath]
+                      #{}))]
 
       (is (nil? (get-in state [:sources "test_b.cljs"])))
 
       (cljs/compile-modules state) ;; no error is good enough for now
+
 
       ;; wait for a bit
       ;; otherwise the spit may end up in the same millisec as the previous one
@@ -110,13 +114,15 @@
 
       (Thread/sleep 50)
       (.setLastModified file-a (System/currentTimeMillis))
-      ;; FIXME: last modified somehow broken ... same as before ...
+      ;; FIXME: last modified somehow broken ... same as before ... sometimes ...
       (prn [:after (.lastModified (io/file "target/reload-test/test_a.cljs"))])
+
+      (.setLastModified (io/file "src/dev/shadow/ns_on_classpath.cljs") (System/currentTimeMillis))
 
       (let [modified (cljs/scan-for-modified-files state)
             new (cljs/scan-for-new-files state)]
 
-        (prn [:modified modified])
+        (prn [:modified (map :url modified)])
         (is (empty? new))
         (is (= 1 (count modified)))
         (is (= :modified (-> modified first :scan)))

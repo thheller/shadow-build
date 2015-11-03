@@ -433,20 +433,6 @@ normalize-resource-name
 
       (make-fs-resource state path name file)
       )))
-
-(defn do-find-resources-in-path [state path]
-  {:pre [(compiler-state? state)]}
-  (if (.endsWith path ".jar")
-    (find-jar-resources state path)
-    (find-fs-resources state path)))
-
-(defn- do-find-resources-in-paths [state paths]
-  {:pre [(compiler-state? state)]}
-  (->> paths
-       (mapcat #(do-find-resources-in-path state %))
-       (filter usable-resource?)
-       (into [])))
-
 (defn get-resource-for-provide [state ns-sym]
   {:pre [(compiler-state? state)
          (symbol? ns-sym)]}
@@ -894,23 +880,29 @@ normalize-resource-name
 
 ;;; COMPILE STEPS
 
+(defn do-find-resources-in-path [state path]
+  {:pre [(compiler-state? state)]}
+  (if (is-jar? path)
+    (find-jar-resources state path)
+    (find-fs-resources state path)))
+
 (defn should-exclude-classpath [exclude path]
   (boolean (some #(re-find % path) exclude)))
 
-(defn find-resources-in-classpath
-  "finds all cljs resources in the classpath (ignores resources)"
-  ([state]
-    (find-resources-in-classpath state {:exclude [#"resources(/?)$"
-                                                  #"classes(/?)$"
-                                                  #"java(/?)$"]}))
-  ([state {:keys [exclude]}]
-   (with-logged-time
-     [(:logger state) "Find cljs resources in classpath"]
-     (->> (classpath-entries)
-          (remove #(should-exclude-classpath exclude %))
-          (do-find-resources-in-paths state)
-          (merge-resources state)
-          ))))
+(defn merge-resources-in-path
+  ([state path]
+    (merge-resources-in-path state path {:reloadable true}))
+  ([state path path-opts]
+   (let [file (io/file path)]
+     (-> state
+         (cond->
+           (.isDirectory file)
+           (assoc-in [:source-paths path]
+             (assoc path-opts
+               :file file
+               :abs-path (.getAbsolutePath file)
+               :path path)))
+         (merge-resources (do-find-resources-in-path state path))))))
 
 (defn find-resources
   "finds cljs resources in the given path"
@@ -923,16 +915,23 @@ normalize-resource-name
        (when-not (.exists file)
          (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
 
-       (let [state
-             (if (.isDirectory file)
-               (assoc-in state [:source-paths path] (assoc opts
-                                                      :file file
-                                                      :abs-path (.getAbsolutePath file)
-                                                      :path path))
-               state)]
-         (-> state
-             (merge-resources (do-find-resources-in-paths state [path]))
-             ))))))
+       (merge-resources-in-path state path opts)
+       ))))
+
+(defn find-resources-in-classpath
+  "finds all cljs resources in the classpath (ignores resources)"
+  ([state]
+   (find-resources-in-classpath state {:exclude [#"resources(/?)$"
+                                                 #"classes(/?)$"
+                                                 #"java(/?)$"]}))
+  ([state {:keys [exclude]}]
+   (with-logged-time
+     [(:logger state) "Find cljs resources in classpath"]
+     (let [paths
+           (->> (classpath-entries)
+                (remove #(should-exclude-classpath exclude %)))]
+       (reduce merge-resources-in-path state paths)
+       ))))
 
 ;; deprecate the weird naming stuff
 (def step-find-resources-in-jars find-resources-in-classpath)
