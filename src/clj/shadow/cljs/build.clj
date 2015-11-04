@@ -916,7 +916,7 @@ normalize-resource-name
      (-> state
          (cond->
            (.isDirectory file)
-           (assoc-in [:source-paths path]
+           (assoc-in [:source-paths (.getAbsolutePath file)]
              (assoc path-opts
                :file file
                :abs-path (.getAbsolutePath file)
@@ -927,14 +927,18 @@ normalize-resource-name
   "finds cljs resources in the given path"
   ([state path]
    (find-resources state path {:reloadable true}))
-  ([state path opts]
+  ([{:keys [logger] :as state} path opts]
    (with-logged-time
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
-     (let [file (io/file path)]
+     (let [file (io/file path)
+           abs-path (.getAbsolutePath file)]
        (when-not (.exists file)
          (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
 
-       (merge-resources-in-path state path opts)
+       (if (contains? (:source-paths state) abs-path)
+         (do (log-progress logger (format "path \"%s\" already on classpath, skipped" path))
+             state)
+         (merge-resources-in-path state path opts))
        ))))
 
 (defn find-resources-in-classpath

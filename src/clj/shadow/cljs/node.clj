@@ -44,6 +44,14 @@
 (defn optimize [state]
   (cljs/closure-optimize state))
 
+
+(defn replace-goog-global [s]
+  (str/replace s
+    ;; browsers have window as this
+    #"goog.global = this;"
+    ;; node "this" is the local module, global is the actual global
+    "goog.global = global;"))
+
 (defn flush-unoptimized
   [{:keys [build-modules public-dir] :as state}]
   {:pre [(cljs/directory? public-dir)]}
@@ -69,6 +77,8 @@
             out (str prepend prepend-js out append-js)
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
+                     "\n"
+                     "goog.global = global;"
                      "\n\n"
                      out)
             goog-js (io/file public-dir "src" "goog" "base.js")
@@ -99,7 +109,7 @@
 
           out (str prepend
                    (cljs/foreign-js-source-for-mod state mod)
-                   output
+                   (replace-goog-global output)
                    append)]
 
       (io/make-parents target)
