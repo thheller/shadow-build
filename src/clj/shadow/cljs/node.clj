@@ -48,9 +48,9 @@
 (defn replace-goog-global [s]
   (str/replace s
     ;; browsers have window as this
-    #"goog.global = this;"
+    #"goog.global(\s?)=(\s?)this;"
     ;; node "this" is the local module, global is the actual global
-    "goog.global = global;"))
+    "goog.global=global;"))
 
 (defn flush-unoptimized
   [{:keys [build-modules public-dir] :as state}]
@@ -77,13 +77,13 @@
             out (str prepend prepend-js out append-js)
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                     "\n"
-                     "goog.global = global;"
                      "\n\n"
                      out)
             goog-js (io/file public-dir "src" "goog" "base.js")
             deps-js (io/file public-dir "src" "deps.js")]
-        (spit goog-js @(get-in state [:sources "goog/base.js" :input]))
+        (spit goog-js
+          (replace-goog-global
+            @(get-in state [:sources "goog/base.js" :input])))
         (spit deps-js (cljs/closure-goog-deps state))
         (spit target out))))
   ;; return unmodified state
