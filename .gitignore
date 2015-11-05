@@ -5,6 +5,7 @@
 pom.xml
 pom.xml.asc
 *.class
+*.iml
 .DS_Store
 /.cljs-cache
 /.cljs-repl
