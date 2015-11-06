@@ -739,20 +739,21 @@ normalize-resource-name
         ;; compile again .. since we were compiled today the min-age is today
         ;; which is larger than v2 release date thereby using cache if only checking one timestamp
 
-        (when (= age-of-deps (:age-of-deps cache-data))
-          (when (= (cljs-util/clojurescript-version) (:version cache-data))
-            (log-progress logger (format "[CACHE] read: \"%s\"" name))
+        (when (and (= (cljs-util/clojurescript-version) (:version cache-data))
+                   (= (:source-path cache-data) (:source-path rc))
+                   (= age-of-deps (:age-of-deps cache-data)))
+          (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
-            ;; restore analysis data
-            (let [ana-data (:analyzer cache-data)]
+          ;; restore analysis data
+          (let [ana-data (:analyzer cache-data)]
 
-              (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
-              (util/load-macros ana-data))
+            (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
+            (util/load-macros ana-data))
 
-            ;; merge resource data & return it
-            (-> (merge rc cache-data)
-                (dissoc :analyzer :version)
-                (assoc :output (slurp cache-js)))))))))
+          ;; merge resource data & return it
+          (-> (merge rc cache-data)
+              (dissoc :analyzer :version)
+              (assoc :output (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
   [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns name js-name] :as rc}]
