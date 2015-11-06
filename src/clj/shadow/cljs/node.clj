@@ -53,7 +53,7 @@
     "goog.global=global;"))
 
 (defn flush-unoptimized
-  [{:keys [build-modules public-dir] :as state}]
+  [{:keys [build-modules public-dir cljs-runtime-path] :as state}]
   {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
@@ -79,8 +79,8 @@
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
                      "\n\n"
                      out)
-            goog-js (io/file public-dir "src" "goog" "base.js")
-            deps-js (io/file public-dir "src" "deps.js")]
+            goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
+            deps-js (io/file public-dir cljs-runtime-path "deps.js")]
         (spit goog-js
           (replace-goog-global
             @(get-in state [:sources "goog/base.js" :input])))

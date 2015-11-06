@@ -718,9 +718,9 @@ normalize-resource-name
     (get-deps-for-ns state ns)))
 
 (defn load-cached-cljs-resource
-  [{:keys [logger cache-dir] :as state} {:keys [ns js-name name last-modified] :as rc}]
+  [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
-        cache-js (io/file cache-dir "src" js-name)]
+        cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
     (when (and (.exists cache-file)
                (> (.lastModified cache-file) last-modified)
@@ -755,7 +755,7 @@ normalize-resource-name
                 (assoc :output (slurp cache-js)))))))))
 
 (defn write-cached-cljs-resource
-  [{:keys [logger cache-dir] :as state} {:keys [ns name js-name] :as rc}]
+  [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns name js-name] :as rc}]
 
   ;; only cache files that don't have warnings!
   (when-not (seq (:warnings rc))
@@ -766,7 +766,7 @@ normalize-resource-name
                          (assoc :version (cljs-util/clojurescript-version)
                                 :age-of-deps (make-age-map state ns)
                                 :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
-          cache-js (io/file cache-dir "src" js-name)]
+          cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
       (io/make-parents cache-file)
       (write-cache cache-file cache-data)
@@ -1135,7 +1135,7 @@ normalize-resource-name
           dep depends-on]
       [name dep])))
 
-(defn closure-defines-and-base [{:keys [public-path] :as state}]
+(defn closure-defines-and-base [{:keys [public-path cljs-runtime-path] :as state}]
   (let [goog-rc (get-in state [:sources goog-base-name])
         goog-base @(:input goog-rc)]
 
@@ -1150,7 +1150,7 @@ normalize-resource-name
     (str "var CLOSURE_NO_DEPS = true;\n"
          ;; goog.findBasePath_() requires a base.js which we dont have
          ;; this is usually only needed for unoptimized builds anyways
-         "var CLOSURE_BASE_PATH = '" public-path "/src/';\n"
+         "var CLOSURE_BASE_PATH = '" public-path "/" cljs-runtime-path "/';\n"
          "var CLOSURE_DEFINES = "
          (json/write-str (:closure-defines state {}))
          ";\n"
@@ -1409,7 +1409,7 @@ normalize-resource-name
       (assoc mod :js-module (get js-mods name))
       )))
 
-(defn- flush-source-maps [{modules :optimized :keys [^File public-dir public-path] :as state}]
+(defn- flush-source-maps [{modules :optimized :keys [^File public-dir cljs-runtime-path] :as state}]
   (with-logged-time
     [(:logger state) "Flushing source maps"]
 
@@ -1420,14 +1420,14 @@ normalize-resource-name
       (throw (ex-info "missing :public-dir" {})))
 
     (doseq [{:keys [source-map-name source-map-json sources] :as mod} modules]
-      (let [target (io/file public-dir "src" source-map-name)]
+      (let [target (io/file public-dir cljs-runtime-path source-map-name)]
         (io/make-parents target)
         (spit target source-map-json))
 
       ;; flush all sources used by this module
       ;; FIXME: flushes all files always, should skip if files already exist and are current
       (doseq [{:keys [type name input] :as src} (map #(get-in state [:sources %]) sources)]
-        (let [target (io/file public-dir "src" name)]
+        (let [target (io/file public-dir cljs-runtime-path name)]
           (io/make-parents target)
           (spit target @input))))
     state))
@@ -1444,7 +1444,7 @@ normalize-resource-name
        (map :output)
        (str/join "\n")))
 
-(defn flush-modules-to-disk [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state}]
+(defn flush-modules-to-disk [{modules :optimized :keys [unoptimizable ^File public-dir cljs-runtime-path logger] :as state}]
   (with-logged-time
     [(:logger state) "Flushing modules to disk"]
 
@@ -1475,7 +1475,7 @@ normalize-resource-name
         (log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count out)))
 
         (when source-map-name
-          (spit target (str "\n//# sourceMappingURL=src/" (file-basename source-map-name) "\n")
+          (spit target (str "\n//# sourceMappingURL=" cljs-runtime-path "/" (file-basename source-map-name) "\n")
             :append true)))))
 
   (flush-manifest public-dir modules)
@@ -1562,11 +1562,11 @@ normalize-resource-name
        (str/join "\n")))
 
 (defn flush-sources-by-name
-  [{:keys [public-dir] :as state} source-names]
+  [{:keys [public-dir cljs-runtime-path] :as state} source-names]
   (doseq [{:keys [type name input last-modified] :as src}
           (->> source-names
                (map #(get-in state [:sources %])))
-          :let [target (io/file public-dir "src" name)]
+          :let [target (io/file public-dir cljs-runtime-path name)]
 
           ;; skip files we already have since source maps are kinda expensive to generate
           :when (or (not (.exists target))
@@ -1581,7 +1581,7 @@ normalize-resource-name
       ;; cljs needs to flush the generated .js, for source-maps also the .cljs and a .map
       :cljs
       (do (let [{:keys [source-map js-name output]} src
-                js-target (io/file public-dir "src" js-name)]
+                js-target (io/file public-dir cljs-runtime-path js-name)]
 
             (when (nil? output)
               (throw (ex-info (format "no output for resource: %s" js-name) src)))
@@ -1590,7 +1590,7 @@ normalize-resource-name
 
             (when source-map
               (let [source-map-name (str js-name ".map")]
-                (spit (io/file public-dir "src" source-map-name)
+                (spit (io/file public-dir cljs-runtime-path source-map-name)
                   (sm/encode {name source-map} {}))
                 (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true))))
 
@@ -1696,7 +1696,7 @@ normalize-resource-name
     ))
 
 (defn flush-unoptimized-compact
-  [{:keys [build-modules public-dir unoptimizable] :as state}]
+  [{:keys [build-modules public-dir unoptimizable cljs-runtime-path] :as state}]
   {:pre [(directory? public-dir)]}
 
   (when-not (seq build-modules)
@@ -1737,7 +1737,7 @@ normalize-resource-name
         ;; since it is the initial offset before we actually have a source map
         (create-index-map
           state
-          (io/file public-dir "src" (str (clojure.core/name name) "-index.js.map"))
+          (io/file public-dir cljs-runtime-path (str (clojure.core/name name) "-index.js.map"))
           (line-count (slurp target))
           mod)
 
@@ -1752,7 +1752,7 @@ normalize-resource-name
         (append-to-target append-js)
         (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
 
-        (append-to-target (str "//# sourceMappingURL=src/" (clojure.core/name name) "-index.js.map?r=" (rand)))
+        (append-to-target (str "//# sourceMappingURL=" cljs-runtime-path "/" (clojure.core/name name) "-index.js.map?r=" (rand)))
         )))
 
 
@@ -2017,6 +2017,11 @@ normalize-resource-name
    :runtime {:print-fn :console}
    :macros-loaded #{}
    :use-file-min true
+
+   ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
+   ;; this used to be just "src" but that is too generic and easily breaks something
+   ;; if public-dir is equal to the current working directory
+   :cljs-runtime-path "cljs-runtime"
 
    :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v2")]
                          (io/make-parents dir)
