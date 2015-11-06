@@ -25,7 +25,7 @@
             [loom.alg :as la]
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
-     [clojure.pprint :refer (pprint)]
+            [clojure.pprint :refer (pprint)]
             ))
 
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
@@ -290,7 +290,7 @@ normalize-resource-name
   [state path]
   {:pre [(compiler-state? state)]}
   (let [file (io/file path)
-        abs-path (.getAbsolutePath file)
+        abs-path (.getCanonicalPath file)
         jar-file (JarFile. file)
         last-modified (.lastModified file)
         entries (.entries jar-file)
@@ -418,10 +418,11 @@ normalize-resource-name
   {:pre [(compiler-state? state)
          (seq path)]}
   (let [root (io/file path)
-        root-path (.getAbsolutePath root)
+        root-path (.getCanonicalPath root)
         root-len (inc (count root-path))]
     (into [] (for [file (file-seq root)
-                   :let [abs-path (.getAbsolutePath file)]
+                   :let [file (.getCanonicalFile file)
+                         abs-path (.getCanonicalPath file)]
                    :when (and (is-cljs-resource? abs-path)
                               (not (.isHidden file)))
                    :let [name (-> abs-path
@@ -912,17 +913,19 @@ normalize-resource-name
   ([state path]
    (merge-resources-in-path state path {:reloadable true}))
   ([state path path-opts]
-   (let [file (io/file path)
-         resources (do-find-resources-in-path state path)]
-     (-> state
-         (cond->
-           (.isDirectory file)
-           (assoc-in [:source-paths (.getAbsolutePath file)]
-             (assoc path-opts
-               :file file
-               :abs-path (.getAbsolutePath file)
-               :path path)))
-         (merge-resources resources)))))
+   (let [file (.getCanonicalFile (io/file path))
+         abs-path (.getCanonicalPath file)]
+     ;; checkout deps with a lot of symlinks can cause duplicates on classpath
+     (if (contains? (:source-paths state) abs-path)
+       state
+       (let [resources (do-find-resources-in-path state abs-path)
+             state
+             (if (.isDirectory file)
+               (assoc-in state [:source-paths abs-path] (assoc path-opts
+                                                          :file file
+                                                          :path abs-path))
+               state)]
+         (merge-resources state resources))))))
 
 (defn find-resources
   "finds cljs resources in the given path"
@@ -932,7 +935,7 @@ normalize-resource-name
    (with-logged-time
      [(:logger state) (format "Find cljs resources in path: \"%s\"" path)]
      (let [file (io/file path)
-           abs-path (.getAbsolutePath file)]
+           abs-path (.getCanonicalPath file)]
        (when-not (.exists file)
          (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
 
