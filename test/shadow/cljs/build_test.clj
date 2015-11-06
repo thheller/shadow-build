@@ -260,6 +260,27 @@
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
+(deftest test-flush-compact
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/enable-source-maps)
+            (assoc :optimizations :none
+                   :pretty-print true
+                   :work-dir (io/file "target/test-cljs-work")
+                   :public-dir (io/file "target/test-cljs")
+                   :public-path "target/test-cljs")
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/dummy/src")
+            (cljs/finalize-config)
+            (cljs/configure-module :test ['basic] #{})
+            (cljs/compile-modules)
+            ;; (cljs/closure-optimize)
+            ;; (cljs/flush-modules-to-disk)
+            ;;(cljs/flush-unoptimized)
+            (cljs/flush-unoptimized-compact))]
+    (prn :yo)
+    ))
+
 (deftest test-bad-files
   (let [s (-> (cljs/init-state)
               (cljs/find-resources-in-classpath)

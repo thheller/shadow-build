@@ -1662,6 +1662,99 @@ normalize-resource-name
   ;; return unmodified state
   state)
 
+(defn line-count [text]
+  (with-open [rdr (io/reader (StringReader. text))]
+    (count (line-seq rdr))))
+
+(defn create-index-map [state out-file init-offset {:keys [sources js-name] :as mod}]
+  (let [index-map
+        (reduce
+          (fn [src-map src-name]
+            (let [{:keys [type output js-name] :as rc} (get-in state [:sources src-name])]
+              (let [lc (line-count output)
+                    start-line (:current-offset src-map)
+                    ;; extra 2 lines per fail cause of // SOURCE comment and goog.dependencies_.written line
+                    src-map (update src-map :current-offset + lc 2)]
+                (if (= :cljs type)
+                  (update src-map :sections conj {:offset {:line (+ start-line 2) :column 0}
+                                                  :url (str js-name ".map")})
+                  ;; only have source-maps for cljs
+                  src-map)
+                )))
+          {:current-offset init-offset
+           :version 3
+           :file js-name
+           :sections []}
+          sources)
+
+        index-map (dissoc index-map :current-offset)]
+
+    (spit out-file (json/write-str index-map))
+    ))
+
+(defn flush-unoptimized-compact
+  [{:keys [build-modules public-dir unoptimizable] :as state}]
+  {:pre [(directory? public-dir)]}
+
+  (when-not (seq build-modules)
+    (throw (ex-info "flush before compile?" {})))
+  (with-logged-time
+    [(:logger state) "Flushing sources"]
+
+    (flush-sources-by-name state (mapcat :sources build-modules)))
+
+  (with-logged-time
+    [(:logger state) "Flushing unoptimized compact modules"]
+
+    (flush-manifest public-dir build-modules)
+
+    ;; flush fake modules
+    (doseq [{:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod} build-modules]
+      (let [target (io/file public-dir js-name)
+            append-to-target
+            (fn [text]
+              (spit target text :append true))]
+
+        (spit target (str prepend prepend-js))
+        (when (or default web-worker)
+          (append-to-target
+            (str unoptimizable
+                 "var SHADOW_MODULES = {};\n"
+                 (if web-worker
+                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n"
+                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"import\", src); };\n"
+                   )
+                 (closure-defines-and-base state)
+                 (closure-goog-deps state)
+                 "\n\n"
+                 )))
+
+        ;; at least line-count must be captured here
+        ;; since it is the initial offset before we actually have a source map
+        (create-index-map
+          state
+          (io/file public-dir "src" (str (clojure.core/name name) ".js.index-map"))
+          (line-count (slurp target))
+          mod)
+
+        (doseq [src-name sources
+                :let [{:keys [output name js-name] :as rc} (get-in state [:sources src-name])]]
+          (append-to-target (str "// SOURCE=" name "\n"))
+          (append-to-target (str (str/trim output) "\n"))
+          ;; pretend we actually loaded a separate file, live-reload needs this
+          (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
+          )
+
+        (append-to-target append-js)
+        (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
+
+        (append-to-target (str "//# sourceMappingURL=src/" (clojure.core/name name) ".js.index-map?r=" (rand)))
+        )))
+
+
+  ;; return unmodified state
+  state)
+
 (defn get-reloadable-source-paths [state]
   (->> state
        :source-paths
