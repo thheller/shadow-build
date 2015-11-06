@@ -1670,23 +1670,35 @@ normalize-resource-name
   (with-open [rdr (io/reader (StringReader. text))]
     (count (line-seq rdr))))
 
-(defn create-index-map [state out-file init-offset {:keys [sources js-name] :as mod}]
+(defn create-index-map
+  [{:keys [public-dir cljs-runtime-path] :as state} out-file init-offset {:keys [sources js-name] :as mod}]
   (let [index-map
         (reduce
           (fn [src-map src-name]
-            (let [{:keys [type output js-name] :as rc} (get-in state [:sources src-name])]
-              (let [lc (line-count output)
-                    start-line (:current-offset src-map)
-                    ;; extra 2 lines per file
-                    ;; // SOURCE comment
-                    ;; goog.dependencies_.written[src] = true;
-                    src-map (update src-map :current-offset + lc 2)]
-                (if (= :cljs type)
-                  (update src-map :sections conj {:offset {:line (+ start-line 3) :column 0}
-                                                  :url (str js-name ".map")})
-                  ;; only have source-maps for cljs
-                  src-map)
-                )))
+            (let [{:keys [type output js-name] :as rc} (get-in state [:sources src-name])
+                  source-map-file (io/file public-dir cljs-runtime-path (str js-name ".map"))
+                  lc (line-count output)
+                  start-line (:current-offset src-map)
+
+                  ;; extra 2 lines per file
+                  ;; // SOURCE comment
+                  ;; goog.dependencies_.written[src] = true;
+                  src-map (update src-map :current-offset + lc 2)]
+
+              (if (= :cljs type)
+                (update src-map :sections conj {:offset {:line (+ start-line 3) :column 0}
+                                                ;; :url (str js-name ".map")
+                                                ;; chrome doesn't support :url
+                                                ;; see https://code.google.com/p/chromium/issues/detail?id=552455
+                                                ;; FIXME: inlining the source-map is expensive due to excessive parsing
+                                                ;; could try to insert MARKER instead and str/replace
+                                                ;; 300ms is acceptable for now, but might not be on bigger projects
+                                                ;; flushing the unoptmized version should not exceed 100ms
+                                                :map (json/read-str (slurp source-map-file))
+                                                })
+                ;; only have source-maps for cljs
+                src-map)
+              ))
           {:current-offset init-offset
            :version 3
            :file (str "../" js-name)
