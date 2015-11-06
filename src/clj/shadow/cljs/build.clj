@@ -25,7 +25,7 @@
             [loom.alg :as la]
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
-    ;; [clojure.pprint :refer (pprint)]
+     [clojure.pprint :refer (pprint)]
             ))
 
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
@@ -1673,22 +1673,25 @@ normalize-resource-name
             (let [{:keys [type output js-name] :as rc} (get-in state [:sources src-name])]
               (let [lc (line-count output)
                     start-line (:current-offset src-map)
-                    ;; extra 2 lines per fail cause of // SOURCE comment and goog.dependencies_.written line
+                    ;; extra 2 lines per file
+                    ;; // SOURCE comment
+                    ;; goog.dependencies_.written[src] = true;
                     src-map (update src-map :current-offset + lc 2)]
                 (if (= :cljs type)
-                  (update src-map :sections conj {:offset {:line (+ start-line 2) :column 0}
+                  (update src-map :sections conj {:offset {:line (+ start-line 3) :column 0}
                                                   :url (str js-name ".map")})
                   ;; only have source-maps for cljs
                   src-map)
                 )))
           {:current-offset init-offset
            :version 3
-           :file js-name
+           :file (str "../" js-name)
            :sections []}
           sources)
 
         index-map (dissoc index-map :current-offset)]
 
+    ;; (pprint index-map)
     (spit out-file (json/write-str index-map))
     ))
 
@@ -1722,7 +1725,8 @@ normalize-resource-name
                  "var SHADOW_MODULES = {};\n"
                  (if web-worker
                    "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n"
-                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"import\", src); };\n"
+                   ;; FIXME: should probably throw an error because we NEVER want to import anything this way
+                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"
                    )
                  (closure-defines-and-base state)
                  (closure-goog-deps state)
@@ -1733,22 +1737,22 @@ normalize-resource-name
         ;; since it is the initial offset before we actually have a source map
         (create-index-map
           state
-          (io/file public-dir "src" (str (clojure.core/name name) ".js.index-map"))
+          (io/file public-dir "src" (str (clojure.core/name name) "-index.js.map"))
           (line-count (slurp target))
           mod)
 
         (doseq [src-name sources
                 :let [{:keys [output name js-name] :as rc} (get-in state [:sources src-name])]]
           (append-to-target (str "// SOURCE=" name "\n"))
-          (append-to-target (str (str/trim output) "\n"))
           ;; pretend we actually loaded a separate file, live-reload needs this
           (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
+          (append-to-target (str (str/trim output) "\n"))
           )
 
         (append-to-target append-js)
         (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
 
-        (append-to-target (str "//# sourceMappingURL=src/" (clojure.core/name name) ".js.index-map?r=" (rand)))
+        (append-to-target (str "//# sourceMappingURL=src/" (clojure.core/name name) "-index.js.map?r=" (rand)))
         )))
 
 
