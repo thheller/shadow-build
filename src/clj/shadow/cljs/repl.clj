@@ -283,19 +283,7 @@
                                                                 :gen-line 0})]
 
                           {:type :repl/invoke
-                           :js (let [ast (cljs/analyze state repl-rc form)
-                                     ;; cheat and turn everything into an expr
-                                     ;; "(def x 1)"
-                                     ;; "x"
-                                     ;; since :context defaults to :statement and cljs.user.x is a useless :statement
-                                     ;; it will not generate any code
-                                     ;; with :expr it will correctly emit some code
-                                     ;; has the side effect of removing ";\n" from actual statements but since each
-                                     ;; snippet of code generated here is meant to directly eval(str) it doesn't matter
-                                     ast (if (= :var (:op ast))
-                                           (assoc-in ast [:env :context] :expr)
-                                           ast)]
-
+                           :js (let [ast (cljs/analyze state repl-rc form :expr)]
                                  (with-out-str
                                    (comp/emit ast)))
                            ;; FIXME: need actual json source map

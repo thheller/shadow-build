@@ -538,37 +538,40 @@ normalize-resource-name
     :op :ns))
 
 (defn analyze
-  [state {:keys [ns name] :as compile-state} form]
-  {:pre [(map? compile-state)
-         (symbol? ns)
-         (string? name)
-         (seq name)]}
-  ;; (defmulti parse (fn [op & rest] op))
-  (let [default-parse ana/parse]
-    (binding [*ns* (create-ns ns)
-              ana/*passes* [ana/infer-type]
-              ;; [infer-type ns-side-effects] is default, we don't want the side effects
-              ;; altough it is great that the side effects are now optional
-              ;; the default still doesn't handle macros properly
-              ;; so we keep hijacking
-              ana/*cljs-ns* ns
-              ana/*cljs-file* name]
+  ([state compile-state form]
+    (analyze state compile-state form :statement))
+  ([state {:keys [ns name] :as compile-state} form context]
+   {:pre [(map? compile-state)
+          (symbol? ns)
+          (string? name)
+          (seq name)]}
+    ;; (defmulti parse (fn [op & rest] op))
+   (let [default-parse ana/parse]
+     (binding [*ns* (create-ns ns)
+               ana/*passes* [ana/infer-type]
+               ;; [infer-type ns-side-effects] is default, we don't want the side effects
+               ;; altough it is great that the side effects are now optional
+               ;; the default still doesn't handle macros properly
+               ;; so we keep hijacking
+               ana/*cljs-ns* ns
+               ana/*cljs-file* name]
 
-      (with-redefs [ana/parse
-                    (fn shadow-parse [op env form name opts]
-                      (condp = op
-                        ;; the default ana/parse 'ns has way too many side effects we don't need or want
-                        ;; don't want analyze-deps -> never needed
-                        ;; don't want require or macro ns -> post-analyze
-                        ;; don't want check-uses -> doesn't recognize macros
-                        ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
-                        ;; don't want swap into compiler env -> post-analyze
-                        'ns (hijacked-parse-ns env form name opts)
-                        (default-parse op env form name opts)))]
+       (with-redefs [ana/parse
+                     (fn shadow-parse [op env form name opts]
+                       (condp = op
+                         ;; the default ana/parse 'ns has way too many side effects we don't need or want
+                         ;; don't want analyze-deps -> never needed
+                         ;; don't want require or macro ns -> post-analyze
+                         ;; don't want check-uses -> doesn't recognize macros
+                         ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
+                         ;; don't want swap into compiler env -> post-analyze
+                         'ns (hijacked-parse-ns env form name opts)
+                         (default-parse op env form name opts)))]
 
-        (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-            (ana/analyze form ns state)
-            (post-analyze state))))))
+         (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+             (assoc :context context)
+             (ana/analyze form ns state)
+             (post-analyze state)))))))
 
 (defn do-compile-cljs-string
   [{:keys [name] :as init} reduce-fn cljs-source cljc?]
@@ -1494,6 +1497,7 @@ normalize-resource-name
        (mapcat :sources)
        (map #(get-in state [:sources %]))
        (filter :foreign)
+       (filter :externs-source)
        (reduce (fn [externs {:keys [js-name externs-source] :as foreign-src}]
                  (conj externs (SourceFile/fromCode (str "externs/" js-name) externs-source)))
          (closure/load-externs state))))
@@ -1595,7 +1599,7 @@ normalize-resource-name
             (when source-map
               (let [source-map-name (str js-name ".map")]
                 (spit (io/file public-dir cljs-runtime-path source-map-name)
-                  (sm/encode {name source-map} {}))
+                  (sm/encode {name source-map} {:file js-name}))
                 (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true))))
 
           ;; spit original source, cljs needed for source maps
@@ -1694,7 +1698,12 @@ normalize-resource-name
                                                 ;; could try to insert MARKER instead and str/replace
                                                 ;; 300ms is acceptable for now, but might not be on bigger projects
                                                 ;; flushing the unoptmized version should not exceed 100ms
-                                                :map (json/read-str (slurp source-map-file))
+                                                :map (let [sm (json/read-str (slurp source-map-file))]
+                                                       ;; must set sources and file to complete relative paths
+                                                       ;; as the source map only contains local references without path
+                                                       (assoc sm
+                                                         "sources" [src-name]
+                                                         "file" js-name))
                                                 })
                 ;; only have source-maps for cljs
                 src-map)

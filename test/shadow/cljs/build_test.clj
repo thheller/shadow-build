@@ -646,10 +646,9 @@
              :cache-level :jars
              :public-dir (io/file "cljs-data/dummy/out")
              :public-path "out")
-      (cljs/step-find-resources-in-jars)
-      (cljs/step-find-resources "src/cljs")
-      (cljs/step-find-resources "cljs-data/dummy/src")
-      (cljs/step-find-resources "cljs-data/dummy/test")
+      (cljs/find-resources-in-classpath)
+      (cljs/find-resources "cljs-data/dummy/src")
+      (cljs/find-resources "cljs-data/dummy/test")
 
       (cljs/finalize-config)
       (cljs/configure-module :cljs ['cljs.core] #{})
@@ -687,6 +686,14 @@
             (repl/process-input "(def x 1)")
             (repl/process-input "(inc x)")
             (repl/process-input "x"))]
+
+    (pprint repl-state)
+    ))
+
+(deftest test-repl-if
+  (let [{:keys [repl-state] :as s}
+        (-> (basic-repl-setup)
+            (repl/process-input "(if (= 1 2) 1 2)"))]
 
     (pprint repl-state)
     ))
