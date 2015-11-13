@@ -54,19 +54,6 @@ var vm = require('vm');
 global.goog = {};
 
 
-/**
- * Imports a script using Node's require() API.
- *
- * @param {string} src The script source.
- * @return {boolean} True if the script was imported, false otherwise.
- */
-global.CLOSURE_IMPORT_SCRIPT = function(src) {
-  // @thheller: goog.require files are in src directory
-  require(path.resolve(__dirname, 'src') + '/' + src);
-  return true;
-};
-
-
 // Declared here so it can be used to require base.js
 function nodeGlobalRequire(file) {
   var _module = global.module, _exports = global.exports;
@@ -77,9 +64,20 @@ function nodeGlobalRequire(file) {
   global.module = _module;
 }
 
+/**
+ * Imports a script using Node's require() API.
+ *
+ * @param {string} src The script source.
+ * @return {boolean} True if the script was imported, false otherwise.
+ */
+global.CLOSURE_IMPORT_SCRIPT = function(src) {
+  // ALWAYS USE GLOBAL REQUIRE, the other way is just painful
+  nodeGlobalRequire(path.resolve(__dirname, 'cljs-runtime') + '/' + src);
+  return true;
+};
 
 // Load Closure's base.js into memory.
-nodeGlobalRequire(path.resolve(__dirname, 'src', 'goog', 'base.js'));
+nodeGlobalRequire(path.resolve(__dirname, 'cljs-runtime', 'goog', 'base.js'));
 
 
 /**

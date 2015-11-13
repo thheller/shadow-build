@@ -743,8 +743,7 @@ normalize-resource-name
         ;; compile again .. since we were compiled today the min-age is today
         ;; which is larger than v2 release date thereby using cache if only checking one timestamp
 
-        (when (and (= (cljs-util/clojurescript-version) (:version cache-data))
-                   (= (:source-path cache-data) (:source-path rc))
+        (when (and (= (:source-path cache-data) (:source-path rc))
                    (= age-of-deps (:age-of-deps cache-data)))
           (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
@@ -756,7 +755,7 @@ normalize-resource-name
 
           ;; merge resource data & return it
           (-> (merge rc cache-data)
-              (dissoc :analyzer :version)
+              (dissoc :analyzer)
               (assoc :output (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
@@ -768,8 +767,7 @@ normalize-resource-name
     (let [cache-file (get-cache-file-for-rc state rc)
           cache-data (-> rc
                          (dissoc :file :output :input :url)
-                         (assoc :version (cljs-util/clojurescript-version)
-                                :age-of-deps (make-age-map state ns)
+                         (assoc :age-of-deps (make-age-map state ns)
                                 :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
           cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
@@ -1689,7 +1687,8 @@ normalize-resource-name
                   ;; goog.dependencies_.written[src] = true;
                   src-map (update src-map :current-offset + lc 2)]
 
-              (if (= :cljs type)
+              (if (and (= :cljs type)
+                       (.exists source-map-file))
                 (update src-map :sections conj {:offset {:line (+ start-line 3) :column 0}
                                                 ;; :url (str js-name ".map")
                                                 ;; chrome doesn't support :url
@@ -1771,15 +1770,13 @@ normalize-resource-name
           (append-to-target (str "// SOURCE=" name "\n"))
           ;; pretend we actually loaded a separate file, live-reload needs this
           (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
-          (append-to-target (str (str/trim output) "\n"))
-          )
+          (append-to-target (str (str/trim output) "\n")))
 
         (append-to-target append-js)
         (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
 
         (append-to-target (str "//# sourceMappingURL=" cljs-runtime-path "/" (clojure.core/name name) "-index.js.map?r=" (rand)))
         )))
-
 
   ;; return unmodified state
   state)

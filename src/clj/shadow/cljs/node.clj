@@ -59,7 +59,6 @@
     (throw (ex-info "node builds can only have one module!" {})))
 
   ;; FIXME: does node need the imul.js fix? probably not
-
   (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
   (cljs/with-logged-time
@@ -71,14 +70,14 @@
             target (io/file public-dir js-name)
 
             out (->> provided-ns
-                     (map (fn [ns]
-                            (str "goog.require('" (comp/munge ns) "');")))
-                     (str/join "\n"))
+                  (map (fn [ns]
+                         (str "goog.require('" (comp/munge ns) "');")))
+                  (str/join "\n"))
             out (str prepend prepend-js out append-js)
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                     "\n\n"
-                     out)
+                  "\n\n"
+                  out)
             goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
             deps-js (io/file public-dir cljs-runtime-path "deps.js")]
         (spit goog-js
@@ -222,4 +221,3 @@
     ;; return unmodified state!
     state
     ))
-
