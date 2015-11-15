@@ -2,10 +2,11 @@
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph]
-           (clojure.lang ExceptionInfo)
+           (clojure.lang ExceptionInfo ILookup)
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
-           (java.util.logging Level))
+           (java.util.logging Level)
+           [java.util.concurrent Executors])
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -350,10 +351,11 @@ normalize-resource-name
           (fn [result {:keys [externs provides requires] :as foreign-lib}]
             (if-not (or (contains? foreign-lib :file)
                         (contains? foreign-lib :file-min))
-              ;; FIXME: {:externs ["om/externs.js"]}
-              ;; doesn't contains any foreign, only externs, need a way to propagate it to the top
-              (do (prn [:probably-ignoring-externs foreign-lib])
-                  result)
+              ;; {:externs ["om/externs.js"]}
+              ;; doesn't contain any foreign, only externs.
+              ;; this really doesn't make sense, currently on the case because of a buggy externs
+              ;; in cljsjs/react (pending https://github.com/cljsjs/packages/pull/287)
+              result
               (let [[lib-key lib-other] (cond
                                           (and use-file-min (contains? foreign-lib :file-min))
                                           [:file-min :file]
@@ -420,18 +422,22 @@ normalize-resource-name
   (let [root (io/file path)
         root-path (.getCanonicalPath root)
         root-len (inc (count root-path))]
-    (into [] (for [file (file-seq root)
-                   :let [file (.getCanonicalFile file)
-                         abs-path (.getCanonicalPath file)]
-                   :when (and (is-cljs-resource? abs-path)
-                              (not (.isHidden file)))
-                   :let [name (-> abs-path
-                                  (.substring root-len)
-                                  (normalize-resource-name))]
-                   :when (not (should-ignore-resource? state name))]
+    (->> (for [file (file-seq root)
+               :let [file (.getCanonicalFile file)
+                     abs-path (.getCanonicalPath file)]
+               :when (and (is-cljs-resource? abs-path)
+                          (not (.isHidden file)))
+               :let [name (-> abs-path
+                              (.substring root-len)
+                              (normalize-resource-name))]
+               :when (not (should-ignore-resource? state name))]
 
-               (make-fs-resource state path name file)
-               ))))
+           (make-fs-resource state path name file))
+         (map (juxt :name identity))
+         (into {})
+         (process-deps-cljs state)
+         (vals)
+         )))
 
 (defn get-resource-for-provide [state ns-sym]
   {:pre [(compiler-state? state)
@@ -539,7 +545,7 @@ normalize-resource-name
 
 (defn analyze
   ([state compile-state form]
-    (analyze state compile-state form :statement))
+   (analyze state compile-state form :statement))
   ([state {:keys [ns name] :as compile-state} form context]
    {:pre [(map? compile-state)
           (symbol? ns)

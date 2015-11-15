@@ -50,7 +50,9 @@
                     }
 
         repl-sources (cljs/get-deps-for-ns state 'cljs.user)
-        state (cljs/compile-sources state repl-sources)
+        state (-> state
+                  (cljs/finalize-config)
+                  (cljs/compile-sources repl-sources))
 
         ns-info (get-in state [:compiler-env ::ana/namespaces 'cljs.user])
 
