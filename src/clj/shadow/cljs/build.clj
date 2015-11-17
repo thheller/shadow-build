@@ -6,7 +6,7 @@
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level)
-           [java.util.concurrent Executors])
+           [java.util.concurrent Executors Future])
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -29,6 +29,8 @@
             [clojure.pprint :refer (pprint)]
             ))
 
+;; (set! *warn-on-reflection* true)
+
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
   (com.google.javascript.jscomp.Compiler/setLoggingLevel Level/WARNING)
   (doto (com.google.javascript.jscomp.Compiler.)
@@ -39,13 +41,13 @@
     (.disableThreads)))
 
 
-(defn write-cache [file data]
+(defn write-cache [^File file data]
   (with-open [out (FileOutputStream. file)]
     (let [w (transit/writer out :json {:handlers {URL (transit/write-handler "url" str)}})]
       (transit/write w data)
       )))
 
-(defn read-cache [file]
+(defn read-cache [^File file]
   (with-open [in (FileInputStream. file)]
     (let [r (transit/reader in :json {:handlers {"url" (transit/read-handler #(URL. %))}})]
       (transit/read r)
@@ -215,7 +217,7 @@
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
-  [{:keys [logger] :as state} {:keys [name input] :as rc}]
+  [{:keys [logger] :as state} {:keys [^String name input] :as rc}]
   {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
         cljc? (.endsWith name ".cljc")
@@ -405,7 +407,7 @@ normalize-resource-name
     (-> (process-deps-cljs state manifest)
         (vals))))
 
-(defn make-fs-resource [state source-path rc-name rc-file]
+(defn make-fs-resource [state source-path rc-name ^File rc-file]
   (inspect-resource
     state
     {:name rc-name
@@ -422,7 +424,7 @@ normalize-resource-name
   (let [root (io/file path)
         root-path (.getCanonicalPath root)
         root-len (inc (count root-path))]
-    (->> (for [file (file-seq root)
+    (->> (for [^File file (file-seq root)
                :let [file (.getCanonicalFile file)
                      abs-path (.getCanonicalPath file)]
                :when (and (is-cljs-resource? abs-path)
@@ -519,16 +521,8 @@ normalize-resource-name
     (get-deps-for-src state name)
     ))
 
-(defmulti post-analyze
-  (fn [ast opts]
-    (:op ast))
-  :default ::no-op)
 
-(defmethod post-analyze ::no-op [ast opts] ast)
-
-(defmethod post-analyze :ns
-  [{:keys [name] :as ast} opts]
-
+(defn post-analyze-ns [{:keys [name] :as ast} opts]
   (let [ast (-> ast
                 (util/load-macros)
                 (util/infer-macro-require)
@@ -537,11 +531,29 @@ normalize-resource-name
     (swap! env/*compiler* assoc-in [::ana/namespaces name] (dissoc ast :env :op :form))
     ast))
 
+(defn post-analyze [{:keys [op] :as ast} opts]
+  (case op
+    :ns (post-analyze-ns ast opts)
+    ast))
+
 (defn hijacked-parse-ns [env form name opts]
   (assoc (util/parse-ns form)
     :env env
     :form form
     :op :ns))
+
+(def default-parse ana/parse)
+
+(defn shadow-parse [op env form name opts]
+  (condp = op
+    ;; the default ana/parse 'ns has way too many side effects we don't need or want
+    ;; don't want analyze-deps -> never needed
+    ;; don't want require or macro ns -> post-analyze
+    ;; don't want check-uses -> doesn't recognize macros
+    ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
+    ;; don't want swap into compiler env -> post-analyze
+    'ns (hijacked-parse-ns env form name opts)
+    (default-parse op env form name opts)))
 
 (defn analyze
   ([state compile-state form]
@@ -562,22 +574,10 @@ normalize-resource-name
                ana/*cljs-ns* ns
                ana/*cljs-file* name]
 
-       (with-redefs [ana/parse
-                     (fn shadow-parse [op env form name opts]
-                       (condp = op
-                         ;; the default ana/parse 'ns has way too many side effects we don't need or want
-                         ;; don't want analyze-deps -> never needed
-                         ;; don't want require or macro ns -> post-analyze
-                         ;; don't want check-uses -> doesn't recognize macros
-                         ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
-                         ;; don't want swap into compiler env -> post-analyze
-                         'ns (hijacked-parse-ns env form name opts)
-                         (default-parse op env form name opts)))]
-
-         (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-             (assoc :context context)
-             (ana/analyze form ns state)
-             (post-analyze state)))))))
+       (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+           (assoc :context context)
+           (ana/analyze form ns state)
+           (post-analyze state))))))
 
 (defn do-compile-cljs-string
   [{:keys [name] :as init} reduce-fn cljs-source cljc?]
@@ -696,7 +696,7 @@ normalize-resource-name
 (def cache-file-version "v3")
 
 (defn get-cache-file-for-rc
-  [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
+  ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
 
@@ -707,7 +707,7 @@ normalize-resource-name
       (map #(get-in state [:macros % :last-modified]))
       (completing
         (fn [a b]
-          (Math/max a b)))
+          (Math/max ^long a ^long b)))
       last-modified
       macros
       )))
@@ -1039,7 +1039,7 @@ normalize-resource-name
                         (assoc info :last-modified (.getLastModified con)))
                       )))
              ;; get file (if not in jar)
-             (map (fn [{:keys [url] :as info}]
+             (map (fn [{:keys [^URL url] :as info}]
                     (if (nil? url)
                       info
                       (if (not= "file" (.getProtocol url))
@@ -1304,6 +1304,7 @@ normalize-resource-name
      :last-modified 0 ;; this file should never cause recompiles
      }))
 
+
 (defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
   {:pre [(valid-resource? src)]}
   (if (and (seq output)
@@ -1316,30 +1317,105 @@ normalize-resource-name
       :cljs
       (maybe-compile-cljs state src))))
 
-
 (defn compile-sources
   "compile a list of sources by name,
    requires that the names are in dependency order
    requires that ALL of the dependencies NOT in source names are already compiled
    eg. you cannot just compile [\"clojure/string.cljs\"] as it requires other files to be compiled first"
   [state source-names]
-  (with-compiler-env state
-    (ana/load-core)
-    (reduce
-      (fn [state source-name]
-        (let [src (get-in state [:sources source-name])
-              compiled-src (generate-output-for-source state src)]
-          (-> state
-              (assoc-in [:sources source-name] compiled-src)
-              (cond->
-                (not= (:compiled-at src)
-                      (:compiled-at compiled-src))
-                (update :compiled conj source-name)
-                ))))
-      (assoc state :compiled [])
-      source-names)))
+  (with-redefs [ana/parse shadow-parse]
+    (with-compiler-env state
+      (ana/load-core)
+      (reduce
+        (fn [state source-name]
+          (let [src (get-in state [:sources source-name])
+                compiled-src (generate-output-for-source state src)]
+            (-> state
+                (assoc-in [:sources source-name] compiled-src)
+                (cond->
+                  (not= (:compiled-at src)
+                        (:compiled-at compiled-src))
+                  (update :compiled conj source-name)
+                  ))))
+        (assoc state :compiled [])
+        source-names))))
 
-(defn compile-modules [state]
+(defn par-compile-one [state ready compiled errors source-name]
+  (let [{:keys [requires] :as src} (get-in state [:sources source-name])]
+    (loop []
+      (cond
+        ;; skip work if errors occured
+        (seq @errors)
+        src
+
+        ;; only compile once all dependencies are compiled
+        ;; FIXME: sleep is not great, cljs.core takes a couple of sec to compile
+        ;; this will spin a couple hundred times, doing additional work
+        ;; don't increase the sleep time since many files compile in the 5-10 range
+        (not (set/superset? @ready requires))
+        (do (Thread/sleep 5)
+            (recur))
+
+        :ready-to-compile
+        (try
+          (let [{:keys [provides] :as compiled-src}
+                (generate-output-for-source state src)]
+
+            (when (not= (:compiled-at src)
+                        (:compiled-at compiled-src))
+              (swap! compiled conj source-name))
+
+            (swap! ready set/union provides)
+            compiled-src)
+          (catch Exception e
+            (swap! errors assoc source-name e)
+            src
+            ))))))
+
+(defn par-compile-sources
+  "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
+   this cannot do a partial incremental compile"
+  [{:keys [n-compile-threads logger n-compile-threads] :as state} source-names]
+  (log-progress logger (format "Compiling with %d threads" n-compile-threads))
+  (with-redefs [ana/parse shadow-parse]
+    (with-compiler-env state
+      (ana/load-core)
+      (let [ready (atom #{}) ;; namespaces that are ready to be used
+            compiled (atom []) ;; files that were actually compiled (not recycled)
+            errors (atom {}) ;; source-name -> exception
+
+            exec (Executors/newFixedThreadPool n-compile-threads)
+            tasks
+            (->> (for [source-name source-names]
+                   ;; bound-fn for with-compiler-state
+                   (let [task-fn (bound-fn [] (par-compile-one state ready compiled errors source-name))]
+                     (.submit exec ^Callable task-fn)))
+                 (doall) ;; force submit all, then deref
+                 (into [] (map deref)))]
+
+        ;; FIXME: might deadlock here if any of the derefs fail
+        (.shutdown exec)
+
+        ;; unlikely to encounter 2 concurrent errors
+        ;; so unpack for a single error for better stacktrace
+        (let [errs @errors]
+          (case (count errs)
+            0 nil
+            1 (let [[name err] (first errs)]
+                (throw (ex-info (format "compilation of \"%s\" failed" name) {} err)))
+            (throw (ex-info "compilation failed" errs))))
+
+        (-> state
+            (update :sources (fn [sources]
+                               (reduce
+                                 (fn [sources {:keys [name] :as src}]
+                                   (assoc sources name src))
+                                 sources
+                                 tasks)))
+            (assoc :compiled @compiled))))))
+
+(defn compile-modules
+  [{:keys [n-compile-threads] :as state}]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
     (let [state (finalize-config state)
@@ -1347,7 +1423,9 @@ normalize-resource-name
           state (reduce do-analyze-module state (-> state :modules (vals)))
           modules (sort-and-compact-modules state)
           source-names (mapcat :sources modules)
-          state (compile-sources state source-names)]
+          state (if (> n-compile-threads 1)
+                  (par-compile-sources state source-names)
+                  (compile-sources state source-names))]
 
       (-> state
           (assoc :build-modules modules)
@@ -1799,7 +1877,7 @@ normalize-resource-name
   (assoc rc :input (delay (slurp url))))
 
 (defn reset-resource-by-name [state name]
-  (let [{:keys [file] :as rc} (get-in state [:sources name])
+  (let [{:keys [^File file] :as rc} (get-in state [:sources name])
         new-rc
         (-> rc
             (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
@@ -2046,6 +2124,7 @@ normalize-resource-name
    :macros-loaded #{}
    :use-file-min true
 
+
    ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
    ;; this used to be just "src" but that is too generic and easily breaks something
    ;; if public-dir is equal to the current working directory
@@ -2061,21 +2140,28 @@ normalize-resource-name
    :public-path "js"
 
    :optimizations :none
+   :n-compile-threads (.. Runtime getRuntime availableProcessors)
 
    :source-paths {}
    :closure-defines {"goog.DEBUG" false
                      "goog.LOCALE" "en"}
 
-   :logger (reify BuildLog
-             (log-warning [_ msg]
-               (println (str "WARN: " msg)))
-             (log-time-start [_ msg]
-               (println (format "-> %s" msg)))
-             (log-time-end [_ msg ms]
-               (println (format "<- %s (%dms)" msg ms)))
-             (log-progress [_ msg]
-               (println msg)))
-   })
+   :logger (let [log-lock (Object.)]
+             (reify BuildLog
+               (log-warning [_ msg]
+                 (locking log-lock
+                   (println (str "WARN: " msg))))
+               (log-time-start [_ msg]
+                 (locking log-lock
+                   (println (format "-> %s" msg))))
+               (log-time-end [_ msg ms]
+                 (locking log-lock
+                   (println (format "<- %s (%dms)" msg ms))))
+               (log-progress [_ msg]
+                 (locking log-lock
+                   (println msg)))))
+   }
+  )
 
 (defn watch-and-repeat! [state callback]
   (loop [state (callback state [])]
