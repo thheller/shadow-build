@@ -1375,7 +1375,7 @@ normalize-resource-name
 (defn par-compile-sources
   "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
    this cannot do a partial incremental compile"
-  [{:keys [n-compile-threads logger n-compile-threads] :as state} source-names]
+  [{:keys [n-compile-threads logger] :as state} source-names]
   (log-progress logger (format "Compiling with %d threads" n-compile-threads))
   (with-redefs [ana/parse shadow-parse]
     (with-compiler-env state
