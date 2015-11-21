@@ -17,3 +17,4 @@
 
 (.log js/console "finished loading basic" (c/test-it ::c/test))
 
+(prn [:look "print"])

@@ -12,6 +12,7 @@
   :source-paths ["src/clj"
                  "src/cljs"]
 
+  :java-source-paths ["src/java"]
 
   :profiles {:dev {:source-paths ["src/dev"]
                    :dependencies [[org.clojure/tools.namespace "0.2.11"]

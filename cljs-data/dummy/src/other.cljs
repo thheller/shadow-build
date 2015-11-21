@@ -3,7 +3,7 @@
             ))
 
 (defn sup []
-  (.log js/console "sup"))
+  (.log js/console "sup" :look))
 
 ;; not exported but called
 (sup)

@@ -748,3 +748,27 @@
     (prn repl-state)
     (pprint repl-actions)
     ))
+
+(deftest test-alias-constants
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/set-build-options
+              {:optimizations :advanced
+               :pretty-print true
+               :public-dir (io/file "cljs-data/dummy/out")
+               :public-path "out"})
+            ;; (cljs/enable-emit-constants)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/dummy/src")
+            (cljs/configure-module :cljs '[cljs.core] #{})
+            (cljs/configure-module :basic ['basic] #{:cljs})
+            (cljs/configure-module :other ['other] #{:cljs})
+            (cljs/compile-modules)
+            (cljs/closure-optimize)
+            (cljs/flush-modules-to-disk)
+            ;; (cljs/flush-unoptimized)
+            )]
+
+    (println (-> state :optimized (nth 2) :output))
+    (prn [:done])
+    ))

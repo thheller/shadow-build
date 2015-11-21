@@ -1,12 +1,13 @@
 (ns shadow.cljs.build
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader]
            [java.net URL]
-           [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph]
+           [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph CustomPassExecutionTime]
            (clojure.lang ExceptionInfo ILookup)
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level)
-           [java.util.concurrent Executors Future])
+           [java.util.concurrent Executors Future]
+           (com.google.javascript.jscomp ReplaceCLJSConstants))
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -1473,14 +1474,16 @@ normalize-resource-name
               (when (seq prepend-js)
                 (.add js-mod (SourceFile/fromCode (str "mod_" name "_prepend.js") prepend-js)))
 
-              (doseq [{:keys [name js-name output] :as src} (map #(get-in state [:sources %]) sources)]
+              (doseq [{:keys [name type js-name output] :as src} (map #(get-in state [:sources %]) sources)]
                 ;; throws hard to track NPE otherwise
                 (when-not (and js-name output (seq output))
                   (throw (ex-info "missing output for source" {:js-name js-name :name (:name src)})))
 
                 (if (:foreign src)
                   (.add js-mod (SourceFile/fromCode js-name (make-foreign-js-source src)))
-                  (.add js-mod (SourceFile/fromCode js-name output))))
+                  (let [input-name (if (= :cljs type) (str "CLJS/" js-name) js-name)]
+                    (.add js-mod (SourceFile/fromCode input-name output))
+                    )))
 
               (when (seq append-js)
                 (.add js-mod (SourceFile/fromCode (str "mod_" name "_append.js") append-js)))
@@ -1599,7 +1602,8 @@ normalize-resource-name
     (let [modules (make-closure-modules state build-modules)
           ;; can't use the shared one, that only allows one compile
           cc (make-closure-compiler)
-          co (closure/make-options state)
+          co (doto (closure/make-options state)
+               (.addCustomPass CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
 
           source-map? (boolean (:source-map state))
 
