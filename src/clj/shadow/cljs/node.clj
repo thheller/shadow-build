@@ -70,14 +70,14 @@
             target (io/file public-dir js-name)
 
             out (->> provided-ns
-                  (map (fn [ns]
-                         (str "goog.require('" (comp/munge ns) "');")))
-                  (str/join "\n"))
+                     (map (fn [ns]
+                            (str "goog.require('" (comp/munge ns) "');")))
+                     (str/join "\n"))
             out (str prepend prepend-js out append-js)
 
             out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                  "\n\n"
-                  out)
+                     "\n\n"
+                     out)
             goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
             deps-js (io/file public-dir cljs-runtime-path "deps.js")]
         (spit goog-js
@@ -164,30 +164,50 @@
   state)
 
 (defn setup-test-runner [state test-namespaces]
-  (let [test-runner-src {:name "test_runner.cljs"
-                         :js-name "test_runner.js"
-                         :type :cljs
-                         :provides #{'test-runner}
-                         :requires (into #{'cljs.core 'cljs.test} test-namespaces)
-                         :ns 'test-runner
-                         :input (atom [`(~'ns ~'test-runner
-                                          (:require [cljs.test]
-                                            ~@(mapv vector test-namespaces)))
-                                       `(cljs.test/run-tests (cljs.test/empty-env)
-                                          ~@(for [it test-namespaces]
-                                              `(quote ~it)))])
-                         :last-modified (System/currentTimeMillis)}]
+  (let [test-runner-src
+        {:name "test_runner.cljs"
+         :js-name "test_runner.js"
+         :type :cljs
+         :provides #{'test-runner}
+         :requires (into #{'cljs.core 'cljs.test} test-namespaces)
+         :ns 'test-runner
+         :input (atom [`(~'ns ~'test-runner
+                          (:require [cljs.test]
+                            ~@(mapv vector test-namespaces)))
+
+                       `(defmethod cljs.test/report [:cljs.test/default :end-run-tests] [m#]
+                          (if (cljs.test/successful? m#)
+                            (js/process.exit 0)
+                            (js/process.exit 1)
+                            ))
+
+                       `(cljs.test/run-tests
+                          (cljs.test/empty-env)
+                          ~@(for [it test-namespaces]
+                              `(quote ~it)))])
+         :last-modified (System/currentTimeMillis)}]
 
     (-> state
         (cljs/merge-resource test-runner-src)
         (cljs/reset-modules)
         (cljs/configure-module :test-runner ['test-runner] #{}))))
 
-(defn make-test-runner [state test-namespaces]
-  (-> state
-      (setup-test-runner test-namespaces)
-      (cljs/compile-modules)
-      (flush)))
+(defn find-all-test-namespaces [state]
+  (->> (get-in state [:sources])
+       (vals)
+       (remove :jar)
+       (filter cljs/has-tests?)
+       (map :ns)
+       (into [])))
+
+(defn make-test-runner
+  ([state]
+   (make-test-runner state (find-all-test-namespaces state)))
+  ([state test-namespaces]
+   (-> state
+       (setup-test-runner test-namespaces)
+       (cljs/compile-modules)
+       (flush))))
 
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]
@@ -208,16 +228,10 @@
           state))))
 
 (defn execute-all-tests! [state]
-  (let [test-namespaces (->> (get-in state [:sources])
-                             (vals)
-                             (remove :jar)
-                             (filter cljs/has-tests?)
-                             (map :ns)
-                             (into []))]
-    (-> state
-        (make-test-runner test-namespaces)
-        (execute! "node" :script))
+  (-> state
+      (make-test-runner)
+      (execute! "node" :script))
 
-    ;; return unmodified state!
-    state
-    ))
+  ;; return unmodified state!
+  state
+  )
