@@ -71,8 +71,7 @@ function nodeGlobalRequire(file) {
  * @return {boolean} True if the script was imported, false otherwise.
  */
 global.CLOSURE_IMPORT_SCRIPT = function(src) {
-  // ALWAYS USE GLOBAL REQUIRE, the other way is just painful
-  nodeGlobalRequire(path.resolve(__dirname, 'cljs-runtime') + '/' + src);
+  require(path.resolve(__dirname, 'cljs-runtime') + '/' + src);
   return true;
 };
 

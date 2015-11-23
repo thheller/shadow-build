@@ -5,6 +5,7 @@
             [shadow.cljs.repl :as repl]
             [shadow.cljs.node :as node]
             [shadow.cljs.util :as util]
+            [shadow.cljs.umd :as umd]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
@@ -771,4 +772,18 @@
 
     (println (-> state :optimized (nth 2) :output))
     (prn [:done])
+    ))
+
+
+(deftest test-umd-generator
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/dummy/src")
+            (umd/create-module
+              {:test 'basic/hello})
+            (cljs/compile-modules)
+            (cljs/closure-optimize :advanced)
+            (umd/flush-module "target/umd/dummy.js"))]
+    :done
     ))

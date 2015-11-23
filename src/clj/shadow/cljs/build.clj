@@ -1592,53 +1592,57 @@ normalize-resource-name
 
    will return the state with :optimized a list of module which now have a js-source and optionally source maps
    nothing is written to disk, use flush-optimized to write"
-  [{:keys [logger build-modules] :as state}]
-  (when-not (seq build-modules)
-    (throw (ex-info "optimize before compile?" {})))
+  ([state optimizations]
+    (-> state
+        (assoc :optimizations optimizations)
+        (closure-optimize)))
+  ([{:keys [logger build-modules] :as state}]
+   (when-not (seq build-modules)
+     (throw (ex-info "optimize before compile?" {})))
 
-  (with-logged-time
-    [logger "Closure optimize"]
+   (with-logged-time
+     [logger "Closure optimize"]
 
-    (let [modules (make-closure-modules state build-modules)
-          ;; can't use the shared one, that only allows one compile
-          cc (make-closure-compiler)
-          co (doto (closure/make-options state)
-               (.addCustomPass CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
+     (let [modules (make-closure-modules state build-modules)
+           ;; can't use the shared one, that only allows one compile
+           cc (make-closure-compiler)
+           co (doto (closure/make-options state)
+                (.addCustomPass CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
 
-          source-map? (boolean (:source-map state))
+           source-map? (boolean (:source-map state))
 
-          externs (load-externs state)
+           externs (load-externs state)
 
-          result (.compileModules cc externs (map :js-module modules) co)]
+           result (.compileModules cc externs (map :js-module modules) co)]
 
-      (let [errors (.errors result)
-            warnings (.warnings result)]
-        (doseq [next (seq errors)]
-          (log-warning logger (format "CLOSURE-ERROR: %s" (.toString next))))
-        (doseq [next (seq warnings)]
-          (log-warning logger (format "CLOSURE-WARNING: %s" (.toString next)))))
+       (let [errors (.errors result)
+             warnings (.warnings result)]
+         (doseq [next (seq errors)]
+           (log-warning logger (format "CLOSURE-ERROR: %s" (.toString next))))
+         (doseq [next (seq warnings)]
+           (log-warning logger (format "CLOSURE-WARNING: %s" (.toString next)))))
 
-      (assoc state
-        :optimized (when (.success result)
-                     (let [source-map (when source-map?
-                                        (.getSourceMap cc))]
+       (assoc state
+         :optimized (when (.success result)
+                      (let [source-map (when source-map?
+                                         (.getSourceMap cc))]
 
-                       (vec (for [{:keys [js-name js-module sources] :as m} modules
-                                  ;; reset has to be called before .toSource
-                                  :let [_ (when source-map?
-                                            (.reset source-map))
-                                        output (.toSource cc js-module)]]
-                              (-> m
-                                  (dissoc :js-module)
-                                  (merge {:output output}
-                                    (when source-map?
-                                      (let [sw (StringWriter.)
-                                            sources (map #(get-in state [:sources %]) sources)
-                                            source-map-name (str js-name ".map")]
-                                        (.appendTo source-map sw source-map-name)
-                                        {:source-map-json (cljs-source-map-for-module (.toString sw) sources state)
-                                         :source-map-name source-map-name})
-                                      )))))))))))
+                        (vec (for [{:keys [js-name js-module sources] :as m} modules
+                                   ;; reset has to be called before .toSource
+                                   :let [_ (when source-map?
+                                             (.reset source-map))
+                                         output (.toSource cc js-module)]]
+                               (-> m
+                                   (dissoc :js-module)
+                                   (merge {:output output}
+                                     (when source-map?
+                                       (let [sw (StringWriter.)
+                                             sources (map #(get-in state [:sources %]) sources)
+                                             source-map-name (str js-name ".map")]
+                                         (.appendTo source-map sw source-map-name)
+                                         {:source-map-json (cljs-source-map-for-module (.toString sw) sources state)
+                                          :source-map-name source-map-name})
+                                       ))))))))))))
 
 
 (defn- ns-list-string [coll]

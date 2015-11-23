@@ -93,7 +93,7 @@ public class ReplaceCLJSConstants implements CompilerPass, NodeTraversal.Callbac
                             && nameNode.isString() // name is never null
                             && fqnNode.isString() // fqn is never null
                             && hashNode.isNumber()) { // hash is precomputed
-                       
+
                         String fqn = fqnNode.getString();
                         String constantName = "cljs$cst$" + typeName.substring(typeName.lastIndexOf(".") + 1).toLowerCase() + "$" + munge(fqn);
 

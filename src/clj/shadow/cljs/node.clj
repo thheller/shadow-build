@@ -132,7 +132,7 @@
     (flush-unoptimized state)
     (flush-optimized state)))
 
-(defn execute! [{:keys [logger public-dir] :as state} program & args]
+(defn execute! [{:keys [logger public-path] :as state} program & args]
   (when (not= 1 (-> state :build-modules count))
     (throw (ex-info "can only execute non modular builds" {})))
 
@@ -143,12 +143,12 @@
                                   (string? arg)
                                   arg
                                   (= :script arg)
-                                  script-name
+                                  (str public-path "/" script-name)
                                   :else
                                   (throw (ex-info "invalid execute args" {:args args})))))
                          (into [program]))
         pb (doto (ProcessBuilder. script-args)
-             (.directory public-dir)
+             ;; (.directory public-dir)
              (.inheritIO))]
 
     ;; not using this because we only get output once it is done
