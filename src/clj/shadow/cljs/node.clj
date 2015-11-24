@@ -157,11 +157,10 @@
 
     (cljs/with-logged-time
       [logger (format "Execute: %s" (pr-str script-args))]
-      (let [proc (.start pb)]
-        ;; FIXME: what if this doesn't terminate?
-        (.waitFor proc))))
-
-  state)
+      (let [proc (.start pb)
+            ;; FIXME: what if this doesn't terminate?
+            exit-code (.waitFor proc)]
+        (assoc state ::exit-code exit-code)))))
 
 (defn setup-test-runner [state test-namespaces]
   (let [test-runner-src
@@ -235,3 +234,10 @@
   ;; return unmodified state!
   state
   )
+
+(defn execute-all-tests-and-exit! [state]
+  (let [state (-> state
+                  (make-test-runner)
+                  (execute! "node" :script))]
+    (System/exit (::exit-code state))))
+
