@@ -181,15 +181,13 @@
         :provides (list->ns-set (.getProvides deps))))))
 
 (defn requires-from-ns-ast
-  [{:keys [emit-constants] :as state} {:keys [name requires uses]}]
+  [state {:keys [name requires uses]}]
   {:pre [(compiler-state? state)]}
   (let [req (set (vals (merge uses requires)))]
     (if (= 'cljs.core name)
       req
-      (if emit-constants
-        (conj req 'cljs.core 'constants-table 'runtime-setup)
-        (conj req 'cljs.core 'runtime-setup)
-        ))))
+      (conj req 'cljs.core 'runtime-setup)
+      )))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
   {:pre [(compiler-state? state)]}
@@ -665,31 +663,32 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [state {:keys [name input cljc] :as rc}]
+  [{:keys [static-fns] :as state} {:keys [name input cljc] :as rc}]
 
-  (let [source @input]
-    (with-logged-time
-      [(:logger state) (format "Compile CLJS: \"%s\"" name)]
-      (let [{:keys [js ns requires source-map warnings]}
-            (cond
-              (string? source)
-              (compile-cljs-string state source name cljc)
-              (vector? source)
-              (compile-cljs-seq state source name)
-              :else
-              (throw (ex-info "invalid cljs source type" {:name name :source source})))]
+  (binding [ana/*cljs-static-fns* static-fns]
+    (let [source @input]
+      (with-logged-time
+        [(:logger state) (format "Compile CLJS: \"%s\"" name)]
+        (let [{:keys [js ns requires source-map warnings]}
+              (cond
+                (string? source)
+                (compile-cljs-string state source name cljc)
+                (vector? source)
+                (compile-cljs-seq state source name)
+                :else
+                (throw (ex-info "invalid cljs source type" {:name name :source source})))]
 
-        (when-not ns
-          (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+          (when-not ns
+            (throw (ex-info "cljs file did not provide a namespace" {:file name})))
 
-        (assoc rc
-          :output js
-          :requires requires
-          :compiled-at (System/currentTimeMillis)
-          :provides #{ns}
-          :compiled true
-          :warnings warnings
-          :source-map source-map)))))
+          (assoc rc
+            :output js
+            :requires requires
+            :compiled-at (System/currentTimeMillis)
+            :provides #{ns}
+            :compiled true
+            :warnings warnings
+            :source-map source-map))))))
 
 
 ;; FIXME: must manually bump if anything cache related changes
@@ -699,7 +698,6 @@ normalize-resource-name
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
-
 
 (defn get-max-last-modified-for-source [state source-name]
   (let [{:keys [last-modified macros] :as rc} (get-in state [:sources source-name])]
@@ -728,6 +726,9 @@ normalize-resource-name
     {}
     (get-deps-for-ns state ns)))
 
+
+(def cache-affecting-options [:static-fns :elide-asserts])
+
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
@@ -751,7 +752,8 @@ normalize-resource-name
         ;; which is larger than v2 release date thereby using cache if only checking one timestamp
 
         (when (and (= (:source-path cache-data) (:source-path rc))
-                   (= age-of-deps (:age-of-deps cache-data)))
+                   (= age-of-deps (:age-of-deps cache-data))
+                   (every? #(= (get state %) (get cache-data %)) cache-affecting-options))
           (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
           ;; restore analysis data
@@ -776,6 +778,11 @@ normalize-resource-name
                          (dissoc :file :output :input :url)
                          (assoc :age-of-deps (make-age-map state ns)
                                 :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+          cache-data (reduce
+                       (fn [cache-data option-key]
+                         (assoc cache-data option-key (get state option-key)))
+                       cache-data
+                       cache-affecting-options)
           cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
       (io/make-parents cache-file)
@@ -791,8 +798,6 @@ normalize-resource-name
    make sure you are in with-compiler-env"
   [{:keys [cache-dir cache-level] :as state} {:keys [from-jar file] :as src}]
   (let [cache? (and cache-dir
-                    ;; i don't trust the register-constant! stuff for now
-                    (not (:emit-constants state))
                     ;; even with :all only cache resources that are in jars or have a file
                     ;; cljs.user (from repl) or runtime-setup should never be cached
                     (or (and (= cache-level :all)
@@ -1120,17 +1125,6 @@ normalize-resource-name
         (spit target output)))
     state))
 
-(defn generate-constants-table [state]
-  (if (not (:emit-constants state))
-    state
-    (let [constants (with-out-str
-                      (comp/emit-constants-table
-                        (::ana/constant-table (:compiler-env state))))]
-      (update-in state [:sources "constants_table.js"] merge {:output constants
-                                                              :compiled-at (System/currentTimeMillis)})
-      )))
-
-
 ;; module related stuff
 
 (defn module-graph [modules]
@@ -1415,12 +1409,18 @@ normalize-resource-name
                                  tasks)))
             (assoc :compiled @compiled))))))
 
+
+(defn prepare-compile [state]
+  (let [runtime-setup (make-runtime-setup state)]
+    (-> (finalize-config state)
+        (merge-resource runtime-setup)
+        )))
+
 (defn compile-modules
   [{:keys [n-compile-threads] :as state}]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
-    (let [state (finalize-config state)
-          state (merge-resource state (make-runtime-setup state))
+    (let [state (prepare-compile state)
           state (reduce do-analyze-module state (-> state :modules (vals)))
           modules (sort-and-compact-modules state)
           source-names (mapcat :sources modules)
@@ -1430,9 +1430,15 @@ normalize-resource-name
 
       (-> state
           (assoc :build-modules modules)
-          (generate-constants-table)
           (do-print-warnings)
           ))))
+
+(defn compile-all-for-ns [state ns]
+  (let [deps (get-deps-for-ns state ns)]
+    (-> state
+        (prepare-compile)
+        (compile-sources deps))
+    ))
 
 (def step-compile-modules compile-modules)
 
@@ -1593,9 +1599,9 @@ normalize-resource-name
    will return the state with :optimized a list of module which now have a js-source and optionally source maps
    nothing is written to disk, use flush-optimized to write"
   ([state optimizations]
-    (-> state
-        (assoc :optimizations optimizations)
-        (closure-optimize)))
+   (-> state
+       (assoc :optimizations optimizations)
+       (closure-optimize)))
   ([{:keys [logger build-modules] :as state}]
    (when-not (seq build-modules)
      (throw (ex-info "optimize before compile?" {})))
@@ -2082,27 +2088,9 @@ normalize-resource-name
        (reload-modified-files! state)))
 
 ;; configuration stuff
-(defn enable-emit-constants [state]
-  (-> state
-      ;; I can't figure out which setting is actually needed
-      ;; seems to mostly be [:options :emit-constants]
-      (assoc :emit-constants true
-             :optimize-constants true)
-      (assoc-in [:compiler-env :opts :emit-constants] true)
-      (assoc-in [:compiler-env :opts :optimize-constants] true)
-      (assoc-in [:compiler-env :options :emit-constants] true)
-      (assoc-in [:compiler-env :options :optimize-constants] true)
-      (merge-resource
-        {:type :js
-         :generated true
-         :js-name "constants_table.js"
-         :name "constants_table.js"
-         :provides #{'constants-table}
-         :requires #{}
-         :input (atom "")
-         ;; FIXME: this forces a recompile always
-         ;; intended to break cache since using emit-constants require a complete recompile
-         :last-modified (System/currentTimeMillis)})))
+(defn ^{:deprecated "moved to a closure pass, always done on closure optimize"}
+  enable-emit-constants [state]
+  state)
 
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
@@ -2111,13 +2099,6 @@ normalize-resource-name
   (merge state opts))
 
 (defn init-state []
-  ;; I do not understand why this is not the default?
-  (alter-var-root #'ana/*cljs-static-fns* (fn [_] true))
-
-  ;; load cljs.core macros, we are probably going to use them
-  ;; FIXME: can no longer do this here, intern-macros requires compiler env
-  ;; (ana/load-core)
-
   {:compiler-env {} ;; will become env/*compiler*
 
    :ignore-patterns #{#"^node_modules/"
@@ -2132,6 +2113,8 @@ normalize-resource-name
    :macros-loaded #{}
    :use-file-min true
 
+   :static-fns true
+   :elide-asserts false
 
    ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
    ;; this used to be just "src" but that is too generic and easily breaks something

@@ -787,3 +787,41 @@
             (umd/flush-module "target/umd/dummy.js"))]
     :done
     ))
+
+(deftest test-elide-asserts
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/dummy/src")
+            (cljs/prepare-compile)
+            (cljs/set-build-options
+              {:public-path "target/assert-out"
+               :public-dir (io/file "target/assert-out")
+               :pretty-print true
+               :pseudo-names true
+               :closure-defines {"cljs.core._STAR_assert_STAR_" false}})
+            (cljs/configure-module :cljs '[cljs.core] #{})
+            (cljs/configure-module :test '[with-asserts] #{:cljs})
+            (cljs/compile-modules)
+            (cljs/closure-optimize :advanced)
+            (cljs/flush-modules-to-disk))]
+    (println (-> state :optimized second :output))
+
+    ))
+
+
+(deftest trying-to-break-static-fns
+  (let [{:keys [repl-state] :as state}
+        (-> (basic-repl-setup)
+            (repl/process-input "(def x (fn [a b] (+ a b)))")
+            (repl/process-input "(def y (fn [] (x 1 2)))")
+            (repl/process-input "(def x (reify IFn (-invoke [_ a b] (- a b))))")
+            ;; (repl/process-input "(binding [x (fn [& args] (apply - args))] (y))")
+            (repl/process-input "(y)")
+            )]
+    (->> repl-state
+         :repl-actions
+         (map :js)
+         (map println)
+         (doall)
+         )))
