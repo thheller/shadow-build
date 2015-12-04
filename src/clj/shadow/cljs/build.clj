@@ -1891,18 +1891,20 @@ normalize-resource-name
   (assoc rc :input (delay (slurp url))))
 
 (defn reset-resource-by-name [state name]
-  (let [{:keys [^File file] :as rc} (get-in state [:sources name])
-        new-rc
-        (-> rc
-            (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
-            (reload-source)
-            (as-> src'
-              (inspect-resource state src'))
-            (cond-> file
-              (assoc :last-modified (.lastModified file))))]
-    (-> state
-        (unmerge-resource name)
-        (merge-resource new-rc))
+  (let [{:keys [^File file] :as rc} (get-in state [:sources name])]
+    ;; only resource that have a file associated with them can be reloaded (?)
+    (if (nil? file)
+      state
+      (let [new-rc (-> rc
+                       (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
+                       (reload-source)
+                       (as-> src'
+                         (inspect-resource state src'))
+                       (cond-> file
+                         (assoc :last-modified (.lastModified file))))]
+        (-> state
+            (unmerge-resource name)
+            (merge-resource new-rc))))
     ))
 
 (defn find-dependent-names
@@ -2089,7 +2091,7 @@ normalize-resource-name
 
 ;; configuration stuff
 (defn ^{:deprecated "moved to a closure pass, always done on closure optimize"}
-  enable-emit-constants [state]
+enable-emit-constants [state]
   state)
 
 (defn enable-source-maps [state]
@@ -2097,6 +2099,9 @@ normalize-resource-name
 
 (defn set-build-options [state opts]
   (merge state opts))
+
+(defn get-closure-compiler [state]
+  (::cc state))
 
 (defn init-state []
   {:compiler-env {} ;; will become env/*compiler*

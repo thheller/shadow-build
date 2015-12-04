@@ -7,7 +7,6 @@ import com.google.javascript.rhino.Node;
 import java.util.HashMap;
 import java.util.Map;
 
-import static clojure.lang.Compiler.munge;
 
 /**
  * Created by zilence on 21/11/15.
@@ -62,6 +61,12 @@ public class ReplaceCLJSConstants implements CompilerPass, NodeTraversal.Callbac
         }
 
         compiler.reportCodeChange();
+    }
+
+
+    public String munge(String sym) {
+        // needs to replace dots as well
+        return clojure.lang.Compiler.munge(sym).replaceAll("\\.", "_DOT_");
     }
 
     @Override
