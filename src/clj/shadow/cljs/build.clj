@@ -461,18 +461,31 @@ normalize-resource-name
                 :resources rcs})))
     (first rcs)))
 
-(defn- get-deps-for-src* [state name]
+(defn- get-deps-for-src* [{:keys [deps-stack] :as state} name]
   {:pre [(compiler-state? state)]}
   (when-not (string? name)
     (throw (ex-info (format "trying to get deps for \"%s\"" (pr-str name)) {})))
 
-  (if (contains? (:deps-visited state) name)
+  (cond
+    ;; don't run in circles
+    (some #(= name %) deps-stack)
+    (let [path (->> (conj deps-stack name)
+                    (drop-while #(not= name %))
+                    (str/join " -> "))]
+      (throw (ex-info (format "circular dependency: %s" path) {:name name :stack deps-stack})))
+
+    ;; don't revisit
+    (contains? (:deps-visited state) name)
     state
+
+    :else
     (let [requires (get-in state [:sources name :requires])]
       (when-not requires
         (throw (ex-info (format "cannot find required deps for \"%s\"" name) {:name name})))
 
-      (let [state (conj-in state [:deps-visited] name)
+      (let [state (-> state
+                      (conj-in [:deps-visited] name)
+                      (conj-in [:deps-stack] name))
             state (->> requires
                        (map (fn [require-sym]
                               (let [src-name (get-in state [:provide->source require-sym])]
@@ -485,7 +498,8 @@ normalize-resource-name
                                 src-name
                                 )))
                        (into #{})
-                       (reduce get-deps-for-src* state))]
+                       (reduce get-deps-for-src* state))
+            state (update state :deps-stack (fn [stack] (into [] (butlast stack))))]
         (conj-in state [:deps-ordered] name)
         ))))
 
@@ -496,7 +510,8 @@ normalize-resource-name
   {:pre [(compiler-state? state)
          (string? src-name)]}
   (-> state
-      (assoc :deps-ordered []
+      (assoc :deps-stack []
+             :deps-ordered []
              :deps-visited #{})
       (get-deps-for-src* src-name)
       :deps-ordered))
