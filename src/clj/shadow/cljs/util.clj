@@ -98,9 +98,8 @@
                   (throw (ex-info (str "Only :only (names) options supported in " key) {:form form :part part})))
 
                 (let [ns-info (if (= :uses key)
-                                (assoc-in ns-info [key use-ns] use-ns)
-                                ns-info)
-                      ns-info (assoc-in ns-info [:require-macros use-ns] use-ns)
+                                (assoc-in ns-info [:requires use-ns] use-ns)
+                                (assoc-in ns-info [:require-macros use-ns] use-ns))
                       ns-info (reduce
                                 (fn [ns-info use]
                                   (assoc-in ns-info [key use] use-ns))
@@ -219,7 +218,7 @@
                     (if (.isMacro ^clojure.lang.Var the-var)
                       (conj m var-name)
                       m))
-                  #{})))
+         #{})))
 
 (defn load-macros
   [{:keys [name require-macros use-macros] :as ast}]
@@ -277,4 +276,4 @@
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
       (throw
         (ana/error env
-                   (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))))
+          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))))

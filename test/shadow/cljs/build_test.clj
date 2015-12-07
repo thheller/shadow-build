@@ -261,6 +261,24 @@
               )]
     (println (get-in s [:sources "cljs/repl.cljc" :output]))))
 
+(deftest test-ns-with-use
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :pretty-print true
+                     :work-dir (io/file "target/test-cljs-work")
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/configure-module :test ['with-use] #{})
+              (cljs/finalize-config)
+              (cljs/compile-modules)
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
+    (println (get-in s [:sources "with_use.cljs" :output]))))
+
 (deftest test-flush-compact
   (let [state
         (-> (cljs/init-state)
@@ -465,6 +483,7 @@
                           [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns)]
                           [another.ns :as x :include-macros true]
                           :reload-all)
+                (:use [something.fancy :only [everything]])
                 (:import [goog.ui SomeElement OtherElement]
                          a.fully-qualified.Name))
 
