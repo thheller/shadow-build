@@ -4,7 +4,8 @@
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
-            [cljs.compiler :as comp])
+            [cljs.compiler :as comp]
+            [clojure.data.json :as json])
   (:import (java.io File)))
 
 ;; FIXME: this is very very ugly, probably breaks easily
@@ -51,6 +52,30 @@
     #"goog.global(\s?)=(\s?)this;"
     ;; node "this" is the local module, global is the actual global
     "goog.global=global;"))
+
+(defn closure-defines-and-base
+  "basically the same as cljs/closure-defines-and-base except that is sets the defines in global as well
+   also assumes that the file containing this code is the root we can use to lookup paths"
+  [state]
+  (let [goog-rc (get-in state [:sources cljs/goog-base-name])
+        goog-base @(:input goog-rc)]
+
+    (when-not (seq goog-base)
+      (throw (ex-info "no goog/base.js" {})))
+
+    ;; FIXME: work arround for older cljs versions that used broked closure release, remove.
+    (when (< (count goog-base) 500)
+      (throw (ex-info "probably not the goog/base.js you were expecting"
+               (get-in state [:sources cljs/goog-base-name]))))
+
+    (str "var CLOSURE_NO_DEPS = global.CLOSURE_NO_DEPS = true;\n"
+         ;; FIXME: this still has hardcoded cljs-runtime-path
+         (slurp (io/resource "shadow/cljs/infer_closure_base_path.js"))
+         "var CLOSURE_DEFINES = global.CLOSURE_DEFINES = "
+         (json/write-str (:closure-defines state {}))
+         ";\n"
+         goog-base
+         "\n")))
 
 (defn flush-unoptimized
   [{:keys [build-modules public-dir cljs-runtime-path] :as state}]

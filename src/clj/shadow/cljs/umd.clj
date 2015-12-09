@@ -3,8 +3,9 @@
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str]
-            [cljs.compiler :as comp])
-  (:import (java.io StringWriter)))
+            [cljs.compiler :as comp]
+            [shadow.cljs.node :as node])
+  (:import (java.io StringWriter File)))
 
 (defn- umd-wrap [text]
   ;; https://github.com/umdjs/umd/blob/master/templates/returnExports.js
@@ -12,15 +13,23 @@
     (str/replace wrapper "//CLJS-HERE" text)
     ))
 
-(defn- umd-output-file [{:keys [umd-options] :as state}]
-  (let [output-file (io/file (:output-to umd-options))]
+(defn- umd-output-file ^File [{:keys [umd-options] :as state}]
+  (let [output-to (:output-to umd-options)
+        _ (when-not (and (string? output-to) (seq output-to))
+            (throw (ex-info "no umd :output-to option set" umd-options)))
+        output-file (io/file output-to)]
+
     (io/make-parents output-file)
     output-file))
+
+(defn- infer-public-dir [{:keys [umd-options] :as state}]
+  (assoc state :public-dir (.getParentFile (umd-output-file state))))
 
 (defn flush-module
   ([state output-to]
    (-> state
        (assoc-in [:umd-options :output-to] output-to)
+       (infer-public-dir)
        (flush-module)))
   ([{modules :optimized :keys [logger unoptimizable] :as state}]
    (when-not (seq modules)
@@ -104,10 +113,15 @@
        "goog.provide = function() {};\n"
        ])))
 
+
 (defn flush-unoptimized-module
   [{:keys [build-modules unoptimizable] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
+
+  (cljs/with-logged-time
+    [(:logger state) "Flushing sources"]
+    (cljs/flush-sources-by-name state (mapcat :sources build-modules)))
 
   (cljs/with-logged-time
     [(:logger state) "Flushing unoptimized UMD module"]
@@ -125,9 +139,15 @@
         (append-to-target prepend)
         (append-to-target prepend-js)
         (append-to-target unoptimizable)
-        (append-to-target "\nvar CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n")
-        (append-to-target (cljs/closure-defines-and-base state))
+        ;; make sure goog is the global.goog so "var goog" isn't something else
+        (append-to-target "\nvar goog = global.goog = {};")
+        (append-to-target "\nvar SHADOW_MODULES = global.SHADOW_MODULES = {};")
+        (append-to-target "\nvar CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n")
+        (append-to-target
+          (node/replace-goog-global
+            (node/closure-defines-and-base state)))
 
+        ;; FIXME: this only really needs to var the top level (eg. cljs, not cljs.core)
         (let [node-compat (generate-node-compat-namespaces state mod)]
           (append-to-target node-compat))
 
@@ -137,17 +157,22 @@
         (doseq [src-name sources
                 :let [{:keys [output name js-name] :as rc} (get-in state [:sources src-name])]]
           (append-to-target (str "// SOURCE=" name "\n"))
+          (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
           (append-to-target (str (str/trim output) "\n")))
 
+        (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
         (append-to-target append-js)
 
         (let [output-file (umd-output-file state)
-              out (umd-wrap (str target))]
-          (spit output-file out)
+              out (umd-wrap "")] ;;   (str target)
+          (spit output-file (str target))
+          ;; not exactly wrapping it but one less scope to worry about for now
+          (spit output-file out :append true)
           ))))
 
   ;; return unmodified state
   state)
+
 
 (defn create-module
   ([state exports]
@@ -178,4 +203,5 @@
      (-> state
          (assoc :umd-options opts)
          (cljs/merge-resource umd-helper)
+         (infer-public-dir)
          (cljs/configure-module :umd '[shadow-umd-helper] #{})))))
