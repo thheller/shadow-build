@@ -220,6 +220,9 @@
                       m))
          #{})))
 
+
+(def ^{:private true} require-lock (Object.))
+
 (defn load-macros
   [{:keys [name require-macros use-macros] :as ast}]
   (if (= 'cljs.core name)
@@ -230,11 +233,12 @@
               (into (vals use-macros)))]
 
       (binding [ana/*cljs-ns* name]
-        (doseq [macro-ns macro-namespaces]
-          (try
-            (require macro-ns)
-            (catch Exception e
-              (throw (ex-info (format "failed to require macro-ns:%s, it was required by:%s" macro-ns name) {:ns-info ast} e))))))
+        (locking require-lock
+          (doseq [macro-ns macro-namespaces]
+            (try
+              (require macro-ns)
+              (catch Exception e
+                (throw (ex-info (format "failed to require macro-ns:%s, it was required by:%s" macro-ns name) {:ns-info ast} e)))))))
 
       (if (contains? macro-namespaces name)
         (let [macros (find-macros-in-ns name)]
