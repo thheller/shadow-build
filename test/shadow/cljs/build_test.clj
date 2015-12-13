@@ -385,6 +385,20 @@
         ))
     ))
 
+(deftest test-require-order
+  (let [{:keys [require-order] :as ns-ast}
+        (util/parse-ns
+          '(ns something
+             (:use [test.c :only [that]])
+             (:import [goog.net XhrIo])
+             (:require [test.b :as b]
+                       [test.a :as a]
+                       [test.d]
+                       test.e)))]
+
+    (pprint ns-ast)
+    (is (= require-order '[test.c goog.net.XhrIo test.b test.a test.d test.e]))
+    ))
 
 
 (deftest test-excute-affected-tests
@@ -478,7 +492,8 @@
                 {:some :meta}
                 (:refer-clojure :exclude (whatever))
                 (:use-macros [macro-use :only (that-one)])
-                (:require-macros [macro-ns :as m :refer (a-macro)])
+                (:require-macros [macro-ns :as m :refer (a-macro)]
+                                 [something :as that-m])
                 (:require only-symbol
                           [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns)]
                           [another.ns :as x :include-macros true]

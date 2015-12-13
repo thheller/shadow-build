@@ -160,48 +160,40 @@
       (str/replace #"_" "-")
       (symbol)))
 
-(defn list->ns-set [list]
-  (->> list
-       (reduce (fn [set s]
-                 (conj! set (munge-goog-ns s)))
-         (transient #{}))
-       (persistent!)))
-
 (defn add-goog-dependencies [state {:keys [name input] :as rc}]
   {:pre [(compiler-state? state)]}
   (if (= "goog/base.js" name)
     (assoc rc
       :requires #{}
+      :require-order []
       :provides #{'goog})
     ;; parse any other js
     (let [deps (-> (JsFileParser. (.getErrorManager (::cc state)))
                    (.parseFile name name @input))]
       (assoc rc
-        :requires (list->ns-set (.getRequires deps))
-        :provides (list->ns-set (.getProvides deps))))))
-
-(defn requires-from-ns-ast
-  [state {:keys [name requires uses]}]
-  {:pre [(compiler-state? state)]}
-  (let [req (set (vals (merge uses requires)))]
-    (if (= 'cljs.core name)
-      req
-      (conj req 'cljs.core 'runtime-setup)
-      )))
+        :requires (into #{} (map munge-goog-ns) (.getRequires deps))
+        :require-order (into [] (map munge-goog-ns) (.getRequires deps))
+        :provides (into #{} (map munge-goog-ns) (.getProvides deps))))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
   {:pre [(compiler-state? state)]}
   (into #{} (concat (vals require-macros) (vals use-macros))))
 
-(defn update-rc-from-ns [state rc ast]
+(defn update-rc-from-ns
+  [state rc {:keys [name require-order] :as ast}]
   {:pre [(compiler-state? state)]}
-  (let [ns-name (:name ast)]
+  (let [require-order
+        (if (= 'cljs.core name)
+          require-order
+          ;; inject implicit deps
+          (into '[cljs.core runtime-setup] require-order))]
     (assoc rc
-      :ns ns-name
+      :ns name
       :ns-info (dissoc ast :env)
-      :provides #{ns-name}
+      :provides #{name}
       :macros (macros-from-ns-ast state ast)
-      :requires (requires-from-ns-ast state ast))))
+      :requires (into #{} require-order)
+      :require-order require-order)))
 
 (defn error-report
   ([state e]
@@ -243,6 +235,7 @@
             (assoc rc
               :ns guessed-ns
               :requires #{'cljs.core}
+              :require-order ['cljs.core]
               :provides #{guessed-ns}
               :type :cljs
               )))))))
@@ -479,8 +472,8 @@ normalize-resource-name
     state
 
     :else
-    (let [requires (get-in state [:sources name :requires])]
-      (when-not requires
+    (let [requires (get-in state [:sources name :require-order])]
+      (when-not (and requires (vector? requires))
         (throw (ex-info (format "cannot find required deps for \"%s\"" name) {:name name})))
 
       (let [state (-> state
@@ -497,7 +490,7 @@ normalize-resource-name
                                        :src name})))
                                 src-name
                                 )))
-                       (into #{})
+                       (into [] (distinct))
                        (reduce get-deps-for-src* state))
             state (update state :deps-stack (fn [stack] (into [] (butlast stack))))]
         (conj-in state [:deps-ordered] name)
@@ -684,7 +677,7 @@ normalize-resource-name
     (let [source @input]
       (with-logged-time
         [(:logger state) (format "Compile CLJS: \"%s\"" name)]
-        (let [{:keys [js ns requires source-map warnings]}
+        (let [{:keys [js ns requires require-order source-map warnings]}
               (cond
                 (string? source)
                 (compile-cljs-string state source name cljc)
@@ -699,6 +692,7 @@ normalize-resource-name
           (assoc rc
             :output js
             :requires requires
+            :require-order require-order
             :compiled-at (System/currentTimeMillis)
             :provides #{ns}
             :compiled true
@@ -708,7 +702,7 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v3")
+(def cache-file-version "v4")
 
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
@@ -848,12 +842,13 @@ normalize-resource-name
     ;; else: not present
     state))
 
-(defn valid-resource? [{:keys [type input name provides requires last-modified] :as src}]
+(defn valid-resource? [{:keys [type input name provides requires require-order last-modified] :as src}]
   (and (contains? #{:js :cljs} type)
        (instance? clojure.lang.IDeref input)
        (string? name)
        (set? provides)
        (set? requires)
+       (vector? require-order)
        (number? last-modified)
        ))
 
@@ -1180,14 +1175,14 @@ normalize-resource-name
 
 (defn make-foreign-js-source
   "only need this because we can't control which goog.require gets emitted"
-  [{:keys [provides requires]}]
+  [{:keys [provides require-order]}]
   (let [sb (StringBuilder.)]
     (doseq [provide provides]
       (doto sb
         (.append "goog.provide(\"")
         (.append (munge-goog-ns provide))
         (.append "\");\n")))
-    (doseq [require requires]
+    (doseq [require require-order]
       (doto sb
         (.append "goog.require(\"")
         (.append (munge-goog-ns require))
@@ -1293,6 +1288,8 @@ normalize-resource-name
                          :js-name name
                          :provides provides
                          :requires requires
+                         ;; FIXME: should allow getting a vector as provides instead
+                         :require-order (into [] requires)
                          :output js-source
                          :input (atom js-source)
                          :externs-source externs-source
@@ -1310,6 +1307,7 @@ normalize-resource-name
      :js-name "runtime_setup.js"
      :provides #{'runtime-setup}
      :requires #{'cljs.core}
+     :require-order ['cljs.core]
      :input (atom src)
      :last-modified 0 ;; this file should never cause recompiles
      }))
@@ -1674,10 +1672,10 @@ normalize-resource-name
 (defn closure-goog-deps [state]
   (->> (:sources state)
        (vals)
-       (map (fn [{:keys [js-name requires provides]}]
+       (map (fn [{:keys [js-name require-order provides]}]
               (str "goog.addDependency(\"" js-name "\","
                    "[" (ns-list-string provides) "],"
-                   "[" (ns-list-string requires) "]);")))
+                   "[" (ns-list-string require-order) "]);")))
        (str/join "\n")))
 
 (defn flush-sources-by-name
@@ -1911,7 +1909,7 @@ normalize-resource-name
     (if (nil? file)
       state
       (let [new-rc (-> rc
-                       (dissoc :ns :ns-info :requires :provides :output :compiled :compiled-at)
+                       (dissoc :ns :ns-info :requires :require-order :provides :output :compiled :compiled-at)
                        (reload-source)
                        (as-> src'
                          (inspect-resource state src'))
@@ -2141,7 +2139,7 @@ enable-emit-constants [state]
    ;; if public-dir is equal to the current working directory
    :cljs-runtime-path "cljs-runtime"
 
-   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v2")]
+   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
                          (io/make-parents dir)
                          dir)
    :cache-dir (io/file "target" "shadow-build" "cljs-cache")

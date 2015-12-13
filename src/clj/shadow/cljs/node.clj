@@ -188,12 +188,14 @@
         (assoc state ::exit-code exit-code)))))
 
 (defn setup-test-runner [state test-namespaces]
-  (let [test-runner-src
+  (let [require-order (into ['cljs.core 'runtime-setup 'cljs.test] test-namespaces)
+        test-runner-src
         {:name "test_runner.cljs"
          :js-name "test_runner.js"
          :type :cljs
          :provides #{'test-runner}
-         :requires (into #{'cljs.core 'cljs.test} test-namespaces)
+         :requires (into #{} require-order)
+         :require-order require-order
          :ns 'test-runner
          :input (atom [`(~'ns ~'test-runner
                           (:require [cljs.test]

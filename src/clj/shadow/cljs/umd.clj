@@ -115,7 +115,7 @@
 
 
 (defn flush-unoptimized-module
-  [{:keys [build-modules unoptimizable] :as state}]
+  [{:keys [umd-exports build-modules unoptimizable] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
 
@@ -128,7 +128,7 @@
 
     ;; flush fake modules
     (let [mod (first build-modules)
-          {:keys [default js-name name prepend prepend-js append-js sources web-worker]} mod]
+          {:keys [default js-name prepend prepend-js append-js sources web-worker]} mod]
 
       (let [target (StringWriter.)
             append-to-target
@@ -160,14 +160,23 @@
           (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
           (append-to-target (str (str/trim output) "\n")))
 
-        (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
+        (append-to-target (str "\n\nSHADOW_MODULES[" (-> mod :name str pr-str) "] = true;\n"))
         (append-to-target append-js)
 
-        (let [output-file (umd-output-file state)
-              out (umd-wrap "")] ;;   (str target)
+        ;; FIXME: this isn't UMD
+        (append-to-target "\nmodule.exports = {")
+
+        (->> umd-exports
+             (map (fn [[export-name fn-name]]
+                    (prn [:export export-name])
+                    (str (name export-name) ": function() { " (comp/munge fn-name) ".apply(null, arguments); }")))
+             (str/join ",\n")
+             (append-to-target))
+
+        (append-to-target "\n};")
+
+        (let [output-file (umd-output-file state)]
           (spit output-file (str target))
-          ;; not exactly wrapping it but one less scope to worry about for now
-          (spit output-file out :append true)
           ))))
 
   ;; return unmodified state
@@ -187,12 +196,15 @@
                       (map symbol)
                       (into #{}))
 
+         requires (set/union #{'cljs.core} entries)
+
          umd-helper
          {:name "shadow_umd_helper.cljs"
           :js-name "shadow_umd_helper.js"
           :type :cljs
           :provides #{'shadow-umd-helper}
-          :requires (set/union #{'cljs.core} entries)
+          :requires requires
+          :require-order (into [] requires)
           :ns 'shadow-umd-helper
           :input (atom [`(~'ns ~'shadow-umd-helper
                            (:require ~@(mapv vector entries)))
@@ -202,6 +214,7 @@
 
      (-> state
          (assoc :umd-options opts)
+         (assoc :umd-exports exports)
          (cljs/merge-resource umd-helper)
          (infer-public-dir)
          (cljs/configure-module :umd '[shadow-umd-helper] #{})))))
