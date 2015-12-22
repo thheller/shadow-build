@@ -264,11 +264,20 @@ normalize-resource-name
     (fn [^String name]
       (str/replace name File/separatorChar \/))))
 
-(defn normalize-foreign-libs [{:keys [foreign-libs externs] :as deps}]
-  (if (seq externs)
-    ;; FIXME: :externs at top level
-    (update-in foreign-libs [0 :externs] #(into (or % []) externs))
-    foreign-libs))
+(defn extract-foreign-libs [{:keys [foreign-libs externs] :as deps} source-path]
+  (let [foreign-libs (cond
+                       (vector? foreign-libs)
+                       foreign-libs
+                       (map? foreign-libs)
+                       [foreign-libs]
+                       (list? foreign-libs)
+                       (into [] foreign-libs)
+                       :else
+                       (throw (ex-info (format "invalid :foreign-libs in deps.cljs of %s" source-path) {:deps deps})))]
+    (if (seq externs)
+      ;; FIXME: :externs at top level
+      (update-in foreign-libs [0 :externs] #(into (or % []) externs))
+      foreign-libs)))
 
 (defn should-ignore-resource?
   [{:keys [ignore-patterns] :as state} name]
@@ -331,7 +340,7 @@ normalize-resource-name
       entries)))
 
 (defn process-deps-cljs
-  [{:keys [use-file-min] :as state} manifest]
+  [{:keys [use-file-min] :as state} manifest source-path]
   {:pre [(compiler-state? state)
          (map? manifest)]}
   (let [deps (get manifest "deps.cljs")]
@@ -339,7 +348,7 @@ normalize-resource-name
       manifest
       (let [foreign-libs (-> @(:input deps)
                              (edn/read-string)
-                             (normalize-foreign-libs))]
+                             (extract-foreign-libs source-path))]
 
         (reduce
           (fn [result {:keys [externs provides requires] :as foreign-lib}]
@@ -396,7 +405,7 @@ normalize-resource-name
                      (io/make-parents mfile)
                      (write-jar-manifest mfile manifest)
                      manifest))]
-    (-> (process-deps-cljs state manifest)
+    (-> (process-deps-cljs state manifest path)
         (vals))))
 
 (defn make-fs-resource [state source-path rc-name ^File rc-file]
@@ -415,23 +424,25 @@ normalize-resource-name
          (seq path)]}
   (let [root (io/file path)
         root-path (.getCanonicalPath root)
-        root-len (inc (count root-path))]
-    (->> (for [^File file (file-seq root)
-               :let [file (.getCanonicalFile file)
-                     abs-path (.getCanonicalPath file)]
-               :when (and (is-cljs-resource? abs-path)
-                          (not (.isHidden file)))
-               :let [name (-> abs-path
-                              (.substring root-len)
-                              (normalize-resource-name))]
-               :when (not (should-ignore-resource? state name))]
+        root-len (inc (count root-path))
 
-           (make-fs-resource state path name file))
-         (map (juxt :name identity))
-         (into {})
-         (process-deps-cljs state)
-         (vals)
-         )))
+        manifest
+        (->> (for [^File file (file-seq root)
+                   :let [file (.getCanonicalFile file)
+                         abs-path (.getCanonicalPath file)]
+                   :when (and (is-cljs-resource? abs-path)
+                              (not (.isHidden file)))
+                   :let [name (-> abs-path
+                                  (.substring root-len)
+                                  (normalize-resource-name))]
+                   :when (not (should-ignore-resource? state name))]
+
+               (make-fs-resource state path name file))
+             (map (juxt :name identity))
+             (into {}))]
+
+    (-> (process-deps-cljs state manifest path)
+        (vals))))
 
 (defn get-resource-for-provide [state ns-sym]
   {:pre [(compiler-state? state)
@@ -874,9 +885,21 @@ normalize-resource-name
            (not (or (= name expected-name)
                     (= name expected-cljc)
                     ))))
-    (do (log-warning logger (format "ns did not match file-path: %s -> \"%s\" (via \"%s\")" (:ns src) name url))
+
+    (do (log-warning logger (format "NS \"%s\" did not match expected file-path, expected A got B%nURL: %s%nA: %s%nB: %s"
+                              (:ns src)
+                              url
+                              (str (ns->cljs-file (:ns src)) " (or .cljc)")
+                              name
+                              ))
         ;; still want to remember the resource so it doesn't get detected as new all the time
-        (assoc-in state [:sources name] src))
+        ;; remove all provides, otherwise it might end up being used despite the invalid name
+        ;; enforce this behavior since the warning might get overlooked easily
+        (let [invalid-src (assoc src
+                            :provides #{}
+                            :requires #{}
+                            :require-order [])]
+          (assoc-in state [:sources name] invalid-src)))
 
     ;; do not merge files that are already present from a different source path
     (let [existing (get-in state [:sources name])]
