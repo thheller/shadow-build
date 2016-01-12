@@ -235,9 +235,23 @@
        (cljs/compile-modules)
        (flush))))
 
+
+(defn to-source-name [state source-name]
+  (cond
+    (string? source-name)
+    source-name
+    (symbol? source-name)
+    (get-in state [:provide->source source-name])
+    :else
+    (throw (ex-info (format "no source for %s" source-name) {:source-name source-name}))
+    ))
+
 (defn execute-affected-tests!
   [{:keys [logger] :as state} source-names]
-  (let [test-namespaces
+  (let [source-names (->> source-names
+                          (map #(to-source-name state %))
+                          (into []))
+        test-namespaces
         (->> (concat source-names (cljs/find-dependents-for-names state source-names))
              (filter #(cljs/has-tests? (get-in state [:sources %])))
              (map #(get-in state [:sources % :ns]))

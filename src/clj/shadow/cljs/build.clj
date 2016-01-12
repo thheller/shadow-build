@@ -7,7 +7,7 @@
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level)
            [java.util.concurrent Executors Future]
-           (com.google.javascript.jscomp ReplaceCLJSConstants))
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions))
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -1629,6 +1629,26 @@ normalize-resource-name
                  (conj externs (SourceFile/fromCode (str "externs/" js-name) externs-source)))
          (closure/load-externs state))))
 
+
+;; added by default in init-state
+(defn closure-add-replace-constants-pass [cc ^CompilerOptions co]
+  (.addCustomPass co CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
+
+(defn add-closure-configurator
+  "adds a closure configurator 2-arity function that will be called before the compiler is invoked
+   signature of the callback is (fn [compiler compiler-options])
+
+   Compiler and CompilerOptions are mutable objects, the return value of the callback is ignored
+
+   CLJS default configuration is done first, all configurators are applied later and may override
+   any options.
+
+   See:
+   com.google.javascript.jscomp.Compiler
+   com.google.javascript.jscomp.CompilerOptions"
+  [state callback]
+  (update state :closure-configurators conj callback))
+
 (defn closure-optimize
   "takes the current defined modules and runs it through the closure optimizer
 
@@ -1638,7 +1658,7 @@ normalize-resource-name
    (-> state
        (assoc :optimizations optimizations)
        (closure-optimize)))
-  ([{:keys [logger build-modules] :as state}]
+  ([{:keys [logger build-modules closure-configurators] :as state}]
    (when-not (seq build-modules)
      (throw (ex-info "optimize before compile?" {})))
 
@@ -1648,8 +1668,11 @@ normalize-resource-name
      (let [modules (make-closure-modules state build-modules)
            ;; can't use the shared one, that only allows one compile
            cc (make-closure-compiler)
-           co (doto (closure/make-options state)
-                (.addCustomPass CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
+           co (closure/make-options state)
+
+           ;; (fn [closure-compiler compiler-options])
+           _ (doseq [cfg closure-configurators]
+               (cfg cc co))
 
            source-map? (boolean (:source-map state))
 
@@ -2140,60 +2163,63 @@ enable-emit-constants [state]
   (::cc state))
 
 (defn init-state []
-  {:compiler-env {} ;; will become env/*compiler*
+  (-> {:compiler-env {} ;; will become env/*compiler*
 
-   :ignore-patterns #{#"^node_modules/"
-                      #"^goog/demos/"
-                      #".aot.js$"
-                      #"_test.js$"}
+       :ignore-patterns #{#"^node_modules/"
+                          #"^goog/demos/"
+                          #".aot.js$"
+                          #"_test.js$"}
 
-   ::is-compiler-state true
-   ::cc (make-closure-compiler)
+       ::is-compiler-state true
+       ::cc (make-closure-compiler)
 
-   :runtime {:print-fn :console}
-   :macros-loaded #{}
-   :use-file-min true
+       :runtime {:print-fn :console}
+       :macros-loaded #{}
+       :use-file-min true
 
-   :static-fns true
-   :elide-asserts false
+       :static-fns true
+       :elide-asserts false
 
-   ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
-   ;; this used to be just "src" but that is too generic and easily breaks something
-   ;; if public-dir is equal to the current working directory
-   :cljs-runtime-path "cljs-runtime"
+       :closure-configurators []
 
-   :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
-                         (io/make-parents dir)
-                         dir)
-   :cache-dir (io/file "target" "shadow-build" "cljs-cache")
-   :cache-level :all
+       ;; :none supprt files are placed into <public-dir>/<cljs-runtime-path>/cljs/core.js
+       ;; this used to be just "src" but that is too generic and easily breaks something
+       ;; if public-dir is equal to the current working directory
+       :cljs-runtime-path "cljs-runtime"
 
-   :public-dir (io/file "public" "js")
-   :public-path "js"
+       :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
+                             (io/make-parents dir)
+                             dir)
+       :cache-dir (io/file "target" "shadow-build" "cljs-cache")
+       :cache-level :all
 
-   :optimizations :none
-   :n-compile-threads (.. Runtime getRuntime availableProcessors)
+       :public-dir (io/file "public" "js")
+       :public-path "js"
 
-   :source-paths {}
-   :closure-defines {"goog.DEBUG" false
-                     "goog.LOCALE" "en"}
+       :optimizations :none
+       :n-compile-threads (.. Runtime getRuntime availableProcessors)
 
-   :logger (let [log-lock (Object.)]
-             (reify BuildLog
-               (log-warning [_ msg]
-                 (locking log-lock
-                   (println (str "WARN: " msg))))
-               (log-time-start [_ msg]
-                 (locking log-lock
-                   (println (format "-> %s" msg))))
-               (log-time-end [_ msg ms]
-                 (locking log-lock
-                   (println (format "<- %s (%dms)" msg ms))))
-               (log-progress [_ msg]
-                 (locking log-lock
-                   (println msg)))))
-   }
-  )
+       :source-paths {}
+       :closure-defines {"goog.DEBUG" false
+                         "goog.LOCALE" "en"}
+
+       :logger (let [log-lock (Object.)]
+                 (reify BuildLog
+                   (log-warning [_ msg]
+                     (locking log-lock
+                       (println (str "WARN: " msg))))
+                   (log-time-start [_ msg]
+                     (locking log-lock
+                       (println (format "-> %s" msg))))
+                   (log-time-end [_ msg ms]
+                     (locking log-lock
+                       (println (format "<- %s (%dms)" msg ms))))
+                   (log-progress [_ msg]
+                     (locking log-lock
+                       (println msg)))))}
+
+      (add-closure-configurator closure-add-replace-constants-pass)
+      ))
 
 (defn watch-and-repeat! [state callback]
   (loop [state (callback state [])]
