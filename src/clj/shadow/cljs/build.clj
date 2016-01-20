@@ -264,8 +264,11 @@ normalize-resource-name
     (fn [^String name]
       (str/replace name File/separatorChar \/))))
 
-(defn extract-foreign-libs [{:keys [foreign-libs externs] :as deps} source-path]
+(defn extract-foreign-libs
+  [{:keys [foreign-libs externs] :as deps} source-path]
   (let [foreign-libs (cond
+                       (nil? foreign-libs)
+                       []
                        (vector? foreign-libs)
                        foreign-libs
                        (map? foreign-libs)
