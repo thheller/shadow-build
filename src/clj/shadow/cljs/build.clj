@@ -7,7 +7,7 @@
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level)
            [java.util.concurrent Executors Future]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions))
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner))
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -379,6 +379,7 @@ normalize-resource-name
                            :foreign true
                            :requires (set (map symbol requires))
                            :provides (set (map symbol provides))
+                           :externs externs
                            :externs-source (->> externs
                                                 (map #(get result %))
                                                 (map :input)
@@ -1622,15 +1623,45 @@ normalize-resource-name
 
   state)
 
-(defn load-externs [{:keys [build-modules] :as state}]
-  (->> build-modules
-       (mapcat :sources)
-       (map #(get-in state [:sources %]))
-       (filter :foreign)
-       (filter :externs-source)
-       (reduce (fn [externs {:keys [js-name externs-source] :as foreign-src}]
-                 (conj externs (SourceFile/fromCode (str "externs/" js-name) externs-source)))
-         (closure/load-externs state))))
+(defn load-externs [{:keys [logger externs build-modules] :as state}]
+  (let [default-externs
+        (CommandLineRunner/getDefaultExterns)
+
+        manual-externs
+        (when (seq externs)
+          (log-progress logger "Using externs from options:")
+          (->> externs
+               (map
+                 (fn [ext]
+                   (if-let [rc (or (io/resource ext)
+                                   (let [file (io/file ext)]
+                                     (when (.exists file)
+                                       file)))]
+                     (do (log-progress logger (format "\t%s" ext))
+                         (SourceFile/fromCode (str "EXTERNS/" ext) (slurp rc)))
+                     (do (log-warning logger (format "EXTERN missing: %s (file or resource not found)" ext))
+                         nil))))
+               (remove nil?)
+               ;; just to force the logging
+               (into [])))
+
+        foreign-externs
+        (->> build-modules
+             (mapcat :sources)
+             (map #(get-in state [:sources %]))
+             (filter :foreign)
+             (filter :externs-source)
+             (map (fn [{:keys [js-name externs externs-source] :as foreign-src}]
+                    (log-progress logger (format "Using externs for: %s" js-name))
+                    (doseq [ext externs]
+                      (log-progress logger (format "\t%s" ext)))
+                    (SourceFile/fromCode (str "EXTERNS/" js-name) externs-source)))
+             ;; just to force the logging
+             (into []))]
+
+    (->> (concat default-externs foreign-externs manual-externs)
+         (into []))
+    ))
 
 
 ;; added by default in init-state
