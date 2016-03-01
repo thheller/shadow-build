@@ -137,7 +137,7 @@
 
 (defn cljs-file->ns [name]
   (-> name
-      (str/replace #"\.cljs$" "")
+      (str/replace #"\.clj(s|c)$" "")
       (str/replace #"_" "-")
       (str/replace #"[/\\]" ".")
       (symbol)))
