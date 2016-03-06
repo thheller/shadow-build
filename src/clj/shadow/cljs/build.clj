@@ -688,7 +688,8 @@ normalize-resource-name
    should not touch global state"
   [{:keys [static-fns] :as state} {:keys [name input cljc] :as rc}]
 
-  (binding [ana/*cljs-static-fns* static-fns]
+  (binding [ana/*cljs-static-fns* static-fns
+            ana/*unchecked-if* false]
     (let [source @input]
       (with-logged-time
         [(:logger state) (format "Compile CLJS: \"%s\"" name)]
