@@ -689,7 +689,9 @@ normalize-resource-name
   [{:keys [static-fns] :as state} {:keys [name input cljc] :as rc}]
 
   (binding [ana/*cljs-static-fns* static-fns
-            ana/*unchecked-if* false]
+            ;; initialize with default value
+            ;; must set binding to it is thread bound, since the analyzer may set! it
+            ana/*unchecked-if* ana/*unchecked-if*]
     (let [source @input]
       (with-logged-time
         [(:logger state) (format "Compile CLJS: \"%s\"" name)]
