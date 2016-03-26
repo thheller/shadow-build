@@ -2233,6 +2233,8 @@ enable-emit-constants [state]
        :public-dir (io/file "public" "js")
        :public-path "js"
 
+       :node-global-prefix "global"
+
        :optimizations :none
        :n-compile-threads (.. Runtime getRuntime availableProcessors)
 

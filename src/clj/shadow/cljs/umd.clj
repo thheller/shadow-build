@@ -115,7 +115,7 @@
 
 
 (defn flush-unoptimized-module
-  [{:keys [umd-exports build-modules unoptimizable] :as state}]
+  [{:keys [umd-exports build-modules unoptimizable node-global-prefix] :as state}]
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
 
@@ -140,12 +140,28 @@
         (append-to-target prepend-js)
         (append-to-target unoptimizable)
         ;; make sure goog is the global.goog so "var goog" isn't something else
-        (append-to-target "\nvar goog = global.goog = {};")
-        (append-to-target "\nvar SHADOW_MODULES = global.SHADOW_MODULES = {};")
-        (append-to-target "\nvar CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n")
+        (when (not= node-global-prefix "global")
+          (append-to-target (str "\n" node-global-prefix " = {};"))
+          ;; properties that closure accesses via goog.global
+          ;; apparently this is not allowed, causes "illegal invocation" when
+          ;; calling global.THING.setTimeout instead of global.setTimeout?
+          #_(doseq [prop ["setTimeout" "clearTimeout" "setInterval" "clearInterval" "console"]]
+              (append-to-target (str "\n" node-global-prefix "." prop "=global." prop ";"))
+              )
+
+          ;; just create delegate functions
+          (append-to-target (str "\n" node-global-prefix ".setTimeout = function(cb, ms) { global.setTimeout(cb, ms); }"))
+          (append-to-target (str "\n" node-global-prefix ".setInterval = function(cb, ms) { global.setInteval(cb, ms); }"))
+          (append-to-target (str "\n" node-global-prefix ".clearTimeout = function(id) { global.clearTimeout(id); }"))
+          (append-to-target (str "\n" node-global-prefix ".clearInterval = function(id) { global.clearInterval(id); }"))
+          )
+        (append-to-target (str "\nvar goog = " node-global-prefix ".goog = {};"))
+        (append-to-target (str "\nvar SHADOW_MODULES = " node-global-prefix ".SHADOW_MODULES = {};"))
+        (append-to-target (str "\nvar CLOSURE_IMPORT_SCRIPT = " node-global-prefix ".CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"))
         (append-to-target
           (node/replace-goog-global
-            (node/closure-defines-and-base state)))
+            (node/closure-defines-and-base state)
+            node-global-prefix))
 
         ;; FIXME: this only really needs to var the top level (eg. cljs, not cljs.core)
         (let [node-compat (generate-node-compat-namespaces state mod)]

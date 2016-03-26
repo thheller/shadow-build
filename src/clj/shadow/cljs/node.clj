@@ -46,17 +46,17 @@
   (cljs/closure-optimize state))
 
 
-(defn replace-goog-global [s]
+(defn replace-goog-global [s node-global-prefix]
   (str/replace s
     ;; browsers have window as this
     #"goog.global(\s?)=(\s?)this;"
     ;; node "this" is the local module, global is the actual global
-    "goog.global=global;"))
+    (str "goog.global=" node-global-prefix ";")))
 
 (defn closure-defines-and-base
   "basically the same as cljs/closure-defines-and-base except that is sets the defines in global as well
    also assumes that the file containing this code is the root we can use to lookup paths"
-  [state]
+  [{:keys [node-global-prefix] :as state}]
   (let [goog-rc (get-in state [:sources cljs/goog-base-name])
         goog-base @(:input goog-rc)]
 
@@ -68,17 +68,21 @@
       (throw (ex-info "probably not the goog/base.js you were expecting"
                (get-in state [:sources cljs/goog-base-name]))))
 
-    (str "var CLOSURE_NO_DEPS = global.CLOSURE_NO_DEPS = true;\n"
+    (str "\nvar CLOSURE_NO_DEPS = " node-global-prefix ".CLOSURE_NO_DEPS = true;\n"
          ;; FIXME: this still has hardcoded cljs-runtime-path
-         (slurp (io/resource "shadow/cljs/infer_closure_base_path.js"))
-         "var CLOSURE_DEFINES = global.CLOSURE_DEFINES = "
+         (-> (io/resource "shadow/cljs/infer_closure_base_path.js")
+             (slurp)
+             (cond->
+               (not= node-global-prefix "global")
+               (str/replace "global." (str node-global-prefix "."))))
+         "\nvar CLOSURE_DEFINES = " node-global-prefix ".CLOSURE_DEFINES = "
          (json/write-str (:closure-defines state {}))
          ";\n"
          goog-base
          "\n")))
 
 (defn flush-unoptimized
-  [{:keys [build-modules public-dir cljs-runtime-path] :as state}]
+  [{:keys [build-modules public-dir cljs-runtime-path node-global-prefix] :as state}]
   {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
@@ -107,7 +111,9 @@
             deps-js (io/file public-dir cljs-runtime-path "deps.js")]
         (spit goog-js
           (replace-goog-global
-            @(get-in state [:sources "goog/base.js" :input])))
+            @(get-in state [:sources "goog/base.js" :input])
+            node-global-prefix
+            ))
         (spit deps-js (cljs/closure-goog-deps state))
         (spit target out))))
   ;; return unmodified state
@@ -115,7 +121,7 @@
 
 
 (defn flush-optimized
-  [{modules :optimized :keys [unoptimizable ^File public-dir public-path logger] :as state}]
+  [{modules :optimized :keys [^File public-dir logger node-global-prefix] :as state}]
   (cljs/with-logged-time
     [(:logger state) "Flushing to disk"]
 
@@ -133,7 +139,7 @@
 
           out (str prepend
                    (cljs/foreign-js-source-for-mod state mod)
-                   (replace-goog-global output)
+                   (replace-goog-global output node-global-prefix)
                    append)]
 
       (io/make-parents target)
