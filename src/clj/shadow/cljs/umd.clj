@@ -179,17 +179,7 @@
         (append-to-target (str "\n\nSHADOW_MODULES[" (-> mod :name str pr-str) "] = true;\n"))
         (append-to-target append-js)
 
-        ;; FIXME: this isn't UMD
-        (append-to-target "\nmodule.exports = {")
-
-        (->> umd-exports
-             (map (fn [[export-name fn-name]]
-                    (prn [:export export-name])
-                    (str (name export-name) ": function() { " (comp/munge fn-name) ".apply(null, arguments); }")))
-             (str/join ",\n")
-             (append-to-target))
-
-        (append-to-target "\n};")
+        (append-to-target "\nmodule.exports = shadow_umd_helper.get_exports();")
 
         (let [output-file (umd-output-file state)]
           (spit output-file (str target))

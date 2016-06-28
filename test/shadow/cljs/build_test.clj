@@ -850,7 +850,7 @@
             (repl/process-input "(def x (fn [a b] (+ a b)))")
             (repl/process-input "(def y (fn [] (x 1 2)))")
             (repl/process-input "(def x (reify IFn (-invoke [_ a b] (- a b))))")
-            ;; (repl/process-input "(binding [x (fn [& args] (apply - args))] (y))")
+            (repl/process-input "(binding [x (fn [& args] (apply - args))] (y))")
             (repl/process-input "(y)")
             )]
     (->> repl-state

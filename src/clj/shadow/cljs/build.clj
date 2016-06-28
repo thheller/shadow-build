@@ -1788,7 +1788,9 @@ normalize-resource-name
 
             (spit js-target output)
 
-            (when source-map
+            ;; source-map on the resource is always generated
+            ;; only output it though if globally activated
+            (when (and source-map (:source-map state))
               (let [source-map-name (str js-name ".map")]
                 (spit (io/file public-dir cljs-runtime-path source-map-name)
                   (sm/encode {name source-map} {:file js-name}))
