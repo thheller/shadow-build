@@ -884,6 +884,11 @@ normalize-resource-name
     (do (log-warning logger (format "ERROR in resource: %s via %s" name url))
         state)
 
+    (and (= :js (:type src))
+         (contains? (:provides src) 'cljs.core))
+    (do (log-warning logger (format "Ignoring bad file, it attempted to provide cljs.core%n%s" url))
+        state)
+
     ;; no not merge files that don't have the expected path for their ns
     ;; not really needed but cljs does this, so we should enforce it as well
     (and (= :cljs (:type src))
@@ -1146,7 +1151,7 @@ normalize-resource-name
                {:name module-name
                 :js-name (str (name module-name) ".js")
                 :mains module-mains
-                :depends-on depends-on
+                :depends-on (into #{} depends-on)
                 :default is-default?})
 
          state (assoc-in state [:modules module-name] mod)
