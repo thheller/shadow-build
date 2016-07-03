@@ -203,12 +203,48 @@
         :require-order (into [] (map munge-goog-ns) (.getRequires deps))
         :provides (into #{} (map munge-goog-ns) (.getProvides deps))))))
 
-(defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
-  {:pre [(compiler-state? state)]}
-  (into #{} (concat (vals require-macros) (vals use-macros))))
+(defn rewrite-clojure-requires
+  [{:keys [requires uses require-order] :as ast}
+   {:keys [ns-alias-fn] :as state}]
+  (let [should-rewrite
+        (->> require-order
+             (filter #(ns-alias-fn state %))
+             (into #{}))]
+
+    (if-not (seq should-rewrite)
+      ast
+      (let [rewrite-ns
+            (fn [ns]
+              (if (contains? should-rewrite ns)
+                (ns-alias-fn state ns)
+                ns))
+
+            rewrite-ns-map
+            (fn [ns-map alias-self?]
+              (reduce-kv
+                (fn [ns-map alias ns]
+                  (if-not (contains? should-rewrite ns)
+                    ns-map
+                    (let [target (ns-alias-fn state ns)]
+                      (-> ns-map
+                          (assoc alias target)
+                          (cond->
+                            alias-self?
+                            (assoc ns target))))))
+                ns-map
+                ns-map))]
+
+        (assoc ast
+          :require-order
+          (into [] (map rewrite-ns) require-order)
+          :requires
+          (rewrite-ns-map requires true)
+          :uses
+          (rewrite-ns-map uses false))
+        ))))
 
 (defn update-rc-from-ns
-  [state rc {:keys [name require-order] :as ast}]
+  [state rc {:keys [name require-order require-macros use-macros] :as ast}]
   {:pre [(compiler-state? state)]}
   (let [require-order
         (if (= 'cljs.core name)
@@ -251,7 +287,8 @@
         (let [peek (reader/read opts in)]
           (if (identical? peek eof-sentinel)
             (throw (ex-info "file is empty" {:name name}))
-            (let [ast (util/parse-ns peek)]
+            (let [ast (-> (util/parse-ns peek)
+                          (rewrite-clojure-requires state))]
               (-> state
                   (update-rc-from-ns rc ast)
                   (assoc :cljc cljc?)))))
@@ -423,7 +460,7 @@ normalize-resource-name
 
 
 (defn find-jar-resources
-  [{:keys [manifest-cache-dir] :as state} path]
+  [{:keys [manifest-cache-dir cache-level] :as state} path]
   {:pre [(compiler-state? state)]}
   ;; FIXME: assuming a jar with the same name and same last modified is always identical, probably not. should md5 the full path?
   (let [manifest-name
@@ -607,6 +644,7 @@ normalize-resource-name
 
 (defn hijacked-parse-ns [env form name opts]
   (-> (util/parse-ns form)
+      (rewrite-clojure-requires opts)
       (assoc :env env :form form :op :ns)))
 
 (def default-parse ana/parse)
@@ -2737,6 +2775,17 @@ enable-emit-constants [state]
 
        :static-fns true
        :elide-asserts false
+
+       :ns-aliases
+       '{clojure.pprint cljs.pprint
+         clojure.spec cljs.spec}
+
+       ;; (fn [compiler-state ns] alias-ns|nil)
+       ;; CLJS by default aliases ALL clojure.* namespaces to cljs.* if the cljs.* version exist
+       ;; I prefer a static map since it may be extended by the user and avoids touching the filesystem
+       :ns-alias-fn
+       (fn [{:keys [ns-aliases] :as state} ns]
+         (get ns-aliases ns))
 
        :closure-configurators []
 

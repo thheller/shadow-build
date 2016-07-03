@@ -930,3 +930,23 @@
 
     (pprint repl-state)
     ))
+
+(deftest test-auto-alias-clojure-to-cljs
+  (let [state
+        (-> (cljs/init-state)
+            (assoc :cache-level :jars)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/auto-alias")
+            (cljs/prepare-compile)
+            (cljs/set-build-options
+              {:public-path "target/auto-alias-out"
+               :public-dir (io/file "target/auto-alias-out")})
+            (cljs/configure-module :test '[test.alias] #{})
+            (cljs/compile-modules))
+
+        output
+        (get-in state [:sources "test/alias.cljs" :output])]
+
+    (is (not (str/includes? output "clojure.pprint")))
+    (println output)
+    ))
