@@ -559,10 +559,8 @@ normalize-resource-name
     ast))
 
 (defn hijacked-parse-ns [env form name opts]
-  (assoc (util/parse-ns form)
-    :env env
-    :form form
-    :op :ns))
+  (-> (util/parse-ns form)
+      (assoc :env env :form form :op :ns)))
 
 (def default-parse ana/parse)
 
@@ -610,20 +608,23 @@ normalize-resource-name
                  {:read-cond :allow :features #{:cljs}}))
         in (readers/indexing-push-back-reader (PushbackReader. (StringReader. cljs-source)) 1 name)]
 
-    (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
-                                            :gen-col 0
-                                            :gen-line 0})]
+    (binding [comp/*source-map-data*
+              (atom {:source-map (sorted-map)
+                     :gen-col 0
+                     :gen-line 0})]
 
       (let [result
             (loop [{:keys [ns ns-info] :as compile-state} (assoc init :js "")]
-              (let [form (binding [*ns* (create-ns ns)
-                                   ana/*cljs-ns* ns
-                                   ana/*cljs-file* name
-                                   reader/*data-readers* tags/*cljs-data-readers*
-                                   reader/*alias-map* (merge reader/*alias-map*
-                                                        (:requires ns-info)
-                                                        (:require-macros ns-info))]
-                           (reader/read opts in))]
+              (let [form
+                    (binding [*ns* (create-ns ns)
+                              ana/*cljs-ns* ns
+                              ana/*cljs-file* name
+                              reader/*data-readers* tags/*cljs-data-readers*
+                              reader/*alias-map*
+                              (merge reader/*alias-map*
+                                (:requires ns-info)
+                                (:require-macros ns-info))]
+                      (reader/read opts in))]
 
                 (if (identical? form eof-sentinel)
                   ;; eof
@@ -1102,14 +1103,20 @@ normalize-resource-name
   [state]
   (-> state
       (discover-macros)
-      (assoc :configured true
-             :unoptimizable (when-let [imul (io/resource "cljs/imul.js")]
-                              (slurp imul))
-             ;; populate index with known sources
-             :provide->source (into {} (for [{:keys [name provides]} (vals (:sources state))
-                                             provide provides]
-                                         [provide name]
-                                         )))))
+      (assoc
+        :configured
+        true
+
+        :unoptimizable
+        (when-let [imul (io/resource "cljs/imul.js")]
+          (slurp imul))
+
+        ;; populate index with known sources
+        :provide->source
+        (into {} (for [{:keys [name provides]} (vals (:sources state))
+                       provide provides]
+                   [provide name]
+                   )))))
 
 (def step-finalize-config finalize-config)
 
@@ -1236,27 +1243,31 @@ normalize-resource-name
   (if (= 1 (count modules))
     (vals modules)
     ;; else: multiple modules must be sorted in dependency order
-    (let [module-graph (module-graph modules)
-          module-order (reverse (la/topsort module-graph))
+    (let [module-graph
+          (module-graph modules)
 
-          js-mods (reduce
-                    (fn [js-mods module-key]
-                      (let [{:keys [js-name name depends-on sources]} (get modules module-key)
-                            js-mod (JSModule. js-name)]
+          module-order
+          (reverse (la/topsort module-graph))
 
-                        (doseq [name sources]
-                          ;; we don't actually need code yet
-                          (.add js-mod (SourceFile. name)))
+          js-mods
+          (reduce
+            (fn [js-mods module-key]
+              (let [{:keys [js-name name depends-on sources]} (get modules module-key)
+                    js-mod (JSModule. js-name)]
 
-                        (doseq [other-mod-name depends-on
-                                :let [other-mod (get js-mods other-mod-name)]]
-                          (when-not other-mod
-                            (throw (ex-info "module depends on undefined module" {:mod name :other other-mod-name})))
-                          (.addDependency js-mod other-mod))
+                (doseq [name sources]
+                  ;; we don't actually need code yet
+                  (.add js-mod (SourceFile. name)))
 
-                        (assoc js-mods module-key js-mod)))
-                    {}
-                    module-order)]
+                (doseq [other-mod-name depends-on
+                        :let [other-mod (get js-mods other-mod-name)]]
+                  (when-not other-mod
+                    (throw (ex-info "module depends on undefined module" {:mod name :other other-mod-name})))
+                  (.addDependency js-mod other-mod))
+
+                (assoc js-mods module-key js-mod)))
+            {}
+            module-order)]
 
       ;; eek mutable code
       ;; this will move duplicate files from each module to the closest common ancestor
@@ -1312,26 +1323,28 @@ normalize-resource-name
          (string? externs-source)
          (seq externs-source)]}
 
-  (merge-resource state {:type :js
-                         :foreign true
-                         :name name
-                         :js-name name
-                         :provides provides
-                         :requires requires
-                         ;; FIXME: should allow getting a vector as provides instead
-                         :require-order (into [] requires)
-                         :output js-source
-                         :input (atom js-source)
-                         :externs-source externs-source
-                         :last-modified 0
-                         }))
+  (merge-resource state
+    {:type :js
+     :foreign true
+     :name name
+     :js-name name
+     :provides provides
+     :requires requires
+     ;; FIXME: should allow getting a vector as provides instead
+     :require-order (into [] requires)
+     :output js-source
+     :input (atom js-source)
+     :externs-source externs-source
+     :last-modified 0
+     }))
 
 (defn make-runtime-setup [{:keys [runtime] :as state}]
-  (let [src (str/join "\n" [(case (:print-fn runtime)
-                              ;; Browser
-                              :console "cljs.core.enable_console_print_BANG_();"
-                              ;; Node.JS
-                              :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
+  (let [src (str/join "\n"
+              [(case (:print-fn runtime)
+                 ;; Browser
+                 :console "cljs.core.enable_console_print_BANG_();"
+                 ;; Node.JS
+                 :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
     {:type :js
      :name "runtime_setup.js"
      :js-name "runtime_setup.js"
@@ -1773,7 +1786,7 @@ normalize-resource-name
                     (zero? last-modified)
                     (> (or (:compiled-at src) ;; js is not compiled but maybe modified
                            last-modified)
-                      (.lastModified target)))]
+                       (.lastModified target)))]
 
     (io/make-parents target)
 
