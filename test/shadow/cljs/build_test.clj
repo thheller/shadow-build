@@ -822,6 +822,28 @@
     :done
     ))
 
+(deftest test-node-global-prefix
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/set-build-options
+              {:cache-level :jars
+               :node-global-prefix "global.FANCY"})
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/dummy/src")
+            (umd/create-module
+              {:test 'basic/hello}
+              {:output-to "target/umd-gen/global.js"})
+            (umd/infer-public-dir)
+            (cljs/compile-modules)
+            (cljs/flush-sources-by-name ["basic.cljs"]))]
+
+    ;; FIXME: verify that flush imported local names
+    ;; FIXME: move the generation of this stuff to compile
+    ;; flush should not do important stuff besides writing things to disk
+    (println (slurp "target/umd-gen/cljs-runtime/basic.js"))
+    :done
+    ))
+
 (deftest test-elide-asserts
   (let [state
         (-> (cljs/init-state)

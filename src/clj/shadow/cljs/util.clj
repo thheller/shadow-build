@@ -3,7 +3,8 @@
             [clojure.set :as set]
             [cljs.analyzer :as ana]
             [cljs.env :as env]
-            [clojure.pprint :refer (pprint)]))
+            [clojure.pprint :refer (pprint)]
+            [cljs.compiler :as comp]))
 
 (def require-option-keys
   #{:as
@@ -324,4 +325,52 @@
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
       (throw
         (ana/error env
-          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))))
+          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))));; I hope no one ever sees this ...
+
+
+(defn- namespace-name->js-obj [^String ns]
+  (let [parts (str/split ns #"\.")]
+    (loop [path nil
+           parts parts
+           result []]
+      (let [part (first parts)]
+        (cond
+          (nil? part)
+          result
+
+          (= "goog" part)
+          (recur part (rest parts) result)
+
+          :else
+          (let [next-path (if path (str path "." part) part)
+                token (str next-path " = goog.getObjectByName('" next-path "');")
+                token (if path
+                        token
+                        (str "var " token))]
+            (recur
+              next-path
+              (rest parts)
+              (conj result token)))))
+      )))
+
+(defn js-for-local-names
+  "pulls namespaces into the local scope, assumes goog is present
+
+   this does not work in node since goog.provide exports to global
+   goog.provide('cljs.core');
+   cljs.core.something = true; // error since cljs does not exist
+
+   so we generate
+   var cljs = goog.getObjectByName('cljs');
+   cljs.core = goog.getObjectByName('cljs.core');
+
+   returns a vector of js statements
+   "
+  [namespaces]
+  (->> namespaces
+       (map comp/munge)
+       (map str)
+       (mapcat namespace-name->js-obj)
+       (distinct)
+       (into [])))
+

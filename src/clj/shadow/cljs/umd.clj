@@ -4,7 +4,8 @@
             [clojure.set :as set]
             [clojure.string :as str]
             [cljs.compiler :as comp]
-            [shadow.cljs.node :as node])
+            [shadow.cljs.node :as node]
+            [shadow.cljs.util :as util])
   (:import (java.io StringWriter File)))
 
 (defn- umd-wrap [text]
@@ -22,7 +23,7 @@
     (io/make-parents output-file)
     output-file))
 
-(defn- infer-public-dir [{:keys [umd-options] :as state}]
+(defn infer-public-dir [{:keys [umd-options] :as state}]
   (assoc state :public-dir (.getParentFile (umd-output-file state))))
 
 (defn flush-module
@@ -49,32 +50,6 @@
            ))))
    state))
 
-;; I hope no one ever sees this ...
-(defn- provide->js-obj [^String provide]
-  (let [parts (str/split provide #"\.")]
-    (loop [path nil
-           parts parts
-           result []]
-      (let [part (first parts)]
-        (cond
-          (nil? part)
-          result
-
-          (= "goog" part)
-          (recur part (rest parts) result)
-
-          :else
-          (let [next-path (if path (str path "." part) part)
-                token (str next-path " = goog.getObjectByName('" next-path "');")
-                token (if path
-                        token
-                        (str "var " token))]
-            (recur
-              next-path
-              (rest parts)
-              (conj result token)))))
-      )))
-
 (defn- generate-node-compat-namespaces [state mod]
   ;; eagerly emits all goog.provide statements
   ;; and then pulls all names into the local scope so node can work with them
@@ -91,24 +66,21 @@
         (->> (:sources mod)
              (map #(get-in state [:sources % :provides]))
              (reduce set/union)
-             (map comp/munge)
-             (map str)
              (sort))
 
         goog-provides
         (->> provides
+             (map comp/munge)
              (map #(str "goog.provide('" % "');"))
              (str/join "\n"))
 
-        local-names
-        (->> provides
-             (mapcat provide->js-obj)
-             (distinct)
+        local-provides
+        (->> (util/js-for-local-names provides)
              (str/join "\n"))]
 
     (str/join "\n"
       [goog-provides
-       local-names
+       local-provides
        ;; noop all other provides
        "goog.provide = function() {};\n"
        ])))
