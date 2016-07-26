@@ -721,7 +721,7 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v4")
+(def cache-file-version "v5")
 
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
@@ -767,8 +767,11 @@ normalize-resource-name
                (.exists cache-js)
                (> (.lastModified cache-js) last-modified))
 
-      (let [cache-data (read-cache cache-file)
-            age-of-deps (make-age-map state ns)]
+      (let [cache-data
+            (read-cache cache-file)
+
+            age-of-deps
+            (make-age-map state ns)]
 
         ;; just checking the "maximum" last-modified of all dependencies is not enough
         ;; must check times of all deps, mostly to guard against jar changes
@@ -781,7 +784,7 @@ normalize-resource-name
 
         (when (and (= (:source-path cache-data) (:source-path rc))
                    (= age-of-deps (:age-of-deps cache-data))
-                   (every? #(= (get state %) (get cache-data %)) cache-affecting-options))
+                   (every? #(= (get state %) (get-in cache-data [:cache-options %])) cache-affecting-options))
           (log-progress logger (format "[CACHE] read: \"%s\"" name))
 
           ;; restore analysis data
@@ -792,7 +795,7 @@ normalize-resource-name
 
           ;; merge resource data & return it
           (-> (merge rc cache-data)
-              (dissoc :analyzer)
+              (dissoc :analyzer :cache-options)
               (assoc :output (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
@@ -802,16 +805,24 @@ normalize-resource-name
   (when-not (seq (:warnings rc))
 
     (let [cache-file (get-cache-file-for-rc state rc)
-          cache-data (-> rc
-                         (dissoc :file :output :input :url)
-                         (assoc :age-of-deps (make-age-map state ns)
-                                :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
-          cache-data (reduce
-                       (fn [cache-data option-key]
-                         (assoc cache-data option-key (get state option-key)))
-                       cache-data
-                       cache-affecting-options)
-          cache-js (io/file cache-dir cljs-runtime-path js-name)]
+          cache-data
+          (-> rc
+              (dissoc :file :output :input :url)
+              (assoc :age-of-deps (make-age-map state ns)
+                     :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+
+          cache-options
+          (reduce
+            (fn [cache-options option-key]
+              (assoc cache-options option-key (get state option-key)))
+            {}
+            cache-affecting-options)
+
+          cache-data
+          (assoc cache-data :cache-options cache-options)
+
+          cache-js
+          (io/file cache-dir cljs-runtime-path js-name)]
 
       (io/make-parents cache-file)
       (write-cache cache-file cache-data)
