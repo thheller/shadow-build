@@ -721,7 +721,7 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v5")
+(def cache-file-version "v6")
 
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
@@ -755,7 +755,10 @@ normalize-resource-name
     (get-deps-for-ns state ns)))
 
 
-(def cache-affecting-options [:static-fns :elide-asserts])
+(def cache-affecting-options
+  [:static-fns
+   :elide-asserts
+   :node-global-prefix])
 
 (defn load-cached-cljs-resource
   [{:keys [logger cache-dir cljs-runtime-path] :as state} {:keys [ns js-name name last-modified] :as rc}]
@@ -795,7 +798,7 @@ normalize-resource-name
 
           ;; merge resource data & return it
           (-> (merge rc cache-data)
-              (dissoc :analyzer :cache-options)
+              (dissoc :analyzer :cache-options :age-of-deps)
               (assoc :output (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
@@ -1492,13 +1495,22 @@ normalize-resource-name
   [{:keys [n-compile-threads] :as state}]
   (with-logged-time
     [(:logger state) "Compiling Modules ..."]
-    (let [state (prepare-compile state)
-          state (reduce do-analyze-module state (-> state :modules (vals)))
-          modules (sort-and-compact-modules state)
-          source-names (mapcat :sources modules)
-          state (if (> n-compile-threads 1)
-                  (par-compile-sources state source-names)
-                  (compile-sources state source-names))]
+    (let [state
+          (prepare-compile state)
+
+          state
+          (reduce do-analyze-module state (-> state :modules (vals)))
+
+          modules
+          (sort-and-compact-modules state)
+
+          source-names
+          (mapcat :sources modules)
+
+          state
+          (if (> n-compile-threads 1)
+            (par-compile-sources state source-names)
+            (compile-sources state source-names))]
 
       (-> state
           (assoc :build-modules modules)
@@ -1874,7 +1886,7 @@ normalize-resource-name
        (or (not (.exists x))
            (.isDirectory x))))
 
-(defn flush-unoptimized
+(defn flush-unoptimized!
   [{:keys [build-modules public-dir unoptimizable] :as state}]
   {:pre [(directory? public-dir)]}
 
@@ -1916,8 +1928,12 @@ normalize-resource-name
 
             out (str out "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n")]
 
-        (spit target out))))
-  ;; return unmodified state
+        (spit target out)))))
+
+(defn flush-unoptimized
+  [state]
+  "util for ->"
+  (flush-unoptimized! state)
   state)
 
 (defn line-count [text]
