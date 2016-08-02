@@ -15,7 +15,7 @@ Right now this really only is a library and not a tool like lein-cljsbuild. But 
 ```clojure
 :profiles {:dev {:source-paths ["dev"]
                  :dependencies [[org.clojure/clojurescript "1.9.93"]
-                                [thheller/shadow-build "1.0.209"]]}}
+                                [thheller/shadow-build "1.0.215"]]}}
 ```
 
 I recommend putting it into the :dev profile since you usually don't need it in production. You'll also need to provide ClojureScript itself.
