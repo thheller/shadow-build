@@ -4,7 +4,8 @@
             [cljs.analyzer :as ana]
             [cljs.env :as env]
             [clojure.pprint :refer (pprint)]
-            [cljs.compiler :as comp]))
+            [cljs.compiler :as comp])
+  (:import (clojure.lang Namespace)))
 
 (def require-option-keys
   #{:as
@@ -259,11 +260,20 @@
 (defn find-macros-in-ns
   [name]
   (->> (ns-publics name)
-       (reduce-kv (fn [m var-name the-var]
-                    (if (.isMacro ^clojure.lang.Var the-var)
-                      (conj m var-name)
-                      m))
-         #{})))
+       (reduce-kv
+         (fn [m var-name the-var]
+           (if (.isMacro ^clojure.lang.Var the-var)
+             (let [macro-meta
+                   (meta the-var)
+
+                   macro-info
+                   (let [ns (.getName ^Namespace (:ns macro-meta))]
+                     (assoc macro-meta
+                       :ns ns
+                       :name (symbol (str ns) (str var-name))))]
+               (assoc m var-name macro-info))
+             m))
+         {})))
 
 
 (def ^{:private true} require-lock (Object.))
@@ -325,7 +335,7 @@
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
       (throw
         (ana/error env
-          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym}))))));; I hope no one ever sees this ...
+          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))) ;; I hope no one ever sees this ...
 
 
 (defn- namespace-name->js-obj [^String ns]

@@ -191,7 +191,7 @@
       :ns name
       :ns-info (dissoc ast :env)
       :provides #{name}
-      :macros (macros-from-ns-ast state ast)
+      :macro-namespaces (macros-from-ns-ast state ast)
       :requires (into #{} require-order)
       :require-order require-order)))
 
@@ -1077,12 +1077,12 @@ normalize-resource-name
   (let [macro-info
         (->> (:sources state)
              (vals)
-             (filter #(seq (:macros %)))
-             (reduce (fn [macro-info {:keys [macros name]}]
+             (filter #(seq (:macro-namespaces %)))
+             (reduce (fn [macro-info {:keys [macro-namespaces name]}]
                        (reduce (fn [macro-info macro-ns]
                                  (update-in macro-info [macro-ns] set-conj name))
                          macro-info
-                         macros))
+                         macro-namespaces))
                {})
              (map (fn [[macro-ns used-by]]
                     (let [name (str (ns->path macro-ns) ".clj")

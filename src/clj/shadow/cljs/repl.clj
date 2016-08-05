@@ -249,8 +249,8 @@
                            ana/*cljs-file* name
                            reader/*data-readers* tags/*cljs-data-readers*
                            reader/*alias-map* (merge reader/*alias-map*
-                                                     (:requires ns-info)
-                                                     (:require-macros ns-info))]
+                                                (:requires ns-info)
+                                                (:require-macros ns-info))]
                    (reader/read opts in))
             form-end @reader
             ;; keep a reference to the source of the form
@@ -281,9 +281,10 @@
                 (let [repl-action
                       ;; FIXME: what actually populates this? emit or analyze?
                       (cljs/with-warnings
-                        (binding [comp/*source-map-data* (atom {:source-map (sorted-map)
-                                                                :gen-col 0
-                                                                :gen-line 0})]
+                        (binding [comp/*source-map-data*
+                                  (atom {:source-map (sorted-map)
+                                         :gen-col 0
+                                         :gen-line 0})]
 
                           {:type :repl/invoke
                            :js (let [ast (cljs/analyze state repl-rc form :expr)]

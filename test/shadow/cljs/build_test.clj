@@ -13,7 +13,8 @@
             [clojure.repl :refer (pst)]
             [cljs.analyzer :as a]
             [clojure.set :as set]
-            [cljs.closure :as closure])
+            [cljs.closure :as closure]
+            [cljs.analyzer.api :as ana-api])
   (:import (java.util.regex Pattern)
            (java.io File)
            (java.net URL)
@@ -676,8 +677,6 @@
       (cljs/enable-source-maps)
       (assoc :optimizations :none
              :pretty-print true
-             :work-dir (io/file "target/cljs-work")
-             :cache-dir (io/file "target/cljs-cache")
              :cache-level :jars
              :public-dir (io/file "cljs-data/dummy/out")
              :public-path "out")
@@ -881,3 +880,11 @@
          (map println)
          (doall)
          )))
+
+(deftest run-all-tests-breakage
+  (let [state
+        (-> (basic-repl-setup)
+            (repl/process-input "(require 'cljs.test)")
+            (repl/process-input "(cljs.test/run-all-tests)"))]
+    
+    ))
