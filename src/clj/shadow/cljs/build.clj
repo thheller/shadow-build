@@ -721,14 +721,15 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v6")
+(def cache-file-version "v7")
 
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
   (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
 
 (defn get-max-last-modified-for-source [state source-name]
-  (let [{:keys [last-modified macros] :as rc} (get-in state [:sources source-name])]
+  (let [{:keys [last-modified macro-namespaces] :as rc}
+        (get-in state [:sources source-name])]
 
     (transduce
       (map #(get-in state [:macros % :last-modified]))
@@ -736,7 +737,7 @@ normalize-resource-name
         (fn [a b]
           (Math/max ^long a ^long b)))
       last-modified
-      macros
+      macro-namespaces
       )))
 
 (defn make-age-map
@@ -2098,12 +2099,13 @@ normalize-resource-name
 (defn find-resources-using-macro
   "returns a set of names using the macro ns"
   [state macro-ns]
-  (let [direct-dependents (->> (:sources state)
-                               (vals)
-                               (filter (fn [{:keys [macros] :as rc}]
-                                         (contains? macros macro-ns)))
-                               (map :name)
-                               (into #{}))]
+  (let [direct-dependents
+        (->> (:sources state)
+             (vals)
+             (filter (fn [{:keys [macro-namespaces] :as rc}]
+                       (contains? macro-namespaces macro-ns)))
+             (map :name)
+             (into #{}))]
 
     ;; macro has a companion .cljs file
     ;; FIXME: should check if that file actually self references

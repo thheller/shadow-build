@@ -886,5 +886,5 @@
         (-> (basic-repl-setup)
             (repl/process-input "(require 'cljs.test)")
             (repl/process-input "(cljs.test/run-all-tests)"))]
-    
+
     ))
