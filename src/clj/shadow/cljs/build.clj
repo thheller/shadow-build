@@ -113,6 +113,12 @@
   (or (.endsWith (str/lower-case name) ".cljs")
       (.endsWith (str/lower-case name) ".cljc")))
 
+(defn is-cljc? [^String name]
+  (.endsWith name ".cljc"))
+
+(defn is-cljs? [^String name]
+  (.endsWith name ".cljs"))
+
 (defn is-js-file? [^String name]
   (.endsWith (str/lower-case name) ".js"))
 
@@ -211,7 +217,7 @@
   [{:keys [logger] :as state} {:keys [^String name input] :as rc}]
   {:pre [(compiler-state? state)]}
   (let [eof-sentinel (Object.)
-        cljc? (.endsWith name ".cljc")
+        cljc? (is-cljc? name)
         opts (merge
                {:eof eof-sentinel}
                (when cljc?
@@ -694,7 +700,7 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [{:keys [static-fns] :as state} {:keys [name input cljc] :as rc}]
+  [{:keys [static-fns] :as state} {:keys [name input] :as rc}]
 
   (binding [ana/*cljs-static-fns* static-fns
             ;; initialize with default value
@@ -706,7 +712,7 @@ normalize-resource-name
         (let [{:keys [js ns requires require-order source-map warnings]}
               (cond
                 (string? source)
-                (compile-cljs-string state source name cljc)
+                (compile-cljs-string state source name (is-cljc? name))
                 (vector? source)
                 (compile-cljs-seq state source name)
                 :else
@@ -893,12 +899,6 @@ normalize-resource-name
        (number? last-modified)
        ))
 
-(defn is-cljc? [^String name]
-  (.endsWith name ".cljc"))
-
-(defn is-cljs? [^String name]
-  (.endsWith name ".cljs"))
-
 (defn merge-resource
   [{:keys [logger] :as state} {:keys [name provides url] :as src}]
   (cond
@@ -953,11 +953,16 @@ normalize-resource-name
     ;; now we need to handle conflicts for cljc/cljs files
     ;; only use cljs if both exist
     :valid-resource
-    (let [cljc? (is-cljc? name)
-          cljc-name (when (is-cljs? name)
-                      (str/replace name #"cljs$" "cljc"))
-          cljs-name (when cljc?
-                      (str/replace name #"cljc$" "cljs"))]
+    (let [cljc?
+          (is-cljc? name)
+
+          cljc-name
+          (when (is-cljs? name)
+            (str/replace name #"cljs$" "cljc"))
+
+          cljs-name
+          (when cljc?
+            (str/replace name #"cljc$" "cljs"))]
       (cond
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))

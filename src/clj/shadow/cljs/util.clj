@@ -59,45 +59,50 @@
               (when (= :requires key)
                 (check-require-once! ns-info require-ns))
 
-              (let [alias (:as options)
+              (let [alias
+                    (:as options)
 
-                    ns-info (assoc-in ns-info [key require-ns] require-ns)
+                    ns-info
+                    (assoc-in ns-info [key require-ns] require-ns)
 
                     ;; :require-macros should not be in require-order since it won't have a js file to load
-                    ns-info (if (= :requires key)
-                              (update ns-info :require-order conj require-ns)
-                              ns-info)
+                    ns-info
+                    (if (= :requires key)
+                      (update ns-info :require-order conj require-ns)
+                      ns-info)
 
-                    ns-info (if alias
-                              (assoc-in ns-info [key alias] require-ns)
-                              ns-info)
+                    ns-info
+                    (if alias
+                      (assoc-in ns-info [key alias] require-ns)
+                      ns-info)
 
-                    ns-info (if-let [refer (get options :refer)]
-                              (do (when-not (sequential? refer)
-                                    (throw (ex-info ":refer (names) must be sequential" {:form form :part part})))
-                                  (reduce
-                                    (fn [ns-info refer]
-                                      (assoc-in ns-info [(get uses-key key) refer] require-ns))
-                                    ns-info
-                                    refer))
-                              ns-info)
+                    ns-info
+                    (if-let [refer (get options :refer)]
+                      (do (when-not (sequential? refer)
+                            (throw (ex-info ":refer (names) must be sequential" {:form form :part part})))
+                          (reduce
+                            (fn [ns-info refer]
+                              (assoc-in ns-info [(get uses-key key) refer] require-ns))
+                            ns-info
+                            refer))
+                      ns-info)
 
-                    ns-info (let [refer-macros (:refer-macros options)
-                                  merge-refer-macros (fn [ns-info]
-                                                       (reduce
-                                                         (fn [ns-info use]
-                                                           (assoc-in ns-info [:use-macros use] require-ns))
-                                                         ns-info
-                                                         refer-macros))]
-                              (if (or (:include-macros options) (sequential? refer-macros))
-                                (-> ns-info
-                                    (assoc-in [:require-macros require-ns] require-ns)
-                                    (merge-refer-macros)
-                                    (cond->
-                                      alias
-                                      (assoc-in [:require-macros alias] require-ns)))
-                                ns-info))
-                    ]
+                    ns-info
+                    (let [refer-macros (:refer-macros options)
+                          merge-refer-macros (fn [ns-info]
+                                               (reduce
+                                                 (fn [ns-info use]
+                                                   (assoc-in ns-info [:use-macros use] require-ns))
+                                                 ns-info
+                                                 refer-macros))]
+                      (if (or (:include-macros options) (sequential? refer-macros))
+                        (-> ns-info
+                            (assoc-in [:require-macros require-ns] require-ns)
+                            (merge-refer-macros)
+                            (cond->
+                              alias
+                              (assoc-in [:require-macros alias] require-ns)))
+                        ns-info))]
                 ns-info)))
 
           :else
@@ -158,7 +163,21 @@
 
       (cond
         (symbol? part)
-        (let [class (-> part str (str/split #"\.") last symbol)]
+        (let [class
+              (-> part str (str/split #"\.") last symbol)
+
+              conflict
+              (get-in ns-info [:imports class])
+
+              ns
+              (:name ns-info)]
+          (when conflict
+            (throw (ex-info
+                     (format "ns: %s has a dumplicate import for class: %s%nA: %s%nB: %s" ns class conflict part)
+                     {:class class
+                      :ns (:name ns-info)
+                      :import part
+                      :conflict conflict})))
           (-> ns-info
               (assoc-in [:imports class] part)
               (assoc-in [:requires class] part)
@@ -243,16 +262,23 @@
            :use-macros {}}
           more)]
 
-    (when (not= (count (:require-order ns-info))
-                (count (->> (:requires ns-info)
-                            (vals)
-                            (into #{}))))
-      ;; require-order should always match all required cljs namespaces
-      ;; but since :requires is a map that contains {alias full-name, full-name full-name}
-      ;; convert it to a set first, this also checks if require-order contains duplicates
-      ;; since the counts wont match
-      ;; FIXME: sanity check this properly, add better error since any error is a bug in this code
-      (throw (ex-info "messed up requires" {:ns-info ns-info})))
+    (let [required-ns
+          (->> (:requires ns-info)
+               (vals)
+               (into #{}))
+          required-ns
+          (->> (:imports ns-info)
+               (vals)
+               (into required-ns))]
+      (when (not= (count (:require-order ns-info))
+                  (count required-ns))
+        ;; require-order should always match all required cljs namespaces
+        ;; but since :requires is a map that contains {alias full-name, full-name full-name}
+        ;; convert it to a set first, this also checks if require-order contains duplicates
+        ;; since the counts wont match
+        ;; FIXME: sanity check this properly, add better error since any error is a bug in this code
+        (throw (ex-info "messed up requires" {:ns-info ns-info
+                                              :required-ns required-ns}))))
 
     ns-info))
 
