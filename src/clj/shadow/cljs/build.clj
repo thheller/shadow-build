@@ -398,17 +398,24 @@ normalize-resource-name
   [{:keys [manifest-cache-dir] :as state} path]
   {:pre [(compiler-state? state)]}
   ;; FIXME: assuming a jar with the same name and same last modified is always identical, probably not. should md5 the full path?
-  (let [manifest-name (let [jar (io/file path)]
-                        (str (.lastModified jar) "-" (.getName jar) ".manifest"))
-        mfile (io/file manifest-cache-dir manifest-name)
-        jar-file (io/file path)
-        manifest (if (and (.exists mfile)
-                          (>= (.lastModified mfile) (.lastModified jar-file)))
-                   (read-jar-manifest mfile)
-                   (let [manifest (create-jar-manifest state path)]
-                     (io/make-parents mfile)
-                     (write-jar-manifest mfile manifest)
-                     manifest))]
+  (let [manifest-name
+        (let [jar (io/file path)]
+          (str (.lastModified jar) "-" (.getName jar) ".manifest"))
+
+        mfile
+        (io/file manifest-cache-dir manifest-name)
+
+        jar-file
+        (io/file path)
+
+        manifest
+        (if (and (.exists mfile)
+                 (>= (.lastModified mfile) (.lastModified jar-file)))
+          (read-jar-manifest mfile)
+          (let [manifest (create-jar-manifest state path)]
+            (io/make-parents mfile)
+            (write-jar-manifest mfile manifest)
+            manifest))]
     (-> (process-deps-cljs state manifest path)
         (vals))))
 
@@ -2278,10 +2285,12 @@ enable-emit-constants [state]
 (defn init-state []
   (-> {:compiler-env {} ;; will become env/*compiler*
 
-       :ignore-patterns #{#"^node_modules/"
-                          #"^goog/demos/"
-                          #".aot.js$"
-                          #"_test.js$"}
+       :ignore-patterns
+       #{#"^node_modules/"
+         #"^goog/demos/"
+         #".aot.js$"
+         #"_test.js$"
+         #"^public/"}
 
        ::is-compiler-state true
        ::cc (make-closure-compiler)
