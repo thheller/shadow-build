@@ -11,10 +11,12 @@
   #{:as
     :refer
     :refer-macros
-    :include-macros})
+    :include-macros
+    :rename})
 
 (def use-option-keys
-  #{:only})
+  #{:only
+    :rename})
 
 (def uses-key
   {:requires :uses
@@ -24,6 +26,58 @@
   (when (some #(= % require-ns) (vals requires))
     (throw (ex-info (format "NS:%s has duplicate require/use for %s" name require-ns) {:ns-info ns-info}))
     ))
+
+(defn merge-renames [ns-info ns {:keys [rename] :as options} macro?]
+  (cond
+    (not (contains? options :rename))
+    ns-info
+
+    (map? rename)
+    (reduce
+      (fn [ns-info [rename-from rename-to]]
+        (let [fqn (symbol (str ns) (str rename-from))]
+          (when-let [conflict
+                     (or (get-in ns-info [:uses rename-to])
+                         (get-in ns-info [:use-macros rename-to]))]
+            (throw (ex-info
+                     (format "conflicting renames in ns form. tried to rename \"%s\" to \"%s\" in \"%s\", but \"%s\" already uses \"%s\""
+                       rename-from
+                       rename-to
+                       ns
+                       conflict
+                       rename-to)
+                     {:ns ns
+                      :rename-from rename-from
+                      :rename-to rename-to
+                      :conflict conflict})))
+
+          (cond
+            ;; rename for normal refered vars
+            ;; FIXME: assumes everything in cljs.core is a var but also has macros?
+            (or (get-in ns-info [:uses rename-from])
+                (= ns 'cljs.core))
+            (-> ns-info
+                (assoc-in [:renames rename-to] fqn)
+                (update :uses dissoc rename-from))
+
+            ;; rename for refered macros
+            (get-in ns-info [:use-macros rename-from])
+            (-> ns-info
+                (assoc-in [:rename-macros rename-to] fqn)
+                (update :use-macros dissoc rename-from))
+
+            :else
+            (throw (ex-info
+                     (format "Renamed symbol \"%s\" from ns \"%s\" not referred"
+                       rename-from
+                       ns)
+                     {:missing-refer rename-from
+                      :ns ns})))))
+      ns-info
+      rename)
+
+    :else
+    (throw (ex-info "rename is expected to be a map" {:ns ns :options options}))))
 
 (defn parse-ns-require-parts
   [key {:keys [form] :as ns-info} parts]
@@ -88,13 +142,16 @@
                       ns-info)
 
                     ns-info
-                    (let [refer-macros (:refer-macros options)
-                          merge-refer-macros (fn [ns-info]
-                                               (reduce
-                                                 (fn [ns-info use]
-                                                   (assoc-in ns-info [:use-macros use] require-ns))
-                                                 ns-info
-                                                 refer-macros))]
+                    (let [refer-macros
+                          (:refer-macros options)
+
+                          merge-refer-macros
+                          (fn [ns-info]
+                            (reduce
+                              (fn [ns-info use]
+                                (assoc-in ns-info [:use-macros use] require-ns))
+                              ns-info
+                              refer-macros))]
                       (if (or (:include-macros options) (sequential? refer-macros))
                         (-> ns-info
                             (assoc-in [:require-macros require-ns] require-ns)
@@ -102,7 +159,11 @@
                             (cond->
                               alias
                               (assoc-in [:require-macros alias] require-ns)))
-                        ns-info))]
+                        ns-info))
+
+                    ns-info
+                    (merge-renames ns-info require-ns options (= key :require-macros))]
+
                 ns-info)))
 
           :else
@@ -121,23 +182,29 @@
 
 
               (let [{:keys [only] :as options} (apply hash-map more)]
-                (when (not (and (= 1 (count options))
-                                (sequential? only)))
-                  (throw (ex-info (str "Only :only (names) options supported in " key) {:form form :part part})))
+                (when-not (set/subset? (keys options) use-option-keys)
+                  (throw (ex-info (str "Only :only (names)/:rename {from to} options supported in " key) {:form form :part part})))
 
                 (when (= :uses key)
                   (check-require-once! ns-info use-ns))
 
-                (let [ns-info (if (= :uses key)
-                                (-> ns-info
-                                    (assoc-in [:requires use-ns] use-ns)
-                                    (update :require-order conj use-ns))
-                                (assoc-in ns-info [:require-macros use-ns] use-ns))
-                      ns-info (reduce
-                                (fn [ns-info use]
-                                  (assoc-in ns-info [key use] use-ns))
-                                ns-info
-                                only)]
+                (let [ns-info
+                      (if (= :uses key)
+                        (-> ns-info
+                            (assoc-in [:requires use-ns] use-ns)
+                            (update :require-order conj use-ns))
+                        (assoc-in ns-info [:require-macros use-ns] use-ns))
+
+                      ns-info
+                      (reduce
+                        (fn [ns-info use]
+                          (assoc-in ns-info [key use] use-ns))
+                        ns-info
+                        only)
+
+                      ns-info
+                      (merge-renames ns-info use-ns options (= key :use-macros))]
+
                   ns-info
                   ))))
 
@@ -153,35 +220,38 @@
   (when-not (even? (count args))
     (throw (ex-info "Only (:refer-clojure :exclude (foo bar)) allowed" {})))
   (let [{:keys [exclude] :as options} (apply hash-map args)]
-    (update-in ns-info [:excludes] into exclude)
-    ))
+    (-> ns-info
+        (update-in [:excludes] into exclude)
+        (merge-renames 'cljs.core options false))))
+
+(defn import-fully-qualified-symbol [ns-info the-symbol]
+  (let [class
+        (-> the-symbol str (str/split #"\.") last symbol)
+
+        conflict
+        (get-in ns-info [:imports class])
+
+        ns
+        (:name ns-info)]
+    (when conflict
+      (throw (ex-info
+               (format "ns: %s has a dumplicate import for class: %s%nA: %s%nB: %s" ns class conflict the-symbol)
+               {:class class
+                :ns (:name ns-info)
+                :import the-symbol
+                :conflict conflict})))
+    (-> ns-info
+        (assoc-in [:imports class] the-symbol)
+        (assoc-in [:requires class] the-symbol)
+        (update :require-order conj the-symbol))))
 
 (defn parse-ns-import
   [ns-info parts]
   (reduce
     (fn [ns-info part]
-
       (cond
         (symbol? part)
-        (let [class
-              (-> part str (str/split #"\.") last symbol)
-
-              conflict
-              (get-in ns-info [:imports class])
-
-              ns
-              (:name ns-info)]
-          (when conflict
-            (throw (ex-info
-                     (format "ns: %s has a dumplicate import for class: %s%nA: %s%nB: %s" ns class conflict part)
-                     {:class class
-                      :ns (:name ns-info)
-                      :import part
-                      :conflict conflict})))
-          (-> ns-info
-              (assoc-in [:imports class] part)
-              (assoc-in [:requires class] part)
-              (update :require-order conj part)))
+        (import-fully-qualified-symbol ns-info part)
 
         (sequential? part)
         (let [[ns & classes] part]
@@ -192,10 +262,7 @@
           (reduce
             (fn [ns-info class]
               (let [fqn (symbol (str ns "." class))]
-                (-> ns-info
-                    (assoc-in [:imports class] fqn)
-                    (assoc-in [:requires class] fqn)
-                    (update :require-order conj fqn))))
+                (import-fully-qualified-symbol ns-info fqn)))
             ns-info
             classes))))
     ns-info
@@ -259,7 +326,9 @@
            :require-order []
            :require-macros {}
            :uses {}
-           :use-macros {}}
+           :use-macros {}
+           :renames {}
+           :rename-macros {}}
           more)]
 
     (let [required-ns
@@ -305,9 +374,9 @@
 (def ^{:private true} require-lock (Object.))
 
 (defn load-macros
-  [{:keys [name require-macros use-macros] :as ast}]
+  [{:keys [name require-macros use-macros] :as ns-info}]
   (if (= 'cljs.core name)
-    ast
+    ns-info
     (let [macro-namespaces
           (-> #{}
               (into (vals require-macros))
@@ -319,17 +388,17 @@
             (try
               (require macro-ns)
               (catch Exception e
-                (throw (ex-info (format "failed to require macro-ns:%s, it was required by:%s" macro-ns name) {:ns-info ast} e)))))))
+                (throw (ex-info (format "failed to require macro-ns:%s, it was required by:%s" macro-ns name) {:ns-info ns-info} e)))))))
 
       (if (contains? macro-namespaces name)
         (let [macros (find-macros-in-ns name)]
-          (assoc ast :macros macros))
-        ast))))
+          (assoc ns-info :macros macros))
+        ns-info))))
 
 (defn infer-macro-require
   "infer (:require [some-ns]) that some-ns may come with macros
    must be used after load-macros"
-  [{:keys [requires] :as ast}]
+  [{:keys [requires] :as ns-info}]
   (reduce
     (fn [ast [used-name used-ns]]
       (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
@@ -337,13 +406,13 @@
           ast
           (update-in ast [:require-macros] assoc used-name used-ns)
           )))
-    ast
+    ns-info
     requires))
 
 (defn infer-macro-use
   "infer (:require [some-ns :refer (something)]) that something might be a macro
    must be used after load-macros"
-  [{:keys [uses] :as ast}]
+  [{:keys [uses] :as ns-info}]
   (reduce
     (fn [ast [used-name used-ns]]
       (let [macros (get-in @env/*compiler* [::ana/namespaces used-ns :macros])]
@@ -352,16 +421,22 @@
           ast
           (update-in ast [:use-macros] assoc used-name used-ns)
           )))
-    ast
+    ns-info
     uses))
 
-(defn check-uses! [env uses]
+(defn check-uses! [{:keys [env uses] :as ns-info}]
   (doseq [[sym lib] uses]
     (when (and (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
       (throw
         (ana/error env
           (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))) ;; I hope no one ever sees this ...
+
+(defn check-renames! [{:keys [renames rename-macros] :as ns-info}]
+  (doseq [[rename-to rename-from] renames
+          :let [rename-ns (symbol (namespace rename-from))
+                rename-name (symbol (name rename-from))]]
+    ))
 
 
 (defn- namespace-name->js-obj [^String ns]

@@ -562,7 +562,8 @@ normalize-resource-name
                 (util/load-macros)
                 (util/infer-macro-require)
                 (util/infer-macro-use))]
-    (util/check-uses! (:env ast) (:uses ast))
+    (util/check-uses! ast)
+    (util/check-renames! ast)
     (swap! env/*compiler* assoc-in [::ana/namespaces name] (dissoc ast :env :op :form))
     ast))
 

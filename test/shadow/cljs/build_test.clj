@@ -248,6 +248,7 @@
   (let [s (-> (cljs/init-state)
               (assoc :optimizations :none
                      :pretty-print true
+                     :cache-level :jars
                      :work-dir (io/file "target/test-cljs-work")
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
@@ -279,6 +280,25 @@
               ;;(cljs/flush-unoptimized)
               )]
     (println (get-in s [:sources "with_use.cljs" :output]))))
+
+(deftest test-ns-with-rename
+  (let [s (-> (cljs/init-state)
+              (assoc :optimizations :none
+                     :pretty-print true
+                     :cache-level :jars
+                     :work-dir (io/file "target/test-cljs-work")
+                     :public-dir (io/file "target/test-cljs")
+                     :public-path "target/test-cljs")
+              (cljs/find-resources-in-classpath)
+              (cljs/find-resources "cljs-data/dummy/src")
+              (cljs/configure-module :test ['with-rename] #{})
+              (cljs/finalize-config)
+              (cljs/compile-modules)
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
+    (println (get-in s [:sources "with_rename.cljs" :output]))))
 
 (deftest test-flush-compact
   (let [state
@@ -491,15 +511,15 @@
   (let [test '(ns something
                 "doc before meta"
                 {:some :meta}
-                (:refer-clojure :exclude (whatever))
+                (:refer-clojure :exclude (whatever) :rename {assoc cossa})
                 (:use-macros [macro-use :only (that-one)])
-                (:require-macros [macro-ns :as m :refer (a-macro)]
+                (:require-macros [macro-ns :as m :refer (a-macro) :rename {a-macro b-macro}]
                                  [something :as that-m])
                 (:require only-symbol
-                          [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns)]
+                          [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns) :rename {foo bar}]
                           [another.ns :as x :include-macros true]
                           :reload-all)
-                (:use [something.fancy :only [everything]])
+                (:use [something.fancy :only [everything] :rename {everything nothing}])
                 (:import [goog.ui SomeElement OtherElement]
                          a.fully-qualified.Name))
 
@@ -509,9 +529,11 @@
     (is (= (:name a) (:name b)))
     (is (= (:requires a) (:requires b)))
     (is (= (:require-macros a) (:require-macros b)))
-    (is (= (:uses a) (:uses b)))
+    (is (= (:uses a) (or (:uses b) {}))) ;; CLJS has a bug that leaves :uses as nil if the only refered var was renamed
     (is (= (:use-macros a) (:use-macros b)))
     (is (= (:imports a) (:imports b)))
+    (is (= (:renames a) (:renames b)))
+    (is (= (:rename-macros a) (:rename-macros b)))
     (comment
       ;; cljs actually drops the docstring if separate from meta
       (is (= (meta (:name a))
