@@ -2,6 +2,7 @@
   (:require [clojure.string :as str]
             [clojure.set :as set]
             [cljs.analyzer :as ana]
+            [cljs.analyzer.api :as ana-api]
             [cljs.env :as env]
             [clojure.pprint :refer (pprint)]
             [cljs.compiler :as comp]
@@ -28,9 +29,12 @@
     (throw (ex-info (format "NS:%s has duplicate require/use for %s" name require-ns) {:ns-info ns-info}))
     ))
 
-(defn is-macro? [ns sym]
-  (when-let [the-var (find-var (symbol (str ns) (str sym)))]
-    (.isMacro the-var)))
+(defn is-macro?
+  ([ns sym]
+    (is-macro? (symbol (str ns) (str sym))))
+  ([fqn]
+   (when-let [the-var (find-var fqn)]
+     (.isMacro the-var))))
 
 (defn- merge-renames [ns-info ns {:keys [rename] :as options}]
   {:pre [(map? options)
@@ -40,12 +44,14 @@
     ns-info
 
     (map? rename)
-    (reduce
-      (fn [ns-info [rename-from rename-to]]
+    (reduce-kv
+      (fn [ns-info rename-from rename-to]
         (let [fqn (symbol (str ns) (str rename-from))]
           (when-let [conflict
                      (or (get-in ns-info [:uses rename-to])
-                         (get-in ns-info [:use-macros rename-to]))]
+                         (get-in ns-info [:use-macros rename-to])
+                         (get-in ns-info [:renames rename-to])
+                         (get-in ns-info [:rename-macros rename-to]))]
             (throw (ex-info
                      (format "conflicting renames in ns form. tried to rename \"%s\" to \"%s\" in \"%s\", but \"%s\" already uses \"%s\""
                        rename-from
@@ -60,21 +66,17 @@
 
           (cond
             ;; rename for normal refered vars
-            ;; FIXME: assumes everything in cljs.core is a var but also has macros?
-            (= ns 'cljs.core)
-            (-> ns-info
-                (assoc-in [:renames rename-to] fqn)
-                (cond->
-                  (is-macro? 'cljs.core rename-from)
-                  (assoc-in [:rename-macros rename-to] fqn)))
-
-            (get-in ns-info [:uses rename-from])
+            (or (= ns 'cljs.core)
+                (= ns (get-in ns-info [:uses rename-from])))
             (-> ns-info
                 (assoc-in [:renames rename-to] fqn)
                 (update :uses dissoc rename-from))
 
             ;; rename for refered macros
-            (get-in ns-info [:use-macros rename-from])
+            ;; FIXME: the later infer-renames-for-macros can figure this out better
+            ;; doing this here without loading the macros so the result
+            ;; is closer to what parse-ns from cljs does
+            (= ns (get-in ns-info [:use-macros rename-from]))
             (-> ns-info
                 (assoc-in [:rename-macros rename-to] fqn)
                 (update :use-macros dissoc rename-from))
@@ -437,9 +439,39 @@
     ns-info
     uses))
 
+(defn ana-is-cljs-def?
+  "checked whether a symbol in a given namespace is defined in CLJS (not a macro)"
+  ([fqn]
+   {:pre [(symbol? fqn)
+          (namespace fqn)
+          (name fqn)]}
+    (ana-is-cljs-def?
+      (symbol (namespace fqn))
+      (symbol (name fqn))))
+  ([ns sym]
+   {:pre [(symbol? ns)
+          (symbol? sym)]}
+   (not= (get-in @env/*compiler* [::ana/namespaces ns :defs sym] ::not-found) ::not-found)))
+
+(defn infer-renames-for-macros
+  [{:keys [renames] :as ns-info}]
+  (reduce-kv
+    (fn [ns-info rename-to source-sym]
+      (if-not (is-macro? source-sym)
+        ns-info
+        (-> ns-info
+            ;; remove the :rename if it is only a macro and not a cljs var
+            (cond->
+              (ana-is-cljs-def? source-sym)
+              (update :renames dissoc rename-to))
+
+            (update :rename-macros assoc rename-to source-sym))))
+    ns-info
+    renames))
+
 (defn check-uses! [{:keys [env uses] :as ns-info}]
   (doseq [[sym lib] uses]
-    (when (and (= (get-in @env/*compiler* [::ana/namespaces lib :defs sym] ::not-found) ::not-found)
+    (when (and (not (ana-is-cljs-def? lib sym))
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
       (throw
         (ana/error env

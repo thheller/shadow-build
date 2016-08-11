@@ -511,12 +511,12 @@
   (let [test '(ns something
                 "doc before meta"
                 {:some :meta}
-                (:refer-clojure :exclude (whatever) :rename {assoc cossa})
+                (:refer-clojure :exclude (whatever) :rename {assoc cossa + plus})
                 (:use-macros [macro-use :only (that-one)])
                 (:require-macros [macro-ns :as m :refer (a-macro) :rename {a-macro b-macro}]
                                  [something :as that-m])
                 (:require only-symbol
-                          [some.ns :as alias :refer (foo) :refer-macros (a-macro-from-some-ns) :rename {foo bar}]
+                          [some.ns :as alias :refer (foo x) :refer-macros (a-macro-from-some-ns) :rename {foo bar}]
                           [another.ns :as x :include-macros true]
                           :reload-all)
                 (:use [something.fancy :only [everything] :rename {everything nothing}])
@@ -524,7 +524,8 @@
                          a.fully-qualified.Name))
 
         a (util/parse-ns test)
-        b (cljs-parse-ns ns-env test)]
+        b (cljs-parse-ns ns-env test)
+        ]
 
     (is (= (:name a) (:name b)))
     (is (= (:requires a) (:requires b)))

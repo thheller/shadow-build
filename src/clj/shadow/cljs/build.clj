@@ -561,7 +561,8 @@ normalize-resource-name
   (let [ast (-> ast
                 (util/load-macros)
                 (util/infer-macro-require)
-                (util/infer-macro-use))]
+                (util/infer-macro-use)
+                (util/infer-renames-for-macros))]
     (util/check-uses! ast)
     (util/check-renames! ast)
     (swap! env/*compiler* assoc-in [::ana/namespaces name] (dissoc ast :env :op :form))
