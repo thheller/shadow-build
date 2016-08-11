@@ -4,7 +4,8 @@
             [cljs.analyzer :as ana]
             [cljs.env :as env]
             [clojure.pprint :refer (pprint)]
-            [cljs.compiler :as comp])
+            [cljs.compiler :as comp]
+            [cljs.core]) ;; not really, just to ensure it is loaded so we can query it form macros?
   (:import (clojure.lang Namespace)))
 
 (def require-option-keys
@@ -27,7 +28,13 @@
     (throw (ex-info (format "NS:%s has duplicate require/use for %s" name require-ns) {:ns-info ns-info}))
     ))
 
-(defn merge-renames [ns-info ns {:keys [rename] :as options} macro?]
+(defn is-macro? [ns sym]
+  (when-let [the-var (find-var (symbol (str ns) (str sym)))]
+    (.isMacro the-var)))
+
+(defn- merge-renames [ns-info ns {:keys [rename] :as options}]
+  {:pre [(map? options)
+         (symbol? ns)]}
   (cond
     (not (contains? options :rename))
     ns-info
@@ -54,8 +61,14 @@
           (cond
             ;; rename for normal refered vars
             ;; FIXME: assumes everything in cljs.core is a var but also has macros?
-            (or (get-in ns-info [:uses rename-from])
-                (= ns 'cljs.core))
+            (= ns 'cljs.core)
+            (-> ns-info
+                (assoc-in [:renames rename-to] fqn)
+                (cond->
+                  (is-macro? 'cljs.core rename-from)
+                  (assoc-in [:rename-macros rename-to] fqn)))
+
+            (get-in ns-info [:uses rename-from])
             (-> ns-info
                 (assoc-in [:renames rename-to] fqn)
                 (update :uses dissoc rename-from))
@@ -162,7 +175,7 @@
                         ns-info))
 
                     ns-info
-                    (merge-renames ns-info require-ns options (= key :require-macros))]
+                    (merge-renames ns-info require-ns options)]
 
                 ns-info)))
 
@@ -203,7 +216,7 @@
                         only)
 
                       ns-info
-                      (merge-renames ns-info use-ns options (= key :use-macros))]
+                      (merge-renames ns-info use-ns options)]
 
                   ns-info
                   ))))
@@ -222,7 +235,7 @@
   (let [{:keys [exclude] :as options} (apply hash-map args)]
     (-> ns-info
         (update-in [:excludes] into exclude)
-        (merge-renames 'cljs.core options false))))
+        (merge-renames 'cljs.core options))))
 
 (defn import-fully-qualified-symbol [ns-info the-symbol]
   (let [class
