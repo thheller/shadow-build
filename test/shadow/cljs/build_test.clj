@@ -248,7 +248,7 @@
   (let [s (-> (cljs/init-state)
               (assoc :optimizations :none
                      :pretty-print true
-                     :cache-level :jars
+                     :cache-level :off
                      :work-dir (io/file "target/test-cljs-work")
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")

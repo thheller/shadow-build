@@ -1425,37 +1425,48 @@ normalize-resource-name
         (assoc state :compiled [])
         source-names))))
 
-(defn par-compile-one [state ready compiled errors source-name]
-  (let [{:keys [requires] :as src} (get-in state [:sources source-name])]
-    (loop []
-      (cond
-        ;; skip work if errors occured
-        (seq @errors)
-        src
+(defn par-compile-one
+  [{:keys [logger] :as state} ready-ref compiled-ref errors-ref source-name]
+  (let [{:keys [requires] :as src}
+        (get-in state [:sources source-name])]
 
-        ;; only compile once all dependencies are compiled
-        ;; FIXME: sleep is not great, cljs.core takes a couple of sec to compile
-        ;; this will spin a couple hundred times, doing additional work
-        ;; don't increase the sleep time since many files compile in the 5-10 range
-        (not (set/superset? @ready requires))
-        (do (Thread/sleep 5)
-            (recur))
+    (loop [idle-count 0]
+      (let [ready @ready-ref]
+        (cond
+          ;; skip work if errors occured
+          (seq @errors-ref)
+          src
 
-        :ready-to-compile
-        (try
-          (let [{:keys [provides] :as compiled-src}
-                (generate-output-for-source state src)]
+          ;; only compile once all dependencies are compiled
+          ;; FIXME: sleep is not great, cljs.core takes a couple of sec to compile
+          ;; this will spin a couple hundred times, doing additional work
+          ;; don't increase the sleep time since many files compile in the 5-10 range
+          (not (set/superset? ready requires))
+          (do (Thread/sleep 5)
+              ;; diagnostic warning if we are still waiting for something to compile for 15+ sec
+              ;; should only happen in case of deadlocks or missing/broken requires
+              ;; should probably add a real timeout and fail the build instead of looping forever
+              (if (>= idle-count 3000)
+                (let [pending (set/difference requires ready)]
+                  (log-warning logger (format "Compile of \"%s\" still waiting for %s" source-name (pr-str pending)))
+                  (recur 0))
+                (recur (inc idle-count))))
 
-            (when (not= (:compiled-at src)
-                        (:compiled-at compiled-src))
-              (swap! compiled conj source-name))
+          :ready-to-compile
+          (try
+            (let [{:keys [provides] :as compiled-src}
+                  (generate-output-for-source state src)]
 
-            (swap! ready set/union provides)
-            compiled-src)
-          (catch Exception e
-            (swap! errors assoc source-name e)
-            src
-            ))))))
+              (when (not= (:compiled-at src)
+                          (:compiled-at compiled-src))
+                (swap! compiled-ref conj source-name))
+
+              (swap! ready-ref set/union provides)
+              compiled-src)
+            (catch Exception e
+              (swap! errors-ref assoc source-name e)
+              src
+              )))))))
 
 (defn par-compile-sources
   "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
@@ -1465,11 +1476,21 @@ normalize-resource-name
   (with-redefs [ana/parse shadow-parse]
     (with-compiler-env state
       (ana/load-core)
-      (let [ready (atom #{}) ;; namespaces that are ready to be used
-            compiled (atom []) ;; files that were actually compiled (not recycled)
-            errors (atom {}) ;; source-name -> exception
+      (let [;; namespaces that are ready to be used
+            ready
+            (atom #{})
 
-            exec (Executors/newFixedThreadPool n-compile-threads)
+            ;; files that were actually compiled (not recycled)
+            compiled
+            (atom [])
+
+            ;; source-name -> exception
+            errors
+            (atom {})
+
+            exec
+            (Executors/newFixedThreadPool n-compile-threads)
+
             tasks
             (->> (for [source-name source-names]
                    ;; bound-fn for with-compiler-state
@@ -2316,9 +2337,11 @@ enable-emit-constants [state]
        ;; if public-dir is equal to the current working directory
        :cljs-runtime-path "cljs-runtime"
 
-       :manifest-cache-dir (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
-                             (io/make-parents dir)
-                             dir)
+       :manifest-cache-dir
+       (let [dir (io/file "target" "shadow-build" "jar-manifest" "v3")]
+         (io/make-parents dir)
+         dir)
+
        :cache-dir (io/file "target" "shadow-build" "cljs-cache")
        :cache-level :all
 
@@ -2334,20 +2357,21 @@ enable-emit-constants [state]
        :closure-defines {"goog.DEBUG" false
                          "goog.LOCALE" "en"}
 
-       :logger (let [log-lock (Object.)]
-                 (reify BuildLog
-                   (log-warning [_ msg]
-                     (locking log-lock
-                       (println (str "WARN: " msg))))
-                   (log-time-start [_ msg]
-                     (locking log-lock
-                       (println (format "-> %s" msg))))
-                   (log-time-end [_ msg ms]
-                     (locking log-lock
-                       (println (format "<- %s (%dms)" msg ms))))
-                   (log-progress [_ msg]
-                     (locking log-lock
-                       (println msg)))))}
+       :logger
+       (let [log-lock (Object.)]
+         (reify BuildLog
+           (log-warning [_ msg]
+             (locking log-lock
+               (println (str "WARN: " msg))))
+           (log-time-start [_ msg]
+             (locking log-lock
+               (println (format "-> %s" msg))))
+           (log-time-end [_ msg ms]
+             (locking log-lock
+               (println (format "<- %s (%dms)" msg ms))))
+           (log-progress [_ msg]
+             (locking log-lock
+               (println msg)))))}
 
       (add-closure-configurator closure-add-replace-constants-pass)
       ))
