@@ -248,7 +248,7 @@
   (let [s (-> (cljs/init-state)
               (assoc :optimizations :none
                      :pretty-print true
-                     :cache-level :off
+                     :cache-level :jars
                      :work-dir (io/file "target/test-cljs-work")
                      :public-dir (io/file "target/test-cljs")
                      :public-path "target/test-cljs")
@@ -259,9 +259,10 @@
               (cljs/compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
-              ;;(cljs/flush-unoptimized)
+              (cljs/flush-unoptimized)
               )]
-    (println (get-in s [:sources "cljs/repl.cljc" :output]))))
+    ;; (println (get-in s [:sources "cljs/repl.cljs" :output]))
+    ))
 
 (deftest test-ns-with-use
   (let [s (-> (cljs/init-state)
@@ -283,7 +284,7 @@
 
 (deftest test-ns-with-rename
   (let [s (-> (cljs/init-state)
-              (assoc :optimizations :none
+              (assoc :optimizations :advanced
                      :pretty-print true
                      :cache-level :jars
                      :work-dir (io/file "target/test-cljs-work")
@@ -296,9 +297,10 @@
               (cljs/compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
-              ;;(cljs/flush-unoptimized)
+              (cljs/flush-unoptimized)
               )]
-    (println (get-in s [:sources "with_rename.cljs" :output]))))
+    ;; (println (get-in s [:sources "with_rename.cljs" :output]))
+    ))
 
 (deftest test-flush-compact
   (let [state

@@ -106,7 +106,7 @@
              :depth *time-depth*
              :stop stop#
              :duration (- stop# start#))]
-       (log result# evt#)
+       (log (if (compiler-state? result#) result# ~state) evt#)
        result#)
      ))
 
@@ -729,7 +729,7 @@ normalize-resource-name
             ana/*unchecked-if* ana/*unchecked-if*]
     (let [source @input]
       (with-logged-time
-        [state {:type ::compile-cljs :name name}]
+        [state {:type :compile-cljs :name name}]
         (let [{:keys [js ns requires require-order source-map warnings]}
               (cond
                 (string? source)
@@ -1001,13 +1001,14 @@ normalize-resource-name
       (cond
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))
-        (do (log state {:type :bad-resource
-                        :reason :cljs-over-cljc
-                        :name name
-                        :cljc-name name
-                        :cljs-name cljs-name
-                        :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
-            state)
+        ;; less noise by not complaining
+        (do #_(log state {:type :bad-resource
+                          :reason :cljs-over-cljc
+                          :name name
+                          :cljc-name name
+                          :cljs-name cljs-name
+                          :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
+          state)
 
         ;; if a .cljc exists for a .cljs file
         ;; overrides provides from .cljc with provides in .cljs
@@ -1059,7 +1060,7 @@ normalize-resource-name
    (find-resources state path {:reloadable true}))
   ([state path opts]
    (with-logged-time
-     [state {:type ::find-resources
+     [state {:type :find-resources
              :path path}]
      (let [file (io/file path)
            abs-path (.getCanonicalPath file)]
@@ -1087,10 +1088,6 @@ normalize-resource-name
                 (remove #(should-exclude-classpath exclude %)))]
        (reduce merge-resources-in-path state paths)
        ))))
-
-;; deprecate the weird naming stuff
-(def step-find-resources-in-jars find-resources-in-classpath)
-(def step-find-resources find-resources)
 
 (def cljs-core-name "cljs/core.cljs")
 (def goog-base-name "goog/base.js")
@@ -1121,11 +1118,6 @@ normalize-resource-name
     (do (swap! env/*compiler* (fn [current] (apply update-fn current args)))
         state)
     (update state :compiler-env (fn [current] (apply update-fn current args)))))
-
-(defn ^:deprecated step-compile-core [state]
-  ;; honestly not sure why this was ever here
-  ;; since we compile in dep order 'cljs.core will always be compiled before any other CLJS
-  state)
 
 (defn discover-macros [state]
   ;; build {macro-ns #{used-by-source-by-name ...}}
@@ -1173,7 +1165,7 @@ normalize-resource-name
     ))
 
 (defn finalize-config
-  "should be called AFTER all resources have been discovers (ie. after find-resources...)"
+  "should be called AFTER all resources have been discovered (ie. after find-resources...)"
   [state]
   (-> state
       (discover-macros)
@@ -1192,8 +1184,6 @@ normalize-resource-name
                    [provide name]
                    )))))
 
-(def step-finalize-config finalize-config)
-
 (defn reset-modules [state]
   (-> state
       (assoc :modules {})
@@ -1209,27 +1199,28 @@ normalize-resource-name
    (when-not (every? keyword? depends-on)
      (throw (ex-info "module deps should be keywords" {:module-deps depends-on})))
 
-   (let [is-default? (not (seq depends-on))
+   (let [is-default?
+         (not (seq depends-on))
 
-         _ (when is-default?
-             (when-let [default (:default-module state)]
-               (throw (ex-info "default module already defined, are you missing deps?"
-                        {:default default :wants-to-be-default module-name}))))
+         mod
+         (merge mod-attrs
+           {:name module-name
+            :js-name (str (name module-name) ".js")
+            :mains module-mains
+            :depends-on (into #{} depends-on)
+            :default is-default?})]
 
-         mod (merge mod-attrs
-               {:name module-name
-                :js-name (str (name module-name) ".js")
-                :mains module-mains
-                :depends-on (into #{} depends-on)
-                :default is-default?})
+     (when is-default?
+       (when-let [default (:default-module state)]
+         (throw (ex-info "default module already defined, are you missing deps?"
+                  {:default default :wants-to-be-default module-name}))))
 
-         state (assoc-in state [:modules module-name] mod)
-         state (if is-default?
-                 (assoc state :default-module module-name)
-                 state)]
-     state)))
-
-(def step-configure-module configure-module)
+     (-> state
+         (assoc-in [:modules module-name] mod)
+         (cond->
+           is-default?
+           (assoc :default-module module-name)
+           )))))
 
 (defn flush-to-disk
   "flush all generated sources to disk, not terribly useful, use flush-unoptimized to include source maps"
@@ -1598,9 +1589,10 @@ normalize-resource-name
     (assoc state :build-modules modules)))
 
 (defn compile-modules
+  "compiles according to configured :modules"
   [state]
   (with-logged-time
-    [state {:type :compile-full}]
+    [state {:type :compile-modules}]
     (let [state
           (-> state
               (prepare-compile)
@@ -1612,14 +1604,14 @@ normalize-resource-name
       state
       )))
 
-(defn compile-all-for-ns [state ns]
+(defn compile-all-for-ns
+  "compiles files to given ns, ignores configured :modules"
+  [state ns]
   (let [deps (get-deps-for-ns state ns)]
     (-> state
         (prepare-compile)
         (compile-sources deps))
     ))
-
-(def step-compile-modules compile-modules)
 
 (defn cljs-source-map-for-module [sm-text sources opts]
   (let [sm-json (json/read-str sm-text :key-fn keyword)
@@ -1729,7 +1721,7 @@ normalize-resource-name
     :as state}]
 
   (with-logged-time
-    [state {:type :flush-modules}]
+    [state {:type :flush-optimized}]
 
     (when-not (seq modules)
       (throw (ex-info "flush before optimize?" {})))
@@ -2402,13 +2394,75 @@ enable-emit-constants [state]
 (defn get-closure-compiler [state]
   (::cc state))
 
-(defn default-log-message [state event]
-  ;; :compile-cljs
-  ;; (format "Compile CLJS: \"%s\"" name)
-  ;; :find-resources
-  ;; (format "Find cljs resources in path: \"%s\"" path)
+(defn timing-prefix [{:keys [depth timing duration] :as event} msg]
+  (str (when (= :exit timing) "<-")
+       (str/join (repeat depth "-") "")
+       (when (= :enter timing) "->")
+       " "
+       msg
+       (when (= :exit timing)
+         (format " (%d ms)" duration))))
+
+(defmulti log->str
+  (fn [state event] (:type event))
+  :default ::default)
+
+(defmethod log->str ::default
+  [state event]
   (with-out-str
     (pprint event)))
+
+(defmethod log->str :compile-cljs
+  [state {:keys [name] :as event}]
+  (timing-prefix event (format "Compile CLJS: %s" name)))
+
+(defmethod log->str :compile-modules
+  [state {:keys [name] :as event}]
+  (timing-prefix event "Compiling modules"))
+
+(defmethod log->str :cache-read
+  [state {:keys [name] :as event}]
+  (format "[CACHE] read: %s" name))
+
+(defmethod log->str :cache-write
+  [state {:keys [name] :as event}]
+  (format "[CACHE] write: %s" name))
+
+(defmethod log->str :flush-unoptimized
+  [state {:keys [name] :as event}]
+  (timing-prefix event "Flushing unoptimized modules"))
+
+(defmethod log->str :flush-optimized
+  [state {:keys [path] :as event}]
+  (timing-prefix event (format "Flushing optimized modules" path)))
+
+(defmethod log->str :flush-module
+  [state {:keys [name js-name js-size] :as event}]
+  (format "Flushing: %s (%d bytes)" js-name js-size))
+
+(defmethod log->str :flush-sources
+  [state {:keys [source-names] :as event}]
+  (timing-prefix event (format "Flushing %s sources" (count source-names))))
+
+(defmethod log->str :find-resources
+  [state {:keys [path] :as event}]
+  (timing-prefix event (format "Finding resources in: %s" path)))
+
+(defmethod log->str :find-resources-classpath
+  [state {:keys [path] :as event}]
+  (timing-prefix event (format "Finding resources in classpath" path)))
+
+(defmethod log->str :optimize
+  [state {:keys [path] :as event}]
+  (timing-prefix event (format "Optimizing" path)))
+
+(defmethod log->str :bad-resource
+  [state {:keys [msg] :as event}]
+  msg)
+
+(defmethod log->str :warning
+  [state {:keys [name msg]}]
+  (str "WARNING: " msg " (" name ")"))
 
 (defn init-state []
   (-> {:compiler-env {} ;; will become env/*compiler*
@@ -2462,7 +2516,7 @@ enable-emit-constants [state]
          (reify BuildLog
            (log* [_ state evt]
              (locking log-lock
-               (println (default-log-message state evt))))))}
+               (println (log->str state evt))))))}
 
       (add-closure-configurator closure-add-replace-constants-pass)
       ))

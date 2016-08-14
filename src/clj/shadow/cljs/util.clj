@@ -473,6 +473,7 @@
   (doseq [[sym lib] uses]
     (when (and (not (ana-is-cljs-def? lib sym))
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
+      (prn [:warning ns-info])
       (throw
         (ana/error env
           (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))) ;; I hope no one ever sees this ...
