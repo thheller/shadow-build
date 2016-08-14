@@ -90,32 +90,36 @@
   ;; FIXME: does node need the imul.js fix? probably not
   (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
-  (cljs/with-logged-time
-    [(:logger state) (format "Flushing node script: %s" (-> build-modules first :js-name))]
+  (let [output-file
+        (-> build-modules first :js-name)]
 
-    (let [{:keys [js-name prepend prepend-js append-js sources]} (first build-modules)]
-      (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
-                          sources)
-            target (io/file public-dir js-name)
+    (cljs/with-logged-time
+      [state {:type ::flush-unoptimized
+              :output-file output-file}]
 
-            out (->> provided-ns
-                     (map (fn [ns]
-                            (str "goog.require('" (comp/munge ns) "');")))
-                     (str/join "\n"))
-            out (str prepend prepend-js out append-js)
+      (let [{:keys [js-name prepend prepend-js append-js sources]} (first build-modules)]
+        (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
+                            sources)
+              target (io/file public-dir js-name)
 
-            out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                     "\n\n"
-                     out)
-            goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
-            deps-js (io/file public-dir cljs-runtime-path "deps.js")]
-        (spit goog-js
-          (replace-goog-global
-            @(get-in state [:sources "goog/base.js" :input])
-            node-global-prefix
-            ))
-        (spit deps-js (cljs/closure-goog-deps state))
-        (spit target out))))
+              out (->> provided-ns
+                       (map (fn [ns]
+                              (str "goog.require('" (comp/munge ns) "');")))
+                       (str/join "\n"))
+              out (str prepend prepend-js out append-js)
+
+              out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
+                       "\n\n"
+                       out)
+              goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
+              deps-js (io/file public-dir cljs-runtime-path "deps.js")]
+          (spit goog-js
+            (replace-goog-global
+              @(get-in state [:sources "goog/base.js" :input])
+              node-global-prefix
+              ))
+          (spit deps-js (cljs/closure-goog-deps state))
+          (spit target out)))))
   ;; return unmodified state
   state)
 
@@ -123,7 +127,7 @@
 (defn flush-optimized
   [{modules :optimized :keys [^File public-dir logger node-global-prefix] :as state}]
   (cljs/with-logged-time
-    [(:logger state) "Flushing to disk"]
+    [state {:type ::flush-unoptimized}]
 
     (when (not= 1 (count modules))
       (throw (ex-info "node builds can only have one module!" {})))
@@ -145,7 +149,9 @@
       (io/make-parents target)
       (spit target out)
 
-      (cljs/log-progress logger (format "Wrote module \"%s\" (size: %d)" js-name (count out)))
+      (cljs/log state {:type :flush-module
+                       :js-name js-name
+                       :js-size (count out)})
 
       ;; FIXME: add source-map support for node
       #_(when source-map-name
@@ -167,27 +173,33 @@
   (when (not= 1 (-> state :build-modules count))
     (throw (ex-info "can only execute non modular builds" {})))
 
-  (let [script-name (-> state :build-modules first :js-name)
-        script-args (->> args
-                         (map (fn [arg]
-                                (cond
-                                  (string? arg)
-                                  arg
-                                  (= :script arg)
-                                  (str public-path "/" script-name)
-                                  :else
-                                  (throw (ex-info "invalid execute args" {:args args})))))
-                         (into [program]))
-        pb (doto (ProcessBuilder. script-args)
-             ;; (.directory public-dir)
-             (.inheritIO))]
+  (let [script-name
+        (-> state :build-modules first :js-name)
+
+        script-args
+        (->> args
+             (map (fn [arg]
+                    (cond
+                      (string? arg)
+                      arg
+                      (= :script arg)
+                      (str public-path "/" script-name)
+                      :else
+                      (throw (ex-info "invalid execute args" {:args args})))))
+             (into [program]))
+
+        pb
+        (doto (ProcessBuilder. script-args)
+          ;; (.directory public-dir)
+          (.inheritIO))]
 
     ;; not using this because we only get output once it is done
     ;; I prefer to see progress
     ;; (prn (apply shell/sh script-args))
 
     (cljs/with-logged-time
-      [logger (format "Execute: %s" (pr-str script-args))]
+      [state {:type ::execute!
+              :args script-args}]
       (let [proc (.start pb)
             ;; FIXME: what if this doesn't terminate?
             exit-code (.waitFor proc)]
@@ -265,7 +277,8 @@
              (into []))]
 
     (if (empty? test-namespaces)
-      (do (cljs/log-progress logger (format "No tests to run for: %s" (pr-str source-names)))
+      (do (cljs/log state {:type :info
+                           :msg (format "No tests to run for: %s" (pr-str source-names))})
           state)
       (do (-> state
               (make-test-runner test-namespaces)

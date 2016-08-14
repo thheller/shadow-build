@@ -7,7 +7,7 @@
 
   :dependencies
   [[org.clojure/clojure "1.9.0-alpha10"]
-   [org.clojure/clojurescript "1.9.183"]
+   [org.clojure/clojurescript "1.9.198"]
    [aysylu/loom "0.6.0"]
    [com.cognitect/transit-clj "0.8.288"]]
 

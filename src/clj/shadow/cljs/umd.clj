@@ -41,7 +41,9 @@
 
    (let [output-file (umd-output-file state)]
      (cljs/with-logged-time
-       [logger (format "Flushing UMD file: %s" output-file)]
+       [state {:type ::flush
+               :optimized true
+               :output-file output-file}]
 
        (let [{:keys [output prepend append source-map-name name js-name] :as mod} (first modules)]
          (let [out (str prepend unoptimizable output append)
@@ -91,12 +93,11 @@
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))
 
-  (cljs/with-logged-time
-    [(:logger state) "Flushing sources"]
-    (cljs/flush-sources-by-name state (mapcat :sources build-modules)))
+  (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
   (cljs/with-logged-time
-    [(:logger state) "Flushing unoptimized UMD module"]
+    [state {:type ::flush
+            :optimized false}]
 
     ;; flush fake modules
     (let [mod (first build-modules)

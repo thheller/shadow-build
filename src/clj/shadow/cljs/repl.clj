@@ -26,49 +26,62 @@
   ;; must compile an empty cljs.user to properly populate the ::ana/namespaces
   ;; could just manually set the values needed but I don't want to keep track what gets set
   ;; so just pretend there is actually an empty ns we never user
-  (let [state (cljs/merge-resource state (cljs/make-runtime-setup state))
-        state (cljs/merge-resource state {:type :cljs
-                                          :ns 'cljs.user
-                                          :name "cljs/user.cljs"
-                                          :js-name "cljs/user.js"
-                                          :input (atom
-                                                   (str "(ns cljs.user"
-                                                        "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
-                                          :provides #{'cljs.user}
-                                          :requires #{'cljs.core 'runtime-setup 'cljs.repl}
-                                          :require-order '[cljs.core runtime-setup cljs.repl]
-                                          :last-modified (System/currentTimeMillis)})
+  (let [runtime-setup
+        (cljs/make-runtime-setup state)
 
-        repl-state {:current {:ns 'cljs.user
-                              :name "cljs/user.cljs"
-                              ;; will be populated after compile
-                              :ns-info nil}
-                    ;; the sources required to get the repl started
-                    :repl-sources []
-                    ;; each input and the action it should execute
-                    ;; keeps the entire history of the repl
-                    :repl-actions []
-                    }
+        cljs-user
+        {:type :cljs
+         :ns 'cljs.user
+         :name "cljs/user.cljs"
+         :js-name "cljs/user.js"
+         :input (atom
+                  (str "(ns cljs.user"
+                       "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
+         :provides #{'cljs.user}
+         :requires #{'cljs.core 'runtime-setup 'cljs.repl}
+         :require-order '[cljs.core runtime-setup cljs.repl]
+         :last-modified (System/currentTimeMillis)}
 
-        repl-sources (cljs/get-deps-for-ns state 'cljs.user)
-        state (-> state
-                  (cljs/finalize-config)
-                  (cljs/compile-sources repl-sources))
+        state
+        (-> state
+            (cljs/merge-resource runtime-setup)
+            (cljs/merge-resource cljs-user))
 
-        ns-info (get-in state [:compiler-env ::ana/namespaces 'cljs.user])
+        repl-state
+        {:current {:ns 'cljs.user
+                   :name "cljs/user.cljs"
+                   ;; will be populated after compile
+                   :ns-info nil}
+         ;; the sources required to get the repl started
+         :repl-sources []
+         ;; each input and the action it should execute
+         ;; keeps the entire history of the repl
+         :repl-actions []
+         }
 
-        repl-state (-> repl-state
-                       (assoc :repl-sources repl-sources
-                              :repl-js-sources (->> repl-sources
-                                                    (map #(get-in state [:sources % :js-name]))
-                                                    (into [])))
-                       (assoc-in [:current :ns-info] ns-info))
+        repl-sources
+        (cljs/get-deps-for-ns state 'cljs.user)
 
-        state (assoc state :repl-state repl-state)]
+        state
+        (-> state
+            (cljs/finalize-config)
+            (cljs/do-compile-sources repl-sources))
 
-    (cljs/flush-sources-by-name state repl-sources)
+        ns-info
+        (get-in state [:compiler-env ::ana/namespaces 'cljs.user])
+
+        repl-state
+        (-> repl-state
+            (assoc :repl-sources repl-sources
+                   :repl-js-sources (->> repl-sources
+                                         (map #(get-in state [:sources % :js-name]))
+                                         (into [])))
+            (assoc-in [:current :ns-info] ns-info))]
+
+    (-> state
+        (assoc :repl-state repl-state)
+        (cljs/flush-sources-by-name repl-sources))
     ))
-
 
 (defn remove-quotes [quoted-form]
   (walk/prewalk
@@ -119,7 +132,7 @@
                )))]
 
      (-> state
-         (cljs/compile-sources deps)
+         (cljs/do-compile-sources deps)
          (cljs/flush-sources-by-name deps)
          (load-macros-and-set-ns-info)
          (update-in [:repl-state :repl-actions] conj {:type :repl/require
@@ -158,7 +171,7 @@
                     :reload :reload}]
 
         (-> state
-            (cljs/compile-sources deps)
+            (cljs/do-compile-sources deps)
             (cljs/flush-sources-by-name deps)
             (update-in [:repl-state :repl-actions] conj action))
         ))))
