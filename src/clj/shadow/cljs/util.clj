@@ -462,7 +462,7 @@
         (-> ns-info
             ;; remove the :rename if it is only a macro and not a cljs var
             (cond->
-              (ana-is-cljs-def? source-sym)
+              (not (ana-is-cljs-def? source-sym))
               (update :renames dissoc rename-to))
 
             (update :rename-macros assoc rename-to source-sym))))
@@ -473,7 +473,6 @@
   (doseq [[sym lib] uses]
     (when (and (not (ana-is-cljs-def? lib sym))
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
-      (prn [:warning ns-info])
       (throw
         (ana/error env
           (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))) ;; I hope no one ever sees this ...

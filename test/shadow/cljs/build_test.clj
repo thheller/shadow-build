@@ -299,7 +299,8 @@
               ;; (cljs/flush-modules-to-disk)
               (cljs/flush-unoptimized)
               )]
-    ;; (println (get-in s [:sources "with_rename.cljs" :output]))
+
+    (println (get-in s [:sources "with_rename.cljs" :output]))
     ))
 
 (deftest test-flush-compact
@@ -528,6 +529,10 @@
         a (util/parse-ns test)
         b (cljs-parse-ns ns-env test)
         ]
+
+    (-> b
+        (dissoc :env :form)
+        (pprint))
 
     (is (= (:name a) (:name b)))
     (is (= (:requires a) (:requires b)))
