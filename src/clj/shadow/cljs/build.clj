@@ -27,6 +27,7 @@
             [loom.alg :as la]
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
+            [shadow.cljs.log :as log]
             [clojure.pprint :refer (pprint)]
             ))
 
@@ -1550,21 +1551,23 @@ normalize-resource-name
             (assoc :compiled @compiled))))))
 
 (defn compile-sources
-  [state source-names]
+  [{:keys [n-compile-threads] :as state} source-names]
   "compile a list of sources by name,
    requires that the names are in dependency order
    requires that ALL of the dependencies NOT in source names are already compiled
    eg. you cannot just compile [\"clojure/string.cljs\"] as it requires other files to be compiled first"
-  (if (> (:n-compile-threads state) 1)
+  (log state {:type :compile-sources
+              :n-compile-threads n-compile-threads
+              :source-names source-names})
+  (if (> n-compile-threads 1)
     (par-compile-sources state source-names)
     (do-compile-sources state source-names)))
-
 
 (defn do-compile-modules
   "compiles source based on :build-modules (created by prepare-modules)"
   [{:keys [build-modules] :as state}]
   (let [source-names
-        (mapcat :sources build-modules)]
+        (into [] (mapcat :sources build-modules))]
     (compile-sources state source-names)))
 
 (defn prepare-compile
@@ -2403,67 +2406,6 @@ enable-emit-constants [state]
        (when (= :exit timing)
          (format " (%d ms)" duration))))
 
-(defmulti log->str
-  (fn [state event] (:type event))
-  :default ::default)
-
-(defmethod log->str ::default
-  [state event]
-  (with-out-str
-    (pprint event)))
-
-(defmethod log->str :compile-cljs
-  [state {:keys [name] :as event}]
-  (timing-prefix event (format "Compile CLJS: %s" name)))
-
-(defmethod log->str :compile-modules
-  [state {:keys [name] :as event}]
-  (timing-prefix event "Compiling modules"))
-
-(defmethod log->str :cache-read
-  [state {:keys [name] :as event}]
-  (format "[CACHE] read: %s" name))
-
-(defmethod log->str :cache-write
-  [state {:keys [name] :as event}]
-  (format "[CACHE] write: %s" name))
-
-(defmethod log->str :flush-unoptimized
-  [state {:keys [name] :as event}]
-  (timing-prefix event "Flushing unoptimized modules"))
-
-(defmethod log->str :flush-optimized
-  [state {:keys [path] :as event}]
-  (timing-prefix event (format "Flushing optimized modules" path)))
-
-(defmethod log->str :flush-module
-  [state {:keys [name js-name js-size] :as event}]
-  (format "Flushing: %s (%d bytes)" js-name js-size))
-
-(defmethod log->str :flush-sources
-  [state {:keys [source-names] :as event}]
-  (timing-prefix event (format "Flushing %s sources" (count source-names))))
-
-(defmethod log->str :find-resources
-  [state {:keys [path] :as event}]
-  (timing-prefix event (format "Finding resources in: %s" path)))
-
-(defmethod log->str :find-resources-classpath
-  [state {:keys [path] :as event}]
-  (timing-prefix event (format "Finding resources in classpath" path)))
-
-(defmethod log->str :optimize
-  [state {:keys [path] :as event}]
-  (timing-prefix event (format "Optimizing" path)))
-
-(defmethod log->str :bad-resource
-  [state {:keys [msg] :as event}]
-  msg)
-
-(defmethod log->str :warning
-  [state {:keys [name msg]}]
-  (str "WARNING: " msg " (" name ")"))
-
 (defn init-state []
   (-> {:compiler-env {} ;; will become env/*compiler*
 
@@ -2508,15 +2450,20 @@ enable-emit-constants [state]
        :n-compile-threads (.. Runtime getRuntime availableProcessors)
 
        :source-paths {}
-       :closure-defines {"goog.DEBUG" false
-                         "goog.LOCALE" "en"}
+       :closure-defines
+       {"goog.DEBUG" false
+        "goog.LOCALE" "en"}
 
        :logger
        (let [log-lock (Object.)]
          (reify BuildLog
            (log* [_ state evt]
              (locking log-lock
-               (println (log->str state evt))))))}
+               (let [s (log/event->str evt)
+                     s (if (contains? evt :timing)
+                         (timing-prefix evt s)
+                         s)]
+                 (println s))))))}
 
       (add-closure-configurator closure-add-replace-constants-pass)
       ))

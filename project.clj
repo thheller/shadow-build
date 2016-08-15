@@ -19,10 +19,13 @@
   ["src/java"]
 
   :profiles
-  {:dev {:source-paths ["src/dev"]
-         :dependencies [[org.clojure/tools.namespace "0.2.11"]
-                        [junit/junit "4.12"]
-                        ]}}
+  {:dev
+   {:source-paths
+    ["src/dev"]
+    :dependencies
+    [[org.clojure/tools.namespace "0.2.11"]
+     [junit/junit "4.12"]
+     ]}}
 
   :plugins
   [[codox "0.8.13"]]

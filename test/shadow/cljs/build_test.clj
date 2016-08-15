@@ -325,15 +325,15 @@
     ))
 
 (deftest test-bad-files
-  (let [s (-> (cljs/init-state)
-              (cljs/find-resources-in-classpath)
-              ;; this should not fail, although there are broken files
-              (cljs/find-resources "cljs-data/bad/src")
-              (cljs/finalize-config)
-              (cljs/configure-module :test ['bad-ns] #{})
-              ;; should throw an error
-              (cljs/compile-modules)
-              )]
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/find-resources-in-classpath)
+            ;; this should not fail, although there are broken files
+            (cljs/find-resources "cljs-data/bad/src")
+            (cljs/finalize-config)
+            (cljs/configure-module :test ['bad-ns] #{}))]
+
+    (is (thrown? clojure.lang.ExceptionInfo (cljs/compile-modules state)))
     ))
 
 (deftest test-bad-jar
@@ -360,7 +360,7 @@
               (cljs/find-resources "cljs-data/dummy/src")
               (cljs/finalize-config)
               (cljs/configure-module :test ['basic] #{})
-              (cljs/compile-modules)
+              ;; (cljs/compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
               ;;(cljs/flush-unoptimized)
@@ -378,7 +378,7 @@
               (cljs/find-resources "cljs-data/dummy/src")
               (cljs/finalize-config)
               (cljs/configure-module :test ['basic] #{})
-              (cljs/compile-modules)
+              ;; (cljs/compile-modules)
               ;; (cljs/closure-optimize)
               ;; (cljs/flush-modules-to-disk)
               ;;(cljs/flush-unoptimized)
