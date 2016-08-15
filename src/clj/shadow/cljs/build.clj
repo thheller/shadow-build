@@ -836,10 +836,11 @@ normalize-resource-name
           ;; merge resource data & return it
           (-> (merge rc cache-data)
               (dissoc :analyzer :cache-options :age-of-deps)
-              (assoc :output (slurp cache-js))))))))
+              (assoc :cached true
+                     :output (slurp cache-js))))))))
 
 (defn write-cached-cljs-resource
-  [{:keys [cache-dir cljs-runtime-path] :as state} {:keys [ns name js-name] :as rc}]
+  [{:keys [ns name js-name] :as rc} {:keys [cache-dir cljs-runtime-path] :as state}]
 
   ;; only cache files that don't have warnings!
   (when-not (seq (:warnings rc))
@@ -887,10 +888,11 @@ normalize-resource-name
                              from-jar)))]
     (or (when cache?
           (load-cached-cljs-resource state src))
-        (let [src (do-compile-cljs-resource state src)]
-          (when cache?
-            (write-cached-cljs-resource state src))
-          src))))
+        (-> (do-compile-cljs-resource state src)
+            (cond->
+              cache?
+              (write-cached-cljs-resource state))
+            (assoc :cached false)))))
 
 (defn merge-provides [state provided-by provides]
   (reduce
@@ -1307,7 +1309,7 @@ normalize-resource-name
 
   ;; if only one module is defined we dont need all this work
   (if (= 1 (count modules))
-    (vals modules)
+    (vec (vals modules))
     ;; else: multiple modules must be sorted in dependency order
     (let [module-graph
           (module-graph modules)
@@ -1444,18 +1446,12 @@ normalize-resource-name
         (fn [state source-name]
           (let [src (get-in state [:sources source-name])
                 compiled-src (generate-output-for-source state src)]
-            (-> state
-                (assoc-in [:sources source-name] compiled-src)
-                (cond->
-                  (not= (:compiled-at src)
-                        (:compiled-at compiled-src))
-                  (update :compiled conj source-name)
-                  ))))
-        (assoc state :compiled [])
+            (assoc-in state [:sources source-name] compiled-src)))
+        state
         source-names))))
 
 (defn par-compile-one
-  [state ready-ref compiled-ref errors-ref source-name]
+  [state ready-ref errors-ref source-name]
   (let [{:keys [requires] :as src}
         (get-in state [:sources source-name])]
 
@@ -1488,10 +1484,6 @@ normalize-resource-name
             (let [{:keys [provides] :as compiled-src}
                   (generate-output-for-source state src)]
 
-              (when (not= (:compiled-at src)
-                          (:compiled-at compiled-src))
-                (swap! compiled-ref conj source-name))
-
               (swap! ready-ref set/union provides)
               compiled-src)
             (catch Exception e
@@ -1510,10 +1502,6 @@ normalize-resource-name
             ready
             (atom #{})
 
-            ;; files that were actually compiled (not recycled)
-            compiled
-            (atom [])
-
             ;; source-name -> exception
             errors
             (atom {})
@@ -1524,7 +1512,7 @@ normalize-resource-name
             tasks
             (->> (for [source-name source-names]
                    ;; bound-fn for with-compiler-state
-                   (let [task-fn (bound-fn [] (par-compile-one state ready compiled errors source-name))]
+                   (let [task-fn (bound-fn [] (par-compile-one state ready errors source-name))]
                      (.submit exec ^Callable task-fn)))
                  (doall) ;; force submit all, then deref
                  (into [] (map deref)))]
@@ -1548,7 +1536,7 @@ normalize-resource-name
                                    (assoc sources name src))
                                  sources
                                  tasks)))
-            (assoc :compiled @compiled))))))
+            )))))
 
 (defn compile-sources
   [{:keys [n-compile-threads] :as state} source-names]
@@ -1565,10 +1553,8 @@ normalize-resource-name
 
 (defn do-compile-modules
   "compiles source based on :build-modules (created by prepare-modules)"
-  [{:keys [build-modules] :as state}]
-  (let [source-names
-        (into [] (mapcat :sources build-modules))]
-    (compile-sources state source-names)))
+  [{:keys [build-sources] :as state}]
+  (compile-sources state build-sources))
 
 (defn prepare-compile
   "prepares for compilation (eg. create source lookup index, runtime-setup)"
@@ -1589,7 +1575,9 @@ normalize-resource-name
 
         modules
         (sort-and-compact-modules state)]
-    (assoc state :build-modules modules)))
+    (assoc state
+      :build-modules modules
+      :build-sources (into [] (mapcat :sources modules)))))
 
 (defn compile-modules
   "compiles according to configured :modules"
