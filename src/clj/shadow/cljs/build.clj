@@ -845,7 +845,9 @@ normalize-resource-name
   ;; only cache files that don't have warnings!
   (when-not (seq (:warnings rc))
 
-    (let [cache-file (get-cache-file-for-rc state rc)
+    (let [cache-file
+          (get-cache-file-for-rc state rc)
+
           cache-data
           (-> rc
               (dissoc :file :output :input :url)
@@ -873,7 +875,9 @@ normalize-resource-name
 
       (log state {:type :cache-write
                   :ns ns
-                  :name name}))))
+                  :name name})
+
+      true)))
 
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
@@ -888,11 +892,14 @@ normalize-resource-name
                              from-jar)))]
     (or (when cache?
           (load-cached-cljs-resource state src))
-        (-> (do-compile-cljs-resource state src)
-            (cond->
-              cache?
-              (write-cached-cljs-resource state))
-            (assoc :cached false)))))
+        (let [compiled-src
+              (do-compile-cljs-resource state src)]
+
+          (when cache?
+            (write-cached-cljs-resource compiled-src state))
+
+          ;; fresh compiled, not from cache
+          (assoc compiled-src :cached false)))))
 
 (defn merge-provides [state provided-by provides]
   (reduce
