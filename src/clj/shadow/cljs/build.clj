@@ -1488,8 +1488,17 @@ normalize-resource-name
 
           :ready-to-compile
           (try
-            (let [{:keys [provides] :as compiled-src}
+            (let [expected-provides
+                  (:provides src)
+
+                  {:keys [provides] :as compiled-src}
                   (generate-output-for-source state src)]
+
+              (when (not= expected-provides provides)
+                (throw (ex-info "generated output did not produce expected provides"
+                         {:expected expected-provides
+                          :provides provides
+                          :source-name source-name})))
 
               (swap! ready-ref set/union provides)
               compiled-src)
