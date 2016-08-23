@@ -147,9 +147,12 @@
   (let [registered-src-paths
         (->> source-paths
              (vals)
-             (filter :abs-path)
-             (filter #(.startsWith file-path (:abs-path %)))
+             (filter :file)
+             (filter
+               (fn [{:keys [path] :as src-path}]
+                 (.startsWith file-path path)))
              (into []))]
+
     (if (not= 1 (count registered-src-paths))
       ;; FIXME: configure it?
       (do (prn [:not-on-registered-source-path file-path])
@@ -157,18 +160,32 @@
 
       ;; on registered source path
       ;; FIXME: could just reload if it exists? might be a recently created file, this covers both cases
-      (let [{:keys [abs-path path] :as the-path} (first registered-src-paths)
-            rc-name (subs file-path (-> abs-path (count) (inc)))
-            rc (cljs/make-fs-resource state path rc-name (io/file file-path))
-            state (cljs/merge-resource state rc)
-            deps (cljs/get-deps-for-src state rc-name)
-            repl-deps (remove-already-required-repl-deps state deps)
-            action {:type :repl/require
-                    :source repl-deps
-                    :js-sources (->> repl-deps
-                                     (map #(get-in state [:sources % :js-name]))
-                                     (into []))
-                    :reload :reload}]
+      (let [{:keys [path] :as the-path}
+            (first registered-src-paths)
+
+            rc-name
+            (subs file-path (-> path (count) (inc)))
+
+            rc
+            (cljs/make-fs-resource state path rc-name (io/file file-path))
+
+            state
+            (cljs/merge-resource state rc)
+
+            deps
+            (cljs/get-deps-for-src state rc-name)
+
+            repl-deps
+            (remove-already-required-repl-deps state deps)
+
+            action
+            {:type :repl/require
+             :source repl-deps
+             :js-sources
+             (->> repl-deps
+                  (map #(get-in state [:sources % :js-name]))
+                  (into []))
+             :reload :reload}]
 
         (-> state
             (cljs/do-compile-sources deps)

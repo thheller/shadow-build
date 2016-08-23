@@ -918,3 +918,16 @@
             (repl/process-input "(cljs.test/run-all-tests)"))]
 
     ))
+
+
+(deftest test-repl-load-file
+  (let [abs-file
+        (-> (io/file "cljs-data/dummy/src/basic.cljs")
+            (.getAbsolutePath))
+
+        {:keys [repl-state] :as state}
+        (-> (basic-repl-setup)
+            (repl/process-input (str "(load-file \"" abs-file "\")")))]
+
+    (pprint repl-state)
+    ))
