@@ -144,24 +144,27 @@
                                                       :source source})))))
 
 (defn repl-load-file [{:keys [source-paths] :as state} source file-path]
-  (let [registered-src-paths
+  (let [matched-paths
         (->> source-paths
              (vals)
              (filter :file)
              (filter
                (fn [{:keys [path] :as src-path}]
-                 (.startsWith file-path path)))
+                 ;; without the / it will create 2 matches for
+                 ;; something/src/clj
+                 ;; something/src/cljs
+                 (.startsWith file-path (str path "/"))))
              (into []))]
 
-    (if (not= 1 (count registered-src-paths))
+    (if (not= 1 (count matched-paths))
       ;; FIXME: configure it?
-      (do (prn [:not-on-registered-source-path file-path])
+      (do (prn [:not-on-registered-source-path file-path matched-paths])
           state)
 
       ;; on registered source path
       ;; FIXME: could just reload if it exists? might be a recently created file, this covers both cases
       (let [{:keys [path] :as the-path}
-            (first registered-src-paths)
+            (first matched-paths)
 
             rc-name
             (subs file-path (-> path (count) (inc)))
