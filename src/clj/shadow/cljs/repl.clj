@@ -112,7 +112,7 @@
          ;; returns the updated ns-info
          ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
 
-         deps (cljs/get-deps-for-mains state new-requires)
+         deps (cljs/get-deps-for-entries state new-requires)
          new-deps (remove-already-required-repl-deps state deps)
 
          load-macros-and-set-ns-info

@@ -62,6 +62,10 @@
   [{:keys [msg] :as event}]
   msg)
 
+(defmethod event->str :reload
+  [{:keys [action ns name file]}]
+  (format "RELOAD: %s" name))
+
 (defmethod event->str :warning
   [{:keys [name msg]}]
   (str "WARNING: " msg " (" name ")"))

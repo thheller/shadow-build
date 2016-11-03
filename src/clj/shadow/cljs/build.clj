@@ -1201,9 +1201,9 @@ normalize-resource-name
       ))
 
 (defn configure-module
-  ([state module-name module-mains depends-on]
-   (configure-module state module-name module-mains depends-on {}))
-  ([state module-name module-mains depends-on mod-attrs]
+  ([state module-name module-entries depends-on]
+   (configure-module state module-name module-entries depends-on {}))
+  ([state module-name module-entries depends-on mod-attrs]
    (when-not (keyword? module-name)
      (throw (ex-info "module name should be a keyword" {:module-name module-name})))
    (when-not (every? keyword? depends-on)
@@ -1216,7 +1216,7 @@ normalize-resource-name
          (merge mod-attrs
            {:name module-name
             :js-name (str (name module-name) ".js")
-            :mains module-mains
+            :entries module-entries
             :depends-on (into #{} depends-on)
             :default is-default?})]
 
@@ -1375,17 +1375,17 @@ normalize-resource-name
                   :msg warning})
       )))
 
-(defn get-deps-for-mains [state mains]
-  (->> mains
+(defn get-deps-for-entries [state entries]
+  (->> entries
        (mapcat #(get-deps-for-ns state %))
        (distinct)
        (into [])))
 
 (defn do-analyze-module
-  "resolve all deps for a given module, based on specified :mains
+  "resolve all deps for a given module, based on specified :entries
    will update state for each module with :sources, a list of sources needed to compile this module "
-  [state {:keys [name mains] :as module}]
-  (assoc-in state [:modules name :sources] (get-deps-for-mains state mains)))
+  [state {:keys [name entries] :as module}]
+  (assoc-in state [:modules name :sources] (get-deps-for-entries state entries)))
 
 (defn add-foreign
   [state name provides requires js-source externs-source]
@@ -1554,6 +1554,16 @@ normalize-resource-name
                                  tasks)))
             )))))
 
+(defn names-compiled-in-last-build [{:keys [build-sources build-start] :as state}]
+  (->> build-sources
+       (filter
+         (fn [name]
+           (let [{:keys [compiled compiled-at cached] :as rc}
+                 (get-in state [:sources name])]
+             (and (not cached) compiled (> compiled-at build-start))
+             )))
+       (into [])))
+
 (defn compile-sources
   [{:keys [n-compile-threads] :as state} source-names]
   "compile a list of sources by name,
@@ -1563,9 +1573,15 @@ normalize-resource-name
   (log state {:type :compile-sources
               :n-compile-threads n-compile-threads
               :source-names source-names})
-  (if (> n-compile-threads 1)
-    (par-compile-sources state source-names)
-    (do-compile-sources state source-names)))
+  (-> state
+      (assoc :build-start (System/currentTimeMillis))
+      (cond->
+        (> n-compile-threads 1)
+        (par-compile-sources source-names)
+
+        (not (> n-compile-threads 1))
+        (do-compile-sources source-names))
+      (assoc :build-done (System/currentTimeMillis))))
 
 (defn do-compile-modules
   "compiles source based on :build-modules (created by prepare-modules)"
@@ -1711,7 +1727,7 @@ normalize-resource-name
 ;; FIXME: manifest should be custom step
 (defn flush-manifest [public-dir modules]
   (spit (io/file public-dir "manifest.json")
-    (json/write-str (map #(select-keys % [:name :js-name :mains :depends-on :default :sources]) modules))))
+    (json/write-str (map #(select-keys % [:name :js-name :entries :depends-on :default :sources]) modules))))
 
 (defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
   (->> sources
@@ -2189,13 +2205,14 @@ normalize-resource-name
     ;; only resource that have a file associated with them can be reloaded (?)
     (if (nil? file)
       state
-      (let [new-rc (-> rc
-                       (dissoc :ns :ns-info :requires :require-order :provides :output :compiled :compiled-at)
-                       (reload-source)
-                       (as-> src'
-                         (inspect-resource state src'))
-                       (cond-> file
-                         (assoc :last-modified (.lastModified file))))]
+      (let [new-rc
+            (-> rc
+                (dissoc :ns :ns-info :requires :require-order :provides :output :compiled :compiled-at)
+                (reload-source)
+                (as-> src'
+                  (inspect-resource state src'))
+                (cond-> file
+                  (assoc :last-modified (.lastModified file))))]
         (-> state
             (unmerge-resource name)
             (merge-resource new-rc))))
