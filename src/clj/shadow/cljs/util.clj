@@ -31,7 +31,7 @@
 
 (defn is-macro?
   ([ns sym]
-    (is-macro? (symbol (str ns) (str sym))))
+   (is-macro? (symbol (str ns) (str sym))))
   ([fqn]
    (when-let [the-var (find-var fqn)]
      (.isMacro the-var))))
@@ -292,15 +292,16 @@
     (throw (ex-info "Namespaces must be named by a symbol." {:form form})))
 
   (let [first-arg (first more)
-        [meta more] (cond
-                      (and (string? first-arg) (map? (second more)))
-                      [(assoc (second more) :doc first-arg) (drop 2 more)]
-                      (string? first-arg)
-                      [{:doc first-arg} (rest more)]
-                      (map? first-arg)
-                      [first-arg (rest more)]
-                      :else
-                      [nil more])
+        [meta more]
+        (cond
+          (and (string? first-arg) (map? (second more)))
+          [(assoc (second more) :doc first-arg) (drop 2 more)]
+          (string? first-arg)
+          [{:doc first-arg} (rest more)]
+          (map? first-arg)
+          [first-arg (rest more)]
+          :else
+          [nil more])
         ns-info
         (reduce
           (fn [{:keys [seen] :as ns-info} part]
@@ -337,6 +338,9 @@
           {:excludes #{}
            :seen #{}
            :name (vary-meta ns-name merge meta)
+           ;; FIXME: stores ns meta on here as well
+           ;; the meta on the name sym is lost on cache write
+           :meta meta
            :requires {}
            :require-order []
            :require-macros {}
@@ -445,9 +449,9 @@
    {:pre [(symbol? fqn)
           (namespace fqn)
           (name fqn)]}
-    (ana-is-cljs-def?
-      (symbol (namespace fqn))
-      (symbol (name fqn))))
+   (ana-is-cljs-def?
+     (symbol (namespace fqn))
+     (symbol (name fqn))))
   ([ns sym]
    {:pre [(symbol? ns)
           (symbol? sym)]}
