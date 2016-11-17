@@ -2415,6 +2415,20 @@ enable-emit-constants [state]
 (defn set-build-options [state opts]
   (merge state opts))
 
+(defn merge-build-options [state opts]
+  (reduce-kv
+    (fn [state key value]
+      (cond
+        (and (map? value)
+             (map? (get state key)))
+        (update state key merge value)
+
+        :default
+        (assoc state key value)
+        ))
+    state
+    opts))
+
 (defn get-closure-compiler [state]
   (::cc state))
 
