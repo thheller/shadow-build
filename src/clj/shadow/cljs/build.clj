@@ -7,7 +7,9 @@
            (com.google.javascript.jscomp.deps JsFileParser)
            (java.util.logging Level)
            [java.util.concurrent Executors Future]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner))
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner)
+           (java.security MessageDigest)
+           (javax.xml.bind DatatypeConverter))
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -1746,8 +1748,21 @@ normalize-resource-name
 
 ;; FIXME: manifest should be custom step
 (defn flush-manifest [public-dir modules]
-  (spit (io/file public-dir "manifest.json")
-    (json/write-str (map #(select-keys % [:name :js-name :entries :depends-on :default :sources]) modules))))
+  (spit
+    (io/file public-dir "manifest.json")
+    (->> modules
+         (map (fn [{:keys [name js-name entries depends-on default sources foreign-files] :as mod}]
+                (-> {:name name
+                     :js-name js-name
+                     :entries entries
+                     :depends-on depends-on
+                     :default default
+                     :sources sources}
+                    (cond->
+                      (seq foreign-files)
+                      (assoc :foreign (mapv #(select-keys % [:js-name :provides]) foreign-files))))
+                ))
+         (json/write-str))))
 
 (defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
   (->> sources
@@ -1756,9 +1771,94 @@ normalize-resource-name
        (map :output)
        (str/join "\n")))
 
+(defn md5hex [^String text]
+  (let [bytes
+        (.getBytes text)
+
+        md
+        (doto (MessageDigest/getInstance "MD5")
+          (.update bytes))
+
+        sig
+        (.digest md)]
+
+    (DatatypeConverter/printHexBinary sig)
+    ))
+
+(defn create-foreign-bundles
+  [state]
+  (update state :optimized
+    (fn [modules]
+      (->> modules
+           (map (fn [{:keys [name sources] :as mod}]
+                  (let [foreign-srcs
+                        (->> sources
+                             (map #(get-in state [:sources %]))
+                             (filter :foreign))]
+
+                    (if-not (seq foreign-srcs)
+                      mod
+                      (let [output
+                            (->> foreign-srcs
+                                 (map :output)
+                                 (str/join "\n"))
+
+                            provides
+                            (->> foreign-srcs
+                                 (map :provides)
+                                 (reduce set/union #{})
+                                 (sort)
+                                 (into []))
+
+                            md5
+                            (md5hex output)
+
+                            foreign-name
+                            (str (clojure.core/name name) "-foreign-" md5 ".js")]
+
+                        (assoc mod
+                          ;; remove foreign from sources list (mainly for a clean manifest)
+                          :sources
+                          (->> sources
+                               (map #(get-in state [:sources %]))
+                               (remove :foreign)
+                               (map :name)
+                               (into []))
+
+                          ;; FIXME: unfinished optmization
+                          ;; I want to be able to split foreigns into multiple files eventually
+                          ;; say you have foreign A,B,C
+                          ;; if A changes more frequently than B,C it might be useful to have it as a separate include
+                          ;; so B,C still benefit from caching and A doesn't cause them to download again
+                          :foreign-files
+                          [{:js-name foreign-name
+                            :provides provides
+                            :output output
+                            }])))
+                    )))
+           (into [])))))
+
+(defn flush-foreign-bundles
+  [{:keys [public-dir] :as state}]
+  (doseq [{:keys [foreign-files] :as mod} (:optimized state)
+          :when (seq foreign-files)
+          {:keys [js-name provides output] :as foreign-file} foreign-files]
+    (let [target (io/file public-dir js-name)]
+      (when-not (.exists target)
+
+        (log state {:type :flush-foreign
+                    :provides provides
+                    :js-name js-name
+                    :js-size (count output)})
+
+        (spit target output))))
+
+  state)
+
 (defn flush-modules-to-disk
   [{modules :optimized
     :keys [unoptimizable
+           bundle-foreign
            ^File public-dir
            cljs-runtime-path]
     :as state}]
@@ -1772,47 +1872,57 @@ normalize-resource-name
     (when-not public-dir
       (throw (ex-info "missing :public-dir" {})))
 
-    (doseq [{:keys [default output prepend source-map-name name js-name] :as mod} modules]
-      (let [target
-            (io/file public-dir js-name)
+    (let [{modules :optimized
+           :as state}
+          (if (not= :inline bundle-foreign)
+            (-> state
+                (create-foreign-bundles)
+                (flush-foreign-bundles))
+            state)]
 
-            out
-            (if default
-              (str unoptimizable output)
-              output)
+      (doseq [{:keys [default output prepend source-map-name name js-name] :as mod} modules]
+        (let [target
+              (io/file public-dir js-name)
 
-            out
-            (if (:web-worker mod)
-              (let [deps (:depends-on mod)]
-                (str (str/join "\n" (for [other modules
-                                          :when (contains? deps (:name other))]
-                                      (str "importScripts('" (:js-name other) "');")))
-                     "\n\n"
-                     out))
-              out)
+              out
+              (if default
+                (str unoptimizable output)
+                output)
 
-            out
-            (str prepend (foreign-js-source-for-mod state mod) out)]
+              out
+              (if (:web-worker mod)
+                (let [deps (:depends-on mod)]
+                  (str (str/join "\n" (for [other modules
+                                            :when (contains? deps (:name other))]
+                                        (str "importScripts('" (:js-name other) "');")))
+                       "\n\n"
+                       out))
+                out)
 
-        (io/make-parents target)
-        (spit target out)
+              out
+              (if (= :inline bundle-foreign)
+                (str prepend (foreign-js-source-for-mod state mod) out)
+                (str prepend "\n" out))]
 
-        (log state {:type :flush-module
-                    :name name
-                    :js-name js-name
-                    :js-size (count out)})
+          (io/make-parents target)
+          (spit target out)
 
-        (when source-map-name
-          (spit target (str "\n//# sourceMappingURL=" cljs-runtime-path "/" (file-basename source-map-name) "\n")
-            :append true))))
+          (log state {:type :flush-module
+                      :name name
+                      :js-name js-name
+                      :js-size (count out)})
 
-    (flush-manifest public-dir modules)
+          (when source-map-name
+            (spit target (str "\n//# sourceMappingURL=" cljs-runtime-path "/" (file-basename source-map-name) "\n")
+              :append true))))
 
-    (when (:source-map state)
-      (flush-source-maps state))
+      (flush-manifest public-dir modules)
 
-    ;; with-logged-time expects that we return the compiler-state
-    state))
+      (when (:source-map state)
+        (flush-source-maps state))
+
+      ;; with-logged-time expects that we return the compiler-state
+      state)))
 
 (defn load-externs [{:keys [externs build-modules] :as state}]
   (let [default-externs
@@ -2477,6 +2587,8 @@ enable-emit-constants [state]
        :runtime {:print-fn :console}
        :macros-loaded #{}
        :use-file-min true
+
+       :bundle-foreign :inline
 
        :static-fns true
        :elide-asserts false
