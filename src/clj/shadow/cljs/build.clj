@@ -671,13 +671,18 @@ normalize-resource-name
 
 (defn default-compile-cljs
   [state compile-state form]
-  (let [ast (analyze state compile-state form)
-        ast-js (with-out-str
-                 (comp/emit ast))
+  (let [ast
+        (analyze state compile-state form)
 
-        compile-state (if (= :ns (:op ast))
-                        (update-rc-from-ns state compile-state ast)
-                        compile-state)]
+        ast-js
+        (with-out-str
+          (comp/emit ast))
+
+        compile-state
+        (if (= :ns (:op ast))
+          (update-rc-from-ns state compile-state ast)
+          compile-state)]
+
     (update-in compile-state [:js] str ast-js)
     ))
 
@@ -801,83 +806,98 @@ normalize-resource-name
   (let [cache-file (get-cache-file-for-rc state rc)
         cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
-    (when (and (.exists cache-file)
-               (> (.lastModified cache-file) last-modified)
-               (.exists cache-js)
-               (> (.lastModified cache-js) last-modified))
+    (try
+      (when (and (.exists cache-file)
+                 (> (.lastModified cache-file) last-modified)
+                 (.exists cache-js)
+                 (> (.lastModified cache-js) last-modified))
 
-      (let [cache-data
-            (read-cache cache-file)
+        (let [cache-data
+              (read-cache cache-file)
 
-            age-of-deps
-            (make-age-map state ns)]
+              age-of-deps
+              (make-age-map state ns)]
 
-        ;; just checking the "maximum" last-modified of all dependencies is not enough
-        ;; must check times of all deps, mostly to guard against jar changes
-        ;; lib-A v1 was released 3 days ago
-        ;; lib-A v2 was released 1 day ago
-        ;; we depend on lib-A and compile against v1 today
-        ;; realize that a new version exists and update deps
-        ;; compile again .. since we were compiled today the min-age is today
-        ;; which is larger than v2 release date thereby using cache if only checking one timestamp
+          ;; just checking the "maximum" last-modified of all dependencies is not enough
+          ;; must check times of all deps, mostly to guard against jar changes
+          ;; lib-A v1 was released 3 days ago
+          ;; lib-A v2 was released 1 day ago
+          ;; we depend on lib-A and compile against v1 today
+          ;; realize that a new version exists and update deps
+          ;; compile again .. since we were compiled today the min-age is today
+          ;; which is larger than v2 release date thereby using cache if only checking one timestamp
 
-        (when (and (= (:source-path cache-data) (:source-path rc))
-                   (= age-of-deps (:age-of-deps cache-data))
-                   (every? #(= (get state %) (get-in cache-data [:cache-options %])) cache-affecting-options))
-          (log state {:type :cache-read
-                      :name name})
+          (when (and (= (:source-path cache-data) (:source-path rc))
+                     (= age-of-deps (:age-of-deps cache-data))
+                     (every? #(= (get state %) (get-in cache-data [:cache-options %])) cache-affecting-options))
+            (log state {:type :cache-read
+                        :name name})
 
-          ;; restore analysis data
-          (let [ana-data (:analyzer cache-data)]
+            ;; restore analysis data
+            (let [ana-data (:analyzer cache-data)]
 
-            (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
-            (util/load-macros ana-data))
+              (swap! env/*compiler* assoc-in [::ana/namespaces (:ns cache-data)] ana-data)
+              (util/load-macros ana-data))
 
-          ;; merge resource data & return it
-          (-> (merge rc cache-data)
-              (dissoc :analyzer :cache-options :age-of-deps)
-              (assoc :cached true
-                     :output (slurp cache-js))))))))
+            ;; merge resource data & return it
+            (-> (merge rc cache-data)
+                (dissoc :analyzer :cache-options :age-of-deps)
+                (assoc :cached true
+                       :output (slurp cache-js))))))
+
+      (catch Exception e
+        (log state {:type :cache-error
+                    :ns ns
+                    :name name
+                    :error e})
+        nil))))
 
 (defn write-cached-cljs-resource
   [{:keys [ns name js-name] :as rc} {:keys [cache-dir cljs-runtime-path] :as state}]
 
   ;; only cache files that don't have warnings!
   (when-not (seq (:warnings rc))
-
     (let [cache-file
-          (get-cache-file-for-rc state rc)
+          (get-cache-file-for-rc state rc)]
 
-          cache-data
-          (-> rc
-              (dissoc :file :output :input :url)
-              (assoc :age-of-deps (make-age-map state ns)
-                     :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+      (try
+        (let [cache-data
+              (-> rc
+                  (dissoc :file :output :input :url)
+                  (assoc :age-of-deps (make-age-map state ns)
+                         :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
 
-          cache-options
-          (reduce
-            (fn [cache-options option-key]
-              (assoc cache-options option-key (get state option-key)))
-            {}
-            cache-affecting-options)
+              cache-options
+              (reduce
+                (fn [cache-options option-key]
+                  (assoc cache-options option-key (get state option-key)))
+                {}
+                cache-affecting-options)
 
-          cache-data
-          (assoc cache-data :cache-options cache-options)
+              cache-data
+              (assoc cache-data :cache-options cache-options)
 
-          cache-js
-          (io/file cache-dir cljs-runtime-path js-name)]
+              cache-js
+              (io/file cache-dir cljs-runtime-path js-name)]
 
-      (io/make-parents cache-file)
-      (write-cache cache-file cache-data)
+          (io/make-parents cache-file)
+          (write-cache cache-file cache-data)
 
-      (io/make-parents cache-js)
-      (spit cache-js (:output rc))
+          (io/make-parents cache-js)
+          (spit cache-js (:output rc))
 
-      (log state {:type :cache-write
-                  :ns ns
-                  :name name})
+          (log state {:type :cache-write
+                      :ns ns
+                      :name name})
 
-      true)))
+          true)
+        (catch Exception e
+          (log state {:type :cache-error
+                      :ns ns
+                      :name name
+                      :error e})
+          nil)
+        ))))
 
 (defn maybe-compile-cljs
   "take current state and cljs resource to compile
@@ -1365,8 +1385,8 @@ normalize-resource-name
   "print warnings after building modules, repeat warnings for files that weren't recompiled!"
   [state]
   (doseq [{:keys [name warnings] :as src}
-          (->> (:sources state)
-               vals
+          (->> (:build-sources state)
+               (map #(get-in state [:sources %]))
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (doseq [warning warnings]
