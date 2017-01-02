@@ -67,7 +67,8 @@
   (format "RELOAD: %s" name))
 
 (defmethod event->str :warning
-  [{:keys [name msg]}]
-  (str "WARNING: " msg " (" name ")"))
+  [{:keys [name warning]}]
+  (let [{:keys [msg line column]} warning]
+    (str "WARNING: " msg " (" name " at " line ":" column ") ")))
 
 

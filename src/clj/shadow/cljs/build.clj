@@ -695,10 +695,17 @@ normalize-resource-name
                         :extra extra}))
 
 (defn warning->msg [{:keys [warning-type env extra] :as warning}]
-  (when (contains? ana/*cljs-warnings* warning-type)
-    (when-let [s (ana/error-message warning-type extra)]
-      (ana/message env s)
-      )))
+  (let [{:keys [line column]}
+        env
+
+        msg
+        (ana/error-message warning-type extra)]
+
+    {:warning warning-type
+     :line line
+     :column column
+     :msg msg
+     :extra extra}))
 
 (defmacro with-warnings
   "given a body that produces a compilation result, collect all warnings and assoc into :warnings"
@@ -1392,9 +1399,10 @@ normalize-resource-name
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (doseq [warning warnings]
+
       (log state {:type :warning
                   :name name
-                  :msg warning})
+                  :warning warning})
       )))
 
 (defn get-deps-for-entries [state entries]
@@ -1652,10 +1660,13 @@ normalize-resource-name
 (defn compile-all-for-ns
   "compiles files to given ns, ignores configured :modules"
   [state ns]
-  (let [deps (get-deps-for-ns state ns)]
-    (-> state
-        (prepare-compile)
-        (compile-sources deps))
+  (let [state
+        (prepare-compile state)
+
+        deps
+        (get-deps-for-ns state ns)]
+
+    (compile-sources state deps)
     ))
 
 (defn cljs-source-map-for-module [sm-text sources opts]
@@ -2493,8 +2504,7 @@ normalize-resource-name
   (log state {:type :reload
               :action scan
               :ns ns
-              :name name
-              :file file})
+              :name name})
   (case scan
     :macro
     (do (try
