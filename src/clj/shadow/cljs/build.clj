@@ -2167,8 +2167,96 @@ normalize-resource-name
        (or (not (.exists x))
            (.isDirectory x))))
 
+;; FIXME: this could inline everything from a jar since they will never be live-reloaded
+;; but it would need to create a proper source-map for the module file
+;; since we need that for CLJS files
+;; compact-mode has a bunch of work for index source-maps, should be an easy port
+(defn inlineable? [{:keys [type from-jar provides requires] :as src}]
+  ;; only inline things from jars
+  (and from-jar
+       ;; only js is inlineable since we want proper source maps for cljs
+       (= :js type)
+       ;; only inline goog for now
+       (every? #(str/starts-with? (str %) "goog.") requires)
+       (every? #(str/starts-with? (str %) "goog.") provides)
+       ))
+
+(defn flush-unoptmized-module!
+  [{:keys [dev-inline-js public-dir public-path unoptimizable] :as state}
+   {:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod}]
+  (let [inlineable-sources
+        (if-not dev-inline-js
+          []
+          (->> sources
+               (map #(get-in state [:sources %]))
+               (filter inlineable?)
+               (into [])))
+
+        inlineable-set
+        (into #{} (map :name) inlineable-sources)
+
+        target
+        (io/file public-dir js-name)
+
+        inlined-js
+        (->> inlineable-sources
+             (map :output)
+             (str/join "\n"))
+
+        inlined-provides
+        (->> inlineable-sources
+             (mapcat :provides)
+             (into #{}))
+
+        ;; goog.writeScript_ (via goog.require) will set these
+        ;; since we skip these any later goog.require (that is not under our control, ie REPL)
+        ;; won't recognize them as loaded and load again
+        closure-require-hack
+        (->> inlineable-sources
+             (map :js-name)
+             (map (fn [js]
+                    ;; not entirely sure why we are setting the full path and just the name
+                    ;; goog seems to do that
+                    (str "goog.dependencies_.written[\"" js "\"] = true;\n"
+                         "goog.dependencies_.written[\"" public-path "/" js "\"] = true;")
+                    ))
+             (str/join "\n"))
+
+        requires
+        (->> sources
+             (remove inlineable-set)
+             (mapcat #(get-in state [:sources % :provides]))
+             (distinct)
+             (remove inlined-provides)
+             (map (fn [ns]
+                    (str "goog.require('" (comp/munge ns) "');")))
+             (str/join "\n"))
+
+        out
+        (str prepend prepend-js inlined-js closure-require-hack requires append-js)
+
+        out
+        (if (or default web-worker)
+          ;; default mod needs closure related setup and goog.addDependency stuff
+          (str unoptimizable
+               "var SHADOW_MODULES = {};\n"
+               (when web-worker
+                 "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
+               (closure-defines-and-base state)
+               (closure-goog-deps state)
+               "\n\n"
+               out)
+          ;; else
+          out)
+
+        out
+        (str out "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n")]
+
+    (spit target out)))
+
+
 (defn flush-unoptimized!
-  [{:keys [build-modules public-dir unoptimizable] :as state}]
+  [{:keys [build-modules public-dir] :as state}]
   {:pre [(directory? public-dir)]}
 
   (when-not (seq build-modules)
@@ -2181,33 +2269,8 @@ normalize-resource-name
 
     (flush-manifest public-dir build-modules)
 
-    ;; flush fake modules
-    (doseq [{:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod} build-modules]
-      (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
-                          sources)
-            target (io/file public-dir js-name)
-
-            out (->> provided-ns
-                     (map (fn [ns]
-                            (str "goog.require('" (comp/munge ns) "');")))
-                     (str/join "\n"))
-            out (str prepend prepend-js out append-js)
-            out (if (or default web-worker)
-                  ;; default mod needs closure related setup and goog.addDependency stuff
-                  (str unoptimizable
-                       "var SHADOW_MODULES = {};\n"
-                       (when web-worker
-                         "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
-                       (closure-defines-and-base state)
-                       (closure-goog-deps state)
-                       "\n\n"
-                       out)
-                  ;; else
-                  out)
-
-            out (str out "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n")]
-
-        (spit target out)))
+    (doseq [mod build-modules]
+      (flush-unoptmized-module! state mod))
 
     state
     ))
@@ -2223,7 +2286,10 @@ normalize-resource-name
     (count (line-seq rdr))))
 
 (defn create-index-map
-  [{:keys [public-dir cljs-runtime-path] :as state} out-file init-offset {:keys [sources js-name] :as mod}]
+  [{:keys [public-dir cljs-runtime-path] :as state}
+   out-file
+   init-offset
+   {:keys [sources js-name] :as mod}]
   (let [index-map
         (reduce
           (fn [src-map src-name]
@@ -2599,6 +2665,7 @@ enable-emit-constants [state]
        :use-file-min true
 
        :bundle-foreign :inline
+       :dev-inline-js true
 
        :static-fns true
        :elide-asserts false
