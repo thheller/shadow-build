@@ -313,7 +313,7 @@
           (-> (cljs/with-compiler-env state
                 (let [repl-action
                       ;; FIXME: what actually populates this? emit or analyze?
-                      (cljs/with-warnings
+                      (cljs/with-warnings state
                         (binding [comp/*source-map-data*
                                   (atom {:source-map (sorted-map)
                                          :gen-col 0

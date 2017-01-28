@@ -71,4 +71,13 @@
   (let [{:keys [msg line column]} warning]
     (str "WARNING: " msg " (" name " at " line ":" column ") ")))
 
+(defmethod event->str :name-violation
+  [{:keys [src expected url]}]
+  (let [{:keys [name ns source-path]}
+        src]
+    (str "File violation: \"" name "\" produced unexpected ns \"" ns "\""
+         "\n\tExpected: " source-path "/" expected
+         "\n\tProvided: " source-path "/" name
+         )))
+
 

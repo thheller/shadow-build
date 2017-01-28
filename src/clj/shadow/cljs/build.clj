@@ -689,36 +689,47 @@ normalize-resource-name
     ))
 
 
-(defn warning-collector [warnings warning-type env extra]
-  (swap! warnings conj {:warning-type warning-type
-                        :env env
-                        :extra extra}))
+(defn warning-collector [build-env warnings warning-type env extra]
+  ;; FIXME: currently there is no way to turn off :infer-externs
+  ;; the work is always done and the warning is always generated
+  ;; it is just not emitted when *warn-in-infer* is not set
 
-(defn warning->msg [{:keys [warning-type env extra] :as warning}]
-  (let [{:keys [line column]}
-        env
+  ;; we collect all warnings always since any warning should prevent caching
+  ;; :infer-warnings however are very inaccurate so we filter those unless
+  ;; explicitly enabled, mirroring what CLJS does more closely.
+  (when (or (not= :infer-warning warning-type)
+            (get ana/*cljs-warnings* :infer-warning))
 
-        msg
-        (ana/error-message warning-type extra)]
+    (let [{:keys [line column]}
+          env
 
-    {:warning warning-type
-     :line line
-     :column column
-     :msg msg
-     :extra extra}))
+          msg
+          (ana/error-message warning-type extra)]
+
+      (swap! warnings conj
+        {:warning warning-type
+         :line line
+         :column column
+         :msg msg
+         :extra extra}
+        ))))
 
 (defmacro with-warnings
   "given a body that produces a compilation result, collect all warnings and assoc into :warnings"
-  [& body]
-  `(let [warnings# (atom [])
-         result# (ana/with-warning-handlers
-                   [(partial warning-collector warnings#)]
-                   ~@body)]
-     (assoc result# :warnings (mapv warning->msg @warnings#))))
+  [build-env & body]
+  `(let [warnings#
+         (atom [])
+
+         result#
+         (ana/with-warning-handlers
+           [(partial warning-collector ~build-env warnings#)]
+           ~@body)]
+
+     (assoc result# :warnings @warnings#)))
 
 (defn compile-cljs-string
   [state cljs-source name cljc?]
-  (with-warnings
+  (with-warnings state
     (do-compile-cljs-string
       {:name name :ns 'cljs.user}
       (partial default-compile-cljs state)
@@ -727,7 +738,7 @@ normalize-resource-name
 
 (defn compile-cljs-seq
   [state cljs-forms name]
-  (with-warnings
+  (with-warnings state
     (reduce
       (partial default-compile-cljs state)
       {:name name :ns 'cljs.user}
@@ -738,10 +749,17 @@ normalize-resource-name
    should not touch global state"
   [{:keys [static-fns] :as state} {:keys [name input] :as rc}]
 
-  (binding [ana/*cljs-static-fns* static-fns
+  (binding [ana/*cljs-static-fns*
+            static-fns
+
             ;; initialize with default value
             ;; must set binding to it is thread bound, since the analyzer may set! it
-            ana/*unchecked-if* ana/*unchecked-if*]
+            ana/*unchecked-if*
+            ana/*unchecked-if*
+
+            ;; root binding for warnings so (set! *warn-on-infer* true) can work
+            ana/*cljs-warnings*
+            ana/*cljs-warnings*]
     (let [source @input]
       (with-logged-time
         [state {:type :compile-cljs :name name}]
@@ -991,10 +1009,8 @@ normalize-resource-name
 
     (do (log state
           {:type :name-violation
-           :ns (:ns src)
-           :url url
-           :expected (str (ns->cljs-file (:ns src)) " (or .cljc)")
-           :got name})
+           :src src
+           :expected (str (ns->cljs-file (:ns src)) " (or .cljc)")})
         ;; still want to remember the resource so it doesn't get detected as new all the time
         ;; remove all provides, otherwise it might end up being used despite the invalid name
         ;; enforce this behavior since the warning might get overlooked easily
@@ -1037,22 +1053,24 @@ normalize-resource-name
           cljs-name
           (when cljc?
             (str/replace name #"cljc$" "cljs"))]
+
       (cond
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))
         ;; less noise by not complaining
-        (do #_(log state {:type :bad-resource
-                          :reason :cljs-over-cljc
-                          :name name
-                          :cljc-name name
-                          :cljs-name cljs-name
-                          :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
-          state)
+        (do (log state {:type :bad-resource
+                        :reason :cljs-over-cljc
+                        :name name
+                        :cljc-name name
+                        :cljs-name cljs-name
+                        :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
+            state)
 
         ;; if a .cljc exists for a .cljs file
         ;; overrides provides from .cljc with provides in .cljs
         (and (is-cljs? name) (contains? (:sources state) cljc-name))
         (-> state
+            (unmerge-resource cljc-name)
             (assoc-in [:sources name] src)
             (merge-provides name provides))
 
@@ -1116,9 +1134,7 @@ normalize-resource-name
 (defn find-resources-in-classpath
   "finds all cljs resources in the classpath (ignores resources)"
   ([state]
-   (find-resources-in-classpath state {:exclude [#"resources(/?)$"
-                                                 #"classes(/?)$"
-                                                 #"java(/?)$"]}))
+   (find-resources-in-classpath state {:exclude (:classpath-excludes state [])}))
   ([state {:keys [exclude]}]
    (with-logged-time
      [state {:type :find-resources-classpath}]
@@ -1203,11 +1219,18 @@ normalize-resource-name
     (assoc state :macros macro-info)
     ))
 
+(defn set-default-compiler-env
+  [state]
+  (cond-> state
+    (nil? (:compiler-env state))
+    (assoc :compiler-env @(env/default-compiler-env state))))
+
 (defn finalize-config
   "should be called AFTER all resources have been discovered (ie. after find-resources...)"
   [state]
   (-> state
       (discover-macros)
+      (set-default-compiler-env)
       (assoc
         :configured
         true
@@ -1666,7 +1689,9 @@ normalize-resource-name
         deps
         (get-deps-for-ns state ns)]
 
-    (compile-sources state deps)
+    (-> state
+        (assoc :build-sources deps)
+        (compile-sources deps))
     ))
 
 (defn cljs-source-map-for-module [sm-text sources opts]
@@ -2648,7 +2673,7 @@ enable-emit-constants [state]
          (format " (%d ms)" duration))))
 
 (defn init-state []
-  (-> {:compiler-env {} ;; will become env/*compiler*
+  (-> {::is-compiler-state true
 
        :ignore-patterns
        #{#"^node_modules/"
@@ -2657,7 +2682,11 @@ enable-emit-constants [state]
          #"_test.js$"
          #"^public/"}
 
-       ::is-compiler-state true
+       :classpath-excludes
+       [#"resources(/?)$"
+        #"classes(/?)$"
+        #"java(/?)$"]
+
        ::cc (make-closure-compiler)
 
        :runtime {:print-fn :console}
