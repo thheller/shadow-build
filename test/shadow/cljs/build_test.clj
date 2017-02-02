@@ -18,8 +18,7 @@
   (:import (java.util.regex Pattern)
            (java.io File)
            (java.net URL)
-           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile ProcessCommonJSModules TransformAMDToCJSModule ES6ModuleLoader)
-           (com.google.javascript.jscomp.parsing Config$LanguageMode)
+           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile )
            (clojure.lang ExceptionInfo)))
 
 (deftest test-initial-scan

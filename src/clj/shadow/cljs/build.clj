@@ -580,14 +580,24 @@ normalize-resource-name
 
 
 (defn post-analyze-ns [{:keys [name] :as ast} opts]
-  (let [ast (-> ast
-                (util/load-macros)
-                (util/infer-macro-require)
-                (util/infer-macro-use)
-                (util/infer-renames-for-macros))]
+  (let [ast
+        (-> ast
+            (util/load-macros)
+            (util/infer-macro-require)
+            (util/infer-macro-use)
+            (util/infer-renames-for-macros))]
+
     (util/check-uses! ast)
     (util/check-renames! ast)
     (swap! env/*compiler* assoc-in [::ana/namespaces name] (dissoc ast :env :op :form))
+
+    ;; FIXME: is this the correct location to do this?
+    ;; FIXME: using alter instead of reset, to avoid completely removing meta
+    ;; when thing/ns.clj and thing/ns.cljs both have different meta
+
+    (when-let [the-ns (find-ns name)]
+      (.alterMeta ^clojure.lang.Namespace the-ns merge (seq [(meta name)])))
+
     ast))
 
 (defn post-analyze [{:keys [op] :as ast} opts]
@@ -622,6 +632,7 @@ normalize-resource-name
           (seq name)]}
     ;; (defmulti parse (fn [op & rest] op))
    (let [default-parse ana/parse]
+
      (binding [*ns* (create-ns ns)
                ana/*passes* [ana/infer-type]
                ;; [infer-type ns-side-effects] is default, we don't want the side effects
@@ -630,7 +641,6 @@ normalize-resource-name
                ;; so we keep hijacking
                ana/*cljs-ns* ns
                ana/*cljs-file* name]
-
        (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
            (assoc :context context)
            (ana/analyze form ns state)
@@ -829,7 +839,8 @@ normalize-resource-name
    :node-global-prefix])
 
 (defn load-cached-cljs-resource
-  [{:keys [cache-dir cljs-runtime-path] :as state} {:keys [ns js-name name last-modified] :as rc}]
+  [{:keys [cache-dir cljs-runtime-path] :as state}
+   {:keys [ns js-name name last-modified] :as rc}]
   (let [cache-file (get-cache-file-for-rc state rc)
         cache-js (io/file cache-dir cljs-runtime-path js-name)]
 
