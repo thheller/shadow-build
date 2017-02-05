@@ -2700,6 +2700,9 @@ enable-emit-constants [state]
 
        ::cc (make-closure-compiler)
 
+       :closure-warnings
+       {:check-types :off}
+
        :runtime {:print-fn :console}
        :macros-loaded #{}
        :use-file-min true
