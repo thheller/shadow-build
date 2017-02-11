@@ -203,7 +203,11 @@
         :require-order (into [] (map munge-goog-ns) (.getRequires deps))
         :provides (into #{} (map munge-goog-ns) (.getProvides deps))))))
 
-(defn rewrite-clojure-requires
+(defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
+  {:pre [(compiler-state? state)]}
+  (into #{} (concat (vals require-macros) (vals use-macros))))
+
+(defn rewrite-ns-aliases
   [{:keys [requires uses require-order] :as ast}
    {:keys [ns-alias-fn] :as state}]
   (let [should-rewrite
@@ -244,7 +248,7 @@
         ))))
 
 (defn update-rc-from-ns
-  [state rc {:keys [name require-order require-macros use-macros] :as ast}]
+  [state rc {:keys [name require-order] :as ast}]
   {:pre [(compiler-state? state)]}
   (let [require-order
         (if (= 'cljs.core name)
@@ -288,7 +292,7 @@
           (if (identical? peek eof-sentinel)
             (throw (ex-info "file is empty" {:name name}))
             (let [ast (-> (util/parse-ns peek)
-                          (rewrite-clojure-requires state))]
+                          (rewrite-ns-aliases state))]
               (-> state
                   (update-rc-from-ns rc ast)
                   (assoc :cljc cljc?)))))
@@ -644,7 +648,7 @@ normalize-resource-name
 
 (defn hijacked-parse-ns [env form name opts]
   (-> (util/parse-ns form)
-      (rewrite-clojure-requires opts)
+      (rewrite-ns-aliases opts)
       (assoc :env env :form form :op :ns)))
 
 (def default-parse ana/parse)
