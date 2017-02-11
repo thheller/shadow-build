@@ -836,7 +836,8 @@ normalize-resource-name
 (def cache-affecting-options
   [:static-fns
    :elide-asserts
-   :node-global-prefix])
+   :node-global-prefix
+   :source-map])
 
 (defn load-cached-cljs-resource
   [{:keys [cache-dir cljs-runtime-path] :as state}
@@ -1705,29 +1706,43 @@ normalize-resource-name
         (compile-sources deps))
     ))
 
-(defn cljs-source-map-for-module [sm-text sources opts]
-  (let [sm-json (json/read-str sm-text :key-fn keyword)
-        closure-source-map (sm/decode sm-json)]
-    (loop [sources (seq sources)
-           merged (sorted-map-by (sm/source-compare (map :name sources)))]
-      (if sources
-        (let [{:keys [name js-name] :as source} (first sources)]
-          (recur
-            (next sources)
-            (assoc merged name (sm/merge-source-maps (:source-map source)
-                                 (get closure-source-map js-name)))))
+;; FIXME: need to investige this further
+;; closure produces a source map, we want to map the names in that back to cljs names
+;; but the lines don't match up correctly, leaving us with a basically useless source map
+(defn cljs-source-map-for-module
+  "this does not work when using modules as the lines are all screwed up"
+  [state {module-name :name :as module} source-names sm-text]
+  (let [sm-json
+        (json/read-str sm-text :key-fn keyword)
 
-        ;; FIXME: sm/encode relativizes paths but we already have relative paths
-        ;; there is a bunch of work done over there that we simply dont need
-        ;; unfortunatly there is no "simple" workarround
-        ;; if that ever changes return result of sm/encode instead of reparsing it
-        (-> (sm/encode merged
-              {:lines (+ (:lineCount sm-json) 2)
-               :file (:file sm-json)})
-            (json/read-str)
-            (assoc "sources" (keys merged))
-            ;; sm/encode pprints
-            (json/write-str))))))
+        closure-source-map
+        (sm/decode-reverse sm-json)
+
+        merged
+        (reduce
+          (fn [merged source-name]
+            (let [{:keys [type name source-map] :as source}
+                  (get-in state [:sources source-name])]
+
+              (if (not= :cljs type)
+                merged
+                (let [closure-map
+                      (get closure-source-map name)
+
+                      map
+                      (sm/merge-source-maps source-map closure-map)]
+
+                  (assoc merged name map)))))
+
+          (sorted-map-by (sm/source-compare source-names))
+          source-names)]
+
+    (let [res
+          (-> (sm/encode* merged
+                {:lines (+ (:lineCount sm-json) 2)
+                 :file (:file sm-json)})
+              (assoc "sources" (keys merged)))]
+      (json/write-str res))))
 
 
 (defn make-closure-modules
@@ -1749,10 +1764,8 @@ normalize-resource-name
                   (throw (ex-info "missing output for source" {:js-name js-name :name (:name src)})))
 
                 (if (:foreign src)
-                  (.add js-mod (SourceFile/fromCode js-name (make-foreign-js-source src)))
-                  (let [input-name (if (= :cljs type) (str "CLJS/" js-name) js-name)]
-                    (.add js-mod (SourceFile/fromCode input-name output))
-                    )))
+                  (.add js-mod (SourceFile/fromCode name (make-foreign-js-source src)))
+                  (.add js-mod (SourceFile/fromCode name output))))
 
               (when (seq append-js)
                 (.add js-mod (SourceFile/fromCode (str "mod_" name "_append.js") append-js)))
@@ -2086,18 +2099,30 @@ normalize-resource-name
 
                         (vec (for [{:keys [js-name js-module sources] :as m} modules
                                    ;; reset has to be called before .toSource
-                                   :let [_ (when source-map?
-                                             (.reset source-map))
-                                         output (.toSource cc js-module)]]
+                                   :let [_
+                                         (when source-map?
+                                           (.reset source-map))
+
+                                         output
+                                         (.toSource cc js-module)]]
                                (-> m
                                    (dissoc :js-module)
                                    (merge {:output output}
                                      (when source-map?
-                                       (let [sw (StringWriter.)
-                                             sources (map #(get-in state [:sources %]) sources)
-                                             source-map-name (str js-name ".map")]
-                                         (.appendTo source-map sw source-map-name)
-                                         {:source-map-json (cljs-source-map-for-module (.toString sw) sources state)
+                                       (let [sw
+                                             (StringWriter.)
+
+                                             source-map-name
+                                             (str js-name ".map")
+
+                                             _ (.appendTo source-map sw source-map-name)
+
+                                             closure-json
+                                             (.toString sw)]
+
+                                         ;; FIXME: not trying to map JS names back to CLJS
+                                         ;; (cljs-source-map-for-module state m sources closure-json)
+                                         {:source-map-json closure-json
                                           :source-map-name source-map-name})
                                        ))))))))))))
 
