@@ -705,10 +705,18 @@ normalize-resource-name
       (let [result
             (loop [{:keys [ns ns-info] :as compile-state} (assoc init :js "")]
               (let [form
-                    (binding [*ns* (create-ns ns)
-                              ana/*cljs-ns* ns
-                              ana/*cljs-file* name
-                              reader/*data-readers* tags/*cljs-data-readers*
+                    (binding [*ns*
+                              (create-ns ns)
+
+                              ana/*cljs-ns*
+                              ns
+
+                              ana/*cljs-file*
+                              name
+
+                              reader/*data-readers*
+                              tags/*cljs-data-readers*
+
                               reader/*alias-map*
                               (merge reader/*alias-map*
                                 (:requires ns-info)
@@ -799,7 +807,7 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [{:keys [static-fns] :as state} {:keys [name input] :as rc}]
+  [{:keys [static-fns elide-asserts] :as state} {:keys [name input] :as rc}]
 
   (binding [ana/*cljs-static-fns*
             static-fns
@@ -811,10 +819,15 @@ normalize-resource-name
 
             ;; root binding for warnings so (set! *warn-on-infer* true) can work
             ana/*cljs-warnings*
-            ana/*cljs-warnings*]
+            ana/*cljs-warnings*
+
+            *assert*
+            (not= elide-asserts true)]
+
     (let [source @input]
       (with-logged-time
         [state {:type :compile-cljs :name name}]
+
         (let [{:keys [js ns requires require-order source-map warnings]}
               (cond
                 (string? source)
@@ -2184,86 +2197,88 @@ normalize-resource-name
        (str/join "\n")))
 
 (defn flush-sources-by-name
-  [{:keys [public-dir cljs-runtime-path node-global-prefix] :as state} source-names]
-  (with-logged-time
-    [state {:type :flush-sources
-            :source-names source-names}]
-    (doseq [{:keys [type name input last-modified] :as src}
-            (->> source-names
-                 (map #(get-in state [:sources %])))
-            :let [target (io/file public-dir cljs-runtime-path name)]
+  ([state]
+    (flush-sources-by-name state (mapcat :sources (:build-modules state))))
+  ([{:keys [public-dir cljs-runtime-path node-global-prefix] :as state} source-names]
+   (with-logged-time
+     [state {:type :flush-sources
+             :source-names source-names}]
+     (doseq [{:keys [type name input last-modified] :as src}
+             (->> source-names
+                  (map #(get-in state [:sources %])))
+             :let [target (io/file public-dir cljs-runtime-path name)]
 
-            ;; skip files we already have since source maps are kinda expensive to generate
-            :when (or (not (.exists target))
-                      (zero? last-modified)
-                      (> (or (:compiled-at src) ;; js is not compiled but maybe modified
-                             last-modified)
-                         (.lastModified target)))]
+             ;; skip files we already have since source maps are kinda expensive to generate
+             :when (or (not (.exists target))
+                       (zero? last-modified)
+                       (> (or (:compiled-at src) ;; js is not compiled but maybe modified
+                              last-modified)
+                          (.lastModified target)))]
 
-      (io/make-parents target)
+       (io/make-parents target)
 
-      (case type
-        ;; cljs needs to flush the generated .js, for source-maps also the .cljs and a .map
-        :cljs
-        (do (let [{:keys [requires provides source-map js-name output]} src
-                  js-target (io/file public-dir cljs-runtime-path js-name)]
+       (case type
+         ;; cljs needs to flush the generated .js, for source-maps also the .cljs and a .map
+         :cljs
+         (do (let [{:keys [requires provides source-map js-name output]} src
+                   js-target (io/file public-dir cljs-runtime-path js-name)]
 
-              (when (nil? output)
-                (throw (ex-info (format "no output for resource: %s" js-name) src)))
+               (when (nil? output)
+                 (throw (ex-info (format "no output for resource: %s" js-name) src)))
 
-              (let [[output sm-offset]
-                    (if (= node-global-prefix "global")
-                      [output 0]
+               (let [[output sm-offset]
+                     (if (= node-global-prefix "global")
+                       [output 0]
 
-                      ;; rewrite output to add local names
-                      ;; first line should be goog.provide which must be moved
-                      (let [namespaces
-                            (into requires provides)
+                       ;; rewrite output to add local names
+                       ;; first line should be goog.provide which must be moved
+                       (let [namespaces
+                             (into requires provides)
 
-                            local-names
-                            (util/js-for-local-names namespaces)
+                             local-names
+                             (util/js-for-local-names namespaces)
 
-                            ;; FIXME: assumes goog.provide is first line which is usually is
-                            [provide & lines]
-                            (str/split output #"\n")]
-                        [(str "var goog = " node-global-prefix ".goog;\n"
-                              ;; must call the provide before creating local name
-                              provide "\n"
-                              ;; lookup global names, make local vars
-                              (str/join "\n" local-names)
-                              "\n"
-                              ;; rest of normal output
-                              (str/join "\n" lines))
-                         ;; source-map must be aware that we added some lines
-                         (-> local-names (count) (inc))]))]
+                             ;; FIXME: assumes goog.provide is first line which is usually is
+                             [provide & lines]
+                             (str/split output #"\n")]
+                         [(str "var goog = " node-global-prefix ".goog;\n"
+                               ;; must call the provide before creating local name
+                               provide "\n"
+                               ;; lookup global names, make local vars
+                               (str/join "\n" local-names)
+                               "\n"
+                               ;; rest of normal output
+                               (str/join "\n" lines))
+                          ;; source-map must be aware that we added some lines
+                          (-> local-names (count) (inc))]))]
 
-                (spit js-target output)
+                 (spit js-target output)
 
-                ;; source-map on the resource is always generated
-                ;; only output it though if globally activated
-                (when (and source-map (:source-map state))
-                  (let [source-map-name (str js-name ".map")]
-                    (spit (io/file public-dir cljs-runtime-path source-map-name)
-                      (sm/encode {name source-map} {:file js-name
-                                                    :preamble-line-count sm-offset}))
-                    (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))))
+                 ;; source-map on the resource is always generated
+                 ;; only output it though if globally activated
+                 (when (and source-map (:source-map state))
+                   (let [source-map-name (str js-name ".map")]
+                     (spit (io/file public-dir cljs-runtime-path source-map-name)
+                       (sm/encode {name source-map} {:file js-name
+                                                     :preamble-line-count sm-offset}))
+                     (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))))
 
-            ;; spit original source, cljs needed for source maps
-            (spit target @input))
+             ;; spit original source, cljs needed for source maps
+             (spit target @input))
 
-        ;; js just needs itself
-        ;; FIXME: needs to flush more when js processing is added
-        :js
-        (do (spit target (:output src))
-            ;; foreign libs should play nice with goog require/import and tell what they provide
-            (when (:foreign src)
-              (spit target (make-foreign-js-source src) :append true)
-              ))
+         ;; js just needs itself
+         ;; FIXME: needs to flush more when js processing is added
+         :js
+         (do (spit target (:output src))
+             ;; foreign libs should play nice with goog require/import and tell what they provide
+             (when (:foreign src)
+               (spit target (make-foreign-js-source src) :append true)
+               ))
 
-        (throw (ex-info "cannot flush" (dissoc src :input :output)))
-        ))
+         (throw (ex-info "cannot flush" (dissoc src :input :output)))
+         ))
 
-    state))
+     state)))
 
 (defn directory? [^File x]
   (and (instance? File x)

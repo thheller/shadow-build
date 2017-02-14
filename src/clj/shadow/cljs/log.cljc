@@ -46,6 +46,10 @@
   [{:keys [source-names] :as event}]
   (format "Flushing %s sources" (count source-names)))
 
+(defmethod event->str :flush-source-maps
+  [event]
+  (format "Flushing source maps"))
+
 (defmethod event->str :find-resources
   [{:keys [path] :as event}]
   (format "Finding resources in: %s" path))
