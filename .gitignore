@@ -2,6 +2,7 @@
 /classes
 /checkouts
 /test-projects
+/public/js
 pom.xml
 pom.xml.asc
 *.class
