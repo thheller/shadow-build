@@ -11,7 +11,8 @@
             [clojure.repl :as repl]
             [shadow.cljs.util :as util]
             [cljs.env :as env]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [shadow.cljs.log :as log])
   (:import (clojure.tools.reader.reader_types PushbackReader StringReader)))
 
 (comment
@@ -146,7 +147,9 @@
                              (into []))
             :reload reload-flag})))))
 
-(defn repl-load-file [{:keys [source-paths] :as state} file-path]
+(defn repl-load-file [{:keys [source-paths] :as state} read-result file-path]
+  ;; FIXME: could clojure.core/load-file .clj files?
+
   (let [matched-paths
         (->> source-paths
              (vals)
@@ -220,7 +223,9 @@
        ;; FIXME: create empty ns and switch to it
        (do (prn [:did-not-find ns])
            state)
-       (let [{:keys [name ns-info]} (cljs/get-resource-for-provide state ns)
+       (let [{:keys [name ns-info]}
+             (cljs/get-resource-for-provide state ns)
+
              set-ns-action
              {:type :repl/set-ns
               :ns ns
@@ -235,7 +240,7 @@
              (update-in [:repl-state :repl-actions] conj set-ns-action)
              ))))
 
-   'repl-dump
+   'repl-state
    (fn [state read-result]
      (pprint (:repl-state state))
      state)
@@ -244,6 +249,10 @@
    (fn [state read-result & args]
      (prn [:ns-not-yet-supported args])
      state)})
+
+(defmethod log/event->str ::special-fn-error
+  [{:keys [source special-fn error]}]
+  (str special-fn " failed. " (str error)))
 
 (defn process-read-result
   [{:keys [repl-state] :as state}
@@ -258,13 +267,15 @@
           form
 
           handler
-          (get repl-special-forms read-result special-fn)]
+          (get repl-special-forms special-fn)]
 
       (try
         (apply handler state read-result args)
         (catch Exception e
-          (prn [:special-fn-error form])
-          (repl/pst e)
+          (cljs/log state {:type ::special-fn-error
+                           :source source
+                           :special-fn special-fn
+                           :error e})
           state
           )))
 

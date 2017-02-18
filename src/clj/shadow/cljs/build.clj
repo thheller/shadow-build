@@ -1125,13 +1125,13 @@ normalize-resource-name
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))
         ;; less noise by not complaining
-        (do (log state {:type :bad-resource
-                        :reason :cljs-over-cljc
-                        :name name
-                        :cljc-name name
-                        :cljs-name cljs-name
-                        :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
-            state)
+        (do #_(log state {:type :bad-resource
+                          :reason :cljs-over-cljc
+                          :name name
+                          :cljc-name name
+                          :cljs-name cljs-name
+                          :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
+          state)
 
         ;; if a .cljc exists for a .cljs file
         ;; overrides provides from .cljc with provides in .cljs
@@ -2198,7 +2198,7 @@ normalize-resource-name
 
 (defn flush-sources-by-name
   ([state]
-    (flush-sources-by-name state (mapcat :sources (:build-modules state))))
+   (flush-sources-by-name state (mapcat :sources (:build-modules state))))
   ([{:keys [public-dir cljs-runtime-path node-global-prefix] :as state} source-names]
    (with-logged-time
      [state {:type :flush-sources
