@@ -2261,7 +2261,7 @@ normalize-resource-name
                      (spit (io/file public-dir cljs-runtime-path source-map-name)
                        (sm/encode {name source-map} {:file js-name
                                                      :preamble-line-count sm-offset}))
-                     (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name) "?r=" (rand)) :append true)))))
+                     (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name)) :append true)))))
 
              ;; spit original source, cljs needed for source maps
              (spit target @input))

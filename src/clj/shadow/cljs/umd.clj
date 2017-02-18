@@ -131,9 +131,10 @@
         (append-to-target (str "\nvar goog = " node-global-prefix ".goog = {};"))
         (append-to-target (str "\nvar SHADOW_MODULES = " node-global-prefix ".SHADOW_MODULES = {};"))
         (append-to-target (str "\nvar CLOSURE_IMPORT_SCRIPT = " node-global-prefix ".CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"))
+        (append-to-target (node/closure-defines state))
         (append-to-target
           (node/replace-goog-global
-            (node/closure-defines-and-base state)
+            (node/closure-base state)
             node-global-prefix))
 
         ;; FIXME: this only really needs to var the top level (eg. cljs, not cljs.core)

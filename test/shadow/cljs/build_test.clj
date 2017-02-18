@@ -16,7 +16,7 @@
             [cljs.closure :as closure]
             [cljs.analyzer.api :as ana-api])
   (:import (java.util.regex Pattern)
-           (java.io File)
+           (java.io File ByteArrayInputStream)
            (java.net URL)
            (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile )
            (clojure.lang ExceptionInfo)))
@@ -950,3 +950,15 @@
     (is (not (str/includes? output "clojure.pprint")))
     (println output)
     ))
+
+(deftest test-repl-stream
+  (let [in
+        (ByteArrayInputStream. (.getBytes "(def foo 1)"))
+
+        {:keys [repl-state] :as state}
+        (-> (cljs/init-state)
+            (cljs/find-resources-in-classpath)
+            (repl/prepare)
+            (repl/process-input-stream in))]
+
+    (pprint (:repl-actions repl-state))))

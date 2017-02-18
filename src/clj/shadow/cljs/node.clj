@@ -1,6 +1,7 @@
 (ns shadow.cljs.node
   (:refer-clojure :exclude [flush compile])
   (:require [shadow.cljs.build :as cljs]
+            [shadow.cljs.log :as log]
             [clojure.java.io :as io]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
@@ -8,43 +9,57 @@
             [clojure.data.json :as json])
   (:import (java.io File)))
 
-;; FIXME: this is very very ugly, probably breaks easily
+
 (defn make-main-call-js [main-fn]
-  (str/join
-    "\n"
-    ["(function() {"
-     "var proc = require('process');"
-     "cljs.core.apply.cljs$core$IFn$_invoke$arity$2(" (comp/munge main-fn) ","
-     "process.argv.slice(2)"
-     ");"
-     "})();"]
-    ))
+  {:pre [(symbol? main-fn)]}
+  (str "\ncljs.core.apply.cljs$core$IFn$_invoke$arity$2(" (comp/munge main-fn) ", process.argv.slice(2));"))
 
 (defn configure
-  [state {:keys [main output-to] :as opts}]
-  (let [main-ns (namespace main)
-        [main-ns main-fn] (if (nil? main-ns)
-                            [(name main) "main"]
-                            [main-ns (name main)])
-        output-to (io/file output-to)
-        output-name (.getName output-to)
-        module-name (-> output-name (str/replace #".js$" "") (keyword))
-        output-dir (.getParentFile output-to)
+  [state {:keys [main public-dir output-to] :as opts}]
+  (let [main-ns
+        (namespace main)
 
-        main (symbol main-ns main-fn)]
+        [main-ns main-fn]
+        (if (nil? main-ns)
+          [(name main) "main"]
+          [main-ns (name main)])
+
+        output-to
+        (io/file output-to)
+
+        output-name
+        (.getName output-to)
+
+        module-name
+        (-> output-name (str/replace #".js$" "") (keyword))
+
+        public-dir
+        (if (seq public-dir)
+          (io/file public-dir)
+          (io/file "target" "shadow.node" main-ns))
+
+        main
+        (symbol main-ns main-fn)
+
+        node-config
+        (assoc opts :main-ns main-ns
+                    :main-fn main-fn
+                    :main main
+                    :output-to output-to
+                    :public-dir public-dir)]
 
     (-> state
-        (assoc :public-dir output-dir)
+        (assoc :node-config node-config)
+        (assoc :public-dir public-dir)
         (cljs/reset-modules)
-        (cljs/configure-module module-name [(symbol main-ns)] #{} {:append-js (make-main-call-js main)})
+        (cljs/configure-module module-name [(symbol main-ns)] #{} {:append-js (-> node-config :main (make-main-call-js))})
         )))
 
 (defn compile [state]
   (cljs/compile-modules state))
 
 (defn optimize [state]
-  (cljs/closure-optimize state))
-
+  (cljs/closure-optimize state (get-in state [:node-opts :optimization] :simple)))
 
 (defn replace-goog-global [s node-global-prefix]
   (str/replace s
@@ -53,114 +68,127 @@
     ;; node "this" is the local module, global is the actual global
     (str "goog.global=" node-global-prefix ";")))
 
-(defn closure-defines-and-base
-  "basically the same as cljs/closure-defines-and-base except that is sets the defines in global as well
-   also assumes that the file containing this code is the root we can use to lookup paths"
+
+(defn closure-defines
   [{:keys [node-global-prefix] :as state}]
-  (let [goog-rc (get-in state [:sources cljs/goog-base-name])
-        goog-base @(:input goog-rc)]
+  (str "\nvar CLOSURE_NO_DEPS = " node-global-prefix ".CLOSURE_NO_DEPS = true;\n"
+       "\nvar CLOSURE_DEFINES = " node-global-prefix ".CLOSURE_DEFINES = "
+       (json/write-str (:closure-defines state {}))
+       ";\n"))
 
-    (when-not (seq goog-base)
-      (throw (ex-info "no goog/base.js" {})))
+(defn closure-base
+  [state]
+  (let [goog-rc (get-in state [:sources cljs/goog-base-name])]
+    @(:input goog-rc)
+    ))
 
-    ;; FIXME: work arround for older cljs versions that used broked closure release, remove.
-    (when (< (count goog-base) 500)
-      (throw (ex-info "probably not the goog/base.js you were expecting"
-               (get-in state [:sources cljs/goog-base-name]))))
+(defmethod log/event->str ::flush-unoptimized
+  [{:keys [output-file] :as ev}]
+  (str "Flush node script: " output-file))
 
-    (str "\nvar CLOSURE_NO_DEPS = " node-global-prefix ".CLOSURE_NO_DEPS = true;\n"
-         ;; FIXME: this still has hardcoded cljs-runtime-path
-         (-> (io/resource "shadow/cljs/infer_closure_base_path.js")
-             (slurp)
-             (cond->
-               (not= node-global-prefix "global")
-               (str/replace "global." (str node-global-prefix "."))))
-         "\nvar CLOSURE_DEFINES = " node-global-prefix ".CLOSURE_DEFINES = "
-         (json/write-str (:closure-defines state {}))
-         ";\n"
-         goog-base
-         "\n")))
+(defmethod log/event->str ::flush-optimized
+  [{:keys [output-file] :as ev}]
+  (str "Flush optimized node script: " output-file))
+
 
 (defn flush-unoptimized
-  [{:keys [build-modules public-dir cljs-runtime-path node-global-prefix] :as state}]
+  [{:keys [build-modules cljs-runtime-path source-map public-dir node-global-prefix node-config] :as state}]
   {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
 
-  ;; FIXME: does node need the imul.js fix? probably not
   (cljs/flush-sources-by-name state (mapcat :sources build-modules))
 
-  (let [output-file
-        (-> build-modules first :js-name)]
+  (let [{:keys [output-to]}
+        node-config]
 
     (cljs/with-logged-time
       [state {:type ::flush-unoptimized
-              :output-file output-file}]
+              :output-file (.getAbsolutePath output-to)}]
 
-      (let [{:keys [js-name prepend prepend-js append-js sources]} (first build-modules)]
-        (let [provided-ns (mapcat #(reverse (get-in state [:sources % :provides]))
-                            sources)
-              target (io/file public-dir js-name)
+      (let [{:keys [js-name prepend prepend-js append-js sources]}
+            (first build-modules)
 
-              out (->> provided-ns
-                       (map (fn [ns]
-                              (str "goog.require('" (comp/munge ns) "');")))
-                       (str/join "\n"))
-              out (str prepend prepend-js out append-js)
+            provided-ns
+            (mapcat #(reverse (get-in state [:sources % :provides])) sources)
 
-              out (str (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
-                       "\n\n"
-                       out)
-              goog-js (io/file public-dir cljs-runtime-path "goog" "base.js")
-              deps-js (io/file public-dir cljs-runtime-path "deps.js")]
-          (spit goog-js
-            (replace-goog-global
-              @(get-in state [:sources "goog/base.js" :input])
-              node-global-prefix
-              ))
-          (spit deps-js (cljs/closure-goog-deps state))
-          (spit target out)))))
+            out
+            (str/join "\n"
+              [;; FIXME: what if there are two?
+               ;; we would break the other CLOSURE_IMPORT_SCRIPT and probably others things by replacing them
+               "if (global.goog) { throw new Error('cannot have two GOOG'); }"
+
+               prepend
+               prepend-js
+
+               (when source-map
+                 (str "try {"
+                      "require('source-map-support').install();"
+                      "} catch (e) {"
+                      "console.warn('no source map support, install npm source-map-support');"
+                      "}"))
+
+               (closure-defines state)
+
+               (str "var NODE_INCLUDE_PATH = \""
+                    (-> (io/file public-dir cljs-runtime-path)
+                        (.getAbsolutePath))
+                    "\";")
+
+               (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
+
+               (replace-goog-global
+                 (closure-base state)
+                 node-global-prefix)
+
+               ;; FIXME: only need this when running a REPL
+               "goog.isProvided_ = function(name) { return false; }"
+
+               ;; FIXME: we don't need every known dependency
+               (cljs/closure-goog-deps state)
+
+               (->> provided-ns
+                    (map (fn [ns]
+                           (str "goog.require('" (comp/munge ns) "');")))
+                    (str/join "\n"))
+               append-js])]
+
+        (io/make-parents output-to)
+        (spit output-to out))))
+
   ;; return unmodified state
   state)
 
 
 (defn flush-optimized
-  [{modules :optimized :keys [^File public-dir logger node-global-prefix] :as state}]
-  (cljs/with-logged-time
-    [state {:type ::flush-unoptimized}]
+  [{modules :optimized :keys [node-global-prefix node-config] :as state}]
+  (let [{:keys [output-to]} node-config]
+    (cljs/with-logged-time
+      [state {:type ::flush-optimized
+              :output-file (.getAbsolutePath output-to)}]
 
-    (when (not= 1 (count modules))
-      (throw (ex-info "node builds can only have one module!" {})))
+      (when (not= 1 (count modules))
+        (throw (ex-info "node builds can only have one module!" {})))
 
-    (when-not (seq modules)
-      (throw (ex-info "flush before optimize?" {})))
+      (when-not (seq modules)
+        (throw (ex-info "flush before optimize?" {})))
 
-    (when-not public-dir
-      (throw (ex-info "missing :public-dir" {})))
+      (let [{:keys [output prepend js-name]}
+            (first modules)
 
-    (let [{:keys [output prepend append source-map-name name js-name] :as mod} (first modules)
-          target (io/file public-dir js-name)
+            out
+            (str prepend
+                 (replace-goog-global output node-global-prefix))]
 
-          out (str prepend
-                   (cljs/foreign-js-source-for-mod state mod)
-                   (replace-goog-global output node-global-prefix)
-                   append)]
+        (io/make-parents output-to)
+        (spit output-to out)
 
-      (io/make-parents target)
-      (spit target out)
+        ;; FIXME: add source-map support for node
+        #_(when source-map-name
+            (spit target (str "\n//# sourceMappingURL=src/" (cljs/file-basename source-map-name) "\n")
+              :append true))
+        )))
 
-      (cljs/log state {:type :flush-module
-                       :js-name js-name
-                       :js-size (count out)})
-
-      ;; FIXME: add source-map support for node
-      #_(when source-map-name
-          (spit target (str "\n//# sourceMappingURL=src/" (cljs/file-basename source-map-name) "\n")
-            :append true))
-      ))
-
-  #_(when (:source-map state)
-      (flush-source-maps state))
 
   state)
 
@@ -169,7 +197,7 @@
     (flush-unoptimized state)
     (flush-optimized state)))
 
-(defn execute! [{:keys [logger public-path] :as state} program & args]
+(defn execute! [{:keys [public-path] :as state} program & args]
   (when (not= 1 (-> state :build-modules count))
     (throw (ex-info "can only execute non modular builds" {})))
 

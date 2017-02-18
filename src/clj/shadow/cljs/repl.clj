@@ -100,9 +100,12 @@
     (->> deps (remove old-deps) (into []))))
 
 (defn repl-require
-  ([state source quoted-require]
-   (repl-require state source quoted-require nil))
-  ([{:keys [repl-state] :as state} source quoted-require reload-flag]
+  ([state read-result quoted-require]
+   (repl-require state read-result quoted-require nil))
+  ([{:keys [repl-state] :as state}
+    read-result
+    quoted-require
+    reload-flag]
     ;; FIXME: verify quoted
    (let [current-ns (get-in repl-state [:current :ns])
          require (remove-quotes quoted-require)
@@ -135,15 +138,15 @@
          (cljs/do-compile-sources deps)
          (cljs/flush-sources-by-name deps)
          (load-macros-and-set-ns-info)
-         (update-in [:repl-state :repl-actions] conj {:type :repl/require
-                                                      :sources new-deps
-                                                      :js-sources (->> new-deps
-                                                                       (map #(get-in state [:sources % :js-name]))
-                                                                       (into []))
-                                                      :reload reload-flag
-                                                      :source source})))))
+         (update-in [:repl-state :repl-actions] conj
+           {:type :repl/require
+            :sources new-deps
+            :js-sources (->> new-deps
+                             (map #(get-in state [:sources % :js-name]))
+                             (into []))
+            :reload reload-flag})))))
 
-(defn repl-load-file [{:keys [source-paths] :as state} source file-path]
+(defn repl-load-file [{:keys [source-paths] :as state} file-path]
   (let [matched-paths
         (->> source-paths
              (vals)
@@ -211,7 +214,7 @@
 
    'in-ns
    (fn repl-in-ns
-     [state source [q ns :as quoted-ns]]
+     [state read-result [q ns :as quoted-ns]]
      ;; quoted-ns is (quote the-ns)
      (if (nil? (get-in state [:provide->source ns]))
        ;; FIXME: create empty ns and switch to it
@@ -233,101 +236,151 @@
              ))))
 
    'repl-dump
-   (fn [state source]
+   (fn [state read-result]
      (pprint (:repl-state state))
      state)
 
    'ns
-   (fn [state source & args]
-     (prn [:ns-not-yet-supported source])
+   (fn [state read-result & args]
+     (prn [:ns-not-yet-supported args])
      state)})
 
-;; https://github.com/clojure/tools.reader/blob/master/src/main/clojure/clojure/tools/reader/reader_types.clj#L47
-;; only addition is that we can get at s-pos
-;; tools.reader has source logging but I couldn't figure out if that does what I want
-(deftype DerefStringReader
-  [^String s s-len ^:unsynchronized-mutable s-pos]
+(defn process-read-result
+  [{:keys [repl-state] :as state}
+   {:keys [form source] :as read-result}]
 
-  clojure.lang.IDeref
-  (deref [_]
-    s-pos)
+  (cond
+    ;; ('special-fn ...)
+    ;; (require 'something)
+    (and (list? form)
+         (contains? repl-special-forms (first form)))
+    (let [[special-fn & args]
+          form
 
-  readers/Reader
-  (read-char [_]
-    (when (> s-len s-pos)
-      (let [r (nth s s-pos)]
-        (set! s-pos (inc s-pos))
-        r)))
-  (peek-char [_]
-    (when (> s-len s-pos)
-      (nth s s-pos))))
+          handler
+          (get repl-special-forms read-result special-fn)]
+
+      (try
+        (apply handler state read-result args)
+        (catch Exception e
+          (prn [:special-fn-error form])
+          (repl/pst e)
+          state
+          )))
+
+    ;; compile normally
+    :else
+    (-> (cljs/with-compiler-env state
+          (let [repl-action
+                ;; FIXME: what actually populates this? emit or analyze?
+                (cljs/with-warnings state
+                  (binding [comp/*source-map-data*
+                            (atom {:source-map (sorted-map)
+                                   :gen-col 0
+                                   :gen-line 0})]
+
+                    {:type :repl/invoke
+                     :js (let [ast (cljs/analyze state (:current repl-state) form :expr)]
+                           (with-out-str
+                             (comp/emit ast)))
+                     :source source
+                     ;; FIXME: need actual json source map
+                     ;; :source-map (:source-map @comp/*source-map-data*)
+                     }))]
+            (update-in state [:repl-state :repl-actions] conj repl-action)
+            )))))
+
+(defn- read-one
+  ([repl-state reader]
+    (read-one repl-state reader {}))
+  ([repl-state
+    reader
+    {:keys [filename] :or {filename "repl-input.cljs"}}]
+   (let [eof-sentinel
+         (Object.)
+
+         opts
+         {:eof eof-sentinel
+          :read-cond :allow
+          :features #{:cljs}}
+
+         buf-len 1
+
+         in
+         (readers/source-logging-push-back-reader
+           (PushbackReader. reader (object-array buf-len) buf-len buf-len)
+           1
+           filename)
+
+         {:keys [ns ns-info] :as repl-rc}
+         (:current repl-state)
+
+         form
+         (binding [*ns*
+                   (create-ns ns)
+
+                   ana/*cljs-ns*
+                   ns
+
+                   ana/*cljs-file*
+                   name
+
+                   reader/*data-readers*
+                   tags/*cljs-data-readers*
+
+                   reader/*alias-map*
+                   (merge reader/*alias-map*
+                     (:requires ns-info)
+                     (:require-macros ns-info))]
+
+           (readers/log-source in
+             (reader/read opts in)))
+
+         eof?
+         (identical? form eof-sentinel)]
+
+     (-> {:eof? eof?}
+         (cond->
+           (not eof?)
+           (assoc :form form
+                  :source
+                  ;; FIXME: poking at the internals of SourceLoggingPushbackReader
+                  ;; not using (-> form meta :source) which log-source provides
+                  ;; since there are things that do not support IMeta, still want the source though
+                  (-> @(.-source-log-frames in)
+                      (:buffer)
+                      (str)))))
+     )))
 
 (defn process-input
-  [{:keys [repl-state] :as state} repl-input]
-  (let [eof-sentinel (Object.)
-        opts {:eof eof-sentinel
-              :read-cond :allow :features #{:cljs}}
-
-        reader (DerefStringReader. repl-input (count repl-input) 0)
-        buf-len 1
-        ;; https://github.com/clojure/tools.reader/blob/master/src/main/clojure/clojure/tools/reader/reader_types.clj#L271
-        in (readers/indexing-push-back-reader (PushbackReader. reader (object-array buf-len) buf-len buf-len) 1 "repl-input.cljs")]
+  "processes a string of forms, may read multiple forms"
+  [state ^String repl-input]
+  (let [reader
+        (readers/string-reader repl-input)]
 
     (loop [{:keys [repl-state] :as state} state]
 
-      (let [{:keys [ns ns-info] :as repl-rc} (:current repl-state)
-            form-start @reader
-            form (binding [*ns* (create-ns ns)
-                           ana/*cljs-ns* ns
-                           ana/*cljs-file* name
-                           reader/*data-readers* tags/*cljs-data-readers*
-                           reader/*alias-map* (merge reader/*alias-map*
-                                                (:requires ns-info)
-                                                (:require-macros ns-info))]
-                   (reader/read opts in))
-            form-end @reader
-            ;; keep a reference to the source of the form
-            source (subs repl-input form-start form-end)]
+      (let [{:keys [eof?] :as read-result}
+            (read-one repl-state reader)]
 
-        (cond
-          ;; eof
-          (identical? form eof-sentinel)
+        (if eof?
           state
+          (recur (process-read-result state read-result))))
+      )))
 
-          ;; ('special-fn ...)
-          ;; (require 'something)
-          (and (list? form)
-               (contains? repl-special-forms (first form)))
-          (let [[special-fn & args] form
-                handler (get repl-special-forms special-fn)]
-            (recur (try
-                     (apply handler state source args)
-                     (catch Exception e
-                       (prn [:special-fn-error source])
-                       (repl/pst e)
-                       state
-                       ))))
+(defn read-stream!
+  "performs a blocking read given the current repl-state"
+  [repl-state input-stream]
+  (let [reader (readers/input-stream-reader input-stream)]
+    (read-one repl-state reader)
+    ))
 
-          ;; compile normally
-          :else
-          (-> (cljs/with-compiler-env state
-                (let [repl-action
-                      ;; FIXME: what actually populates this? emit or analyze?
-                      (cljs/with-warnings state
-                        (binding [comp/*source-map-data*
-                                  (atom {:source-map (sorted-map)
-                                         :gen-col 0
-                                         :gen-line 0})]
-
-                          {:type :repl/invoke
-                           :js (let [ast (cljs/analyze state repl-rc form :expr)]
-                                 (with-out-str
-                                   (comp/emit ast)))
-                           ;; FIXME: need actual json source map
-                           ;; :source-map (:source-map @comp/*source-map-data*)
-                           }))]
-                  (update-in state [:repl-state :repl-actions] conj repl-action)
-                  ))
-              (recur))
-          )))))
+(defn process-input-stream
+  "reads one form of the input stream and calls process-form"
+  [{:keys [repl-state] :as state} input-stream]
+  (let [{:keys [eof?] :as read-result}
+        (read-stream! repl-state input-stream)]
+    (if eof?
+      state
+      (process-read-result state read-result))))
 
