@@ -9,5 +9,5 @@
 }(this, function () {
     //CLJS-HERE
 
-    return shadow_umd_helper.get_exports();
+    return shadow.umd_helper.get_exports();
 }));

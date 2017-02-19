@@ -113,16 +113,30 @@
     quoted-require
     reload-flag]
     ;; FIXME: verify quoted
-   (let [current-ns (get-in repl-state [:current :ns])
-         require (remove-quotes quoted-require)
-         ;; parsing this twice to easily get a diff, could probably be simpler
-         {:keys [requires]} (util/parse-ns-require-parts :requires {} [require])
-         new-requires (into #{} (vals requires))
-         ;; returns the updated ns-info
-         ns-info (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
+   (let [current-ns
+         (get-in repl-state [:current :ns])
 
-         deps (cljs/get-deps-for-entries state new-requires)
-         new-deps (remove-already-required-repl-deps state deps)
+         require
+         (remove-quotes quoted-require)
+
+         ;; parsing this twice to easily get a diff, could probably be simpler
+         {:keys [requires]}
+         (util/parse-ns-require-parts :requires {} [require])
+
+         new-requires
+         (into #{} (vals requires))
+
+         ;; returns the updated ns-info
+         ns-info
+         (util/parse-ns-require-parts :requires (get-in repl-state [:current :ns-info]) [require])
+
+         deps
+         (cljs/get-deps-for-entries state new-requires)
+
+         new-deps
+         (if (= :reload-all reload-flag)
+           deps
+           (remove-already-required-repl-deps state deps))
 
          load-macros-and-set-ns-info
          (fn [state]
@@ -147,10 +161,12 @@
          (update-in [:repl-state :repl-actions] conj
            {:type :repl/require
             :sources new-deps
-            :js-sources (->> new-deps
-                             (map #(get-in state [:sources % :js-name]))
-                             (into []))
-            :reload reload-flag})))))
+            :reload reload-flag
+            :js-sources
+            (->> new-deps
+                 (map #(get-in state [:sources % :js-name]))
+                 (into []))
+            })))))
 
 (defn repl-load-file [{:keys [source-paths] :as state} read-result file-path]
   ;; FIXME: could clojure.core/load-file .clj files?
@@ -308,7 +324,7 @@
 
 (defn- read-one
   ([repl-state reader]
-    (read-one repl-state reader {}))
+   (read-one repl-state reader {}))
   ([repl-state
     reader
     {:keys [filename] :or {filename "repl-input.cljs"}}]

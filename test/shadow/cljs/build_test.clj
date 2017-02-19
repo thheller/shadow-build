@@ -861,7 +861,6 @@
             (umd/create-module
               {:test 'basic/hello}
               {:output-to "target/umd-gen/global.js"})
-            (umd/infer-public-dir)
             (cljs/compile-modules)
             (cljs/flush-sources-by-name ["basic.cljs"]))]
 

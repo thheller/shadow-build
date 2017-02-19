@@ -1,6 +1,9 @@
 (ns shadow.cljs.log
   (:require [clojure.pprint :refer (pprint)]))
 
+(defprotocol BuildLog
+  (log* [this compiler-state log-event]))
+
 (defmulti event->str
   (fn [event] (:type event))
   :default ::default)

@@ -6,9 +6,15 @@
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [cljs.compiler :as comp]
-            [clojure.data.json :as json])
-  (:import (java.io File)))
+            [clojure.data.json :as json]))
 
+(defmethod log/event->str ::flush-unoptimized
+  [{:keys [output-file] :as ev}]
+  (str "Flush node script: " output-file))
+
+(defmethod log/event->str ::flush-optimized
+  [{:keys [output-file] :as ev}]
+  (str "Flush optimized node script: " output-file))
 
 (defn make-main-call-js [main-fn]
   {:pre [(symbol? main-fn)]}
@@ -61,6 +67,7 @@
 (defn optimize [state]
   (cljs/closure-optimize state (get-in state [:node-opts :optimization] :simple)))
 
+;; FIXME: we now control what "this" is and it is actually the global, so we should skip this
 (defn replace-goog-global [s node-global-prefix]
   (str/replace s
     ;; browsers have window as this
@@ -82,15 +89,6 @@
     @(:input goog-rc)
     ))
 
-(defmethod log/event->str ::flush-unoptimized
-  [{:keys [output-file] :as ev}]
-  (str "Flush node script: " output-file))
-
-(defmethod log/event->str ::flush-optimized
-  [{:keys [output-file] :as ev}]
-  (str "Flush optimized node script: " output-file))
-
-
 (defn flush-unoptimized
   [{:keys [build-modules cljs-runtime-path source-map public-dir node-global-prefix node-config] :as state}]
   {:pre [(cljs/directory? public-dir)]}
@@ -106,17 +104,18 @@
       [state {:type ::flush-unoptimized
               :output-file (.getAbsolutePath output-to)}]
 
-      (let [{:keys [js-name prepend prepend-js append-js sources]}
+      (let [{:keys [prepend prepend-js append-js append sources]}
             (first build-modules)
 
             out
             (str/join "\n"
-              [;; FIXME: what if there are two?
-               ;; we would break the other CLOSURE_IMPORT_SCRIPT and probably others things by replacing them
-               "if (global.goog) { throw new Error('cannot have two GOOG'); }"
-
-               prepend
+              [prepend
                prepend-js
+
+               ;; FIXME: what if there are two?
+               ;; we would break the other CLOSURE_IMPORT_SCRIPT and probably others things by replacing them
+               ;; we could actually make all this work without global at all, probably not worth it though
+               "if (global.goog) { throw new Error('cannot have two active GOOG dev builds'); }"
 
                (when source-map
                  (str "try {"
@@ -135,27 +134,13 @@
                ;; provides CLOSURE_IMPORT_SCRIPT and other things
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
 
-               ;; inlining goog/base.js
-               #_(replace-goog-global
-                   (closure-base state)
-                   node-global-prefix)
-
-               ;; inline goog/deps.js (CLOSURE_NO_DEPS set by closure-defines)
-               ;; bypassing loading things per goog.require
-               #_(cljs/closure-goog-deps state sources)
-
-               #_(->> sources
-                      (mapcat #(reverse (get-in state [:sources %])))
-                      (map (fn [ns]
-                             (str "goog.require('" (comp/munge ns) "');")))
-                      (str/join "\n"))
-
                "CLOSURE_IMPORT_SCRIPT(\"goog/base.js\");"
 
                ;; FIXME: only need this when running a REPL with hot loading
-               "goog.isProvided_ = function(name) { return false; }"
+               "goog.provide = goog.constructNamespace_;"
 
                ;; FIXME: good idea to noop require?
+               ;; REPL won't go through goog.require
                "goog.require = function(name) { return true; }"
 
                (->> sources
@@ -164,7 +149,9 @@
                     (map (fn [src]
                            (str "CLOSURE_IMPORT_SCRIPT(" (pr-str src) ");")))
                     (str/join "\n"))
-               append-js])]
+
+               append-js
+               append])]
 
         (let [base-js
               (io/file public-dir cljs-runtime-path "goog" "base.js")]
@@ -194,12 +181,12 @@
       (when-not (seq modules)
         (throw (ex-info "flush before optimize?" {})))
 
-      (let [{:keys [output prepend js-name]}
+      (let [{:keys [output prepend append js-name]}
             (first modules)
 
+            ;; prepend-js and append-js went through the closure compiler
             out
-            (str prepend
-                 (replace-goog-global output node-global-prefix))]
+            (str prepend output append)]
 
         (io/make-parents output-to)
         (spit output-to out)
@@ -315,7 +302,7 @@
     ))
 
 (defn execute-affected-tests!
-  [{:keys [logger] :as state} source-names]
+  [state source-names]
   (let [source-names (->> source-names
                           (map #(to-source-name state %))
                           (into []))

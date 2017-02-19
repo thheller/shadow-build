@@ -11,14 +11,9 @@ var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
   console.info("CLOSURE load:", src);
 
   // FIXME: for live reloading, otherwise unused
+  // probably should move this to a better var, as none of the other goog.dependencies_ stuff will be present
+  // and we don't really need it
   goog.dependencies_.written[src] = true;
-
-  // this works, but has issues with :none vs :simple
-  // var x = require.cache[filePath];
-  // if (x) {
-  //  delete require.cache[filePath];
-  // }
-  // require(filePath);
 
   // NODE_INCLUDE_PATH points to an absolute path, injected by shadow/cljs/node.clj
   var filePath = NODE_INCLUDE_PATH + '/' + src;
@@ -31,8 +26,10 @@ var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
   // -1 because we have one more line than original (the wrapper above)
   var fn = VM.runInThisContext(code, {filename: filePath, lineOffset: -1, displayErrors: true});
 
+  // controlling "this" by using fn.call(global, ...)
+
   // the comment is for source-map-support which unfortunately shows the wrong piece of code but the stack is correct
-  /* ignore this, look at stacktrace */ fn({}, require, module, __filename, __dirname, goog);
+  /* ignore this, look at stacktrace */ fn.call(global, {}, require, module, __filename, __dirname, goog);
 
   return true;
 };
@@ -40,11 +37,9 @@ var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
 global.NODE_EVAL = function(js) {
   var code = "(function (exports, require, module, __filename, __dirname, goog) {\n return (" + js + ");\n});";
   var fn = VM.runInThisContext(code, {filename: "node-repl.cljs", displayErrors: true});
-  return fn({}, require, module, __filename, __dirname, goog);
+  return fn.call(global, {}, require, module, __filename, __dirname, goog);
 };
 
 var CLOSURE_LOAD_FILE_SYNC = global.CLOSURE_LOAD_FILE_SYNC = function(src) {
   return CLOSURE_IMPORT_SCRIPT(src);
 };
-
-

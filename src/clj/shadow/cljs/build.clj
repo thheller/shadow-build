@@ -75,12 +75,9 @@
 (defn compiler-state? [state]
   (true? (::is-compiler-state state)))
 
-(defprotocol BuildLog
-  (log* [this compiler-state log-event]))
-
 (defn log [state log-event]
   {:pre [(compiler-state? state)]}
-  (log* (:logger state) state log-event)
+  (log/log* (:logger state) state log-event)
   state)
 
 (def ^{:dynamic true} *time-depth* 0)
@@ -853,7 +850,7 @@ normalize-resource-name
 
 ;; FIXME: must manually bump if anything cache related changes
 ;; use something similar to clojurescript-version
-(def cache-file-version "v7")
+(def cache-file-version "v8")
 
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
@@ -1561,7 +1558,10 @@ normalize-resource-name
     src
     (case type
       :js
-      (assoc src :output @(:input src))
+      (if output
+        (assoc src :cached true)
+        (assoc src :output @(:input src)
+                   :cached false))
       :cljs
       (maybe-compile-cljs state src))))
 
@@ -2841,7 +2841,7 @@ enable-emit-constants [state]
 
        :logger
        (let [log-lock (Object.)]
-         (reify BuildLog
+         (reify log/BuildLog
            (log* [_ state evt]
              (locking log-lock
                (let [s (log/event->str evt)
