@@ -21,7 +21,9 @@
      :repl-sources list-of-source-names-required-on-repl-init
      :repl-actions list-of-repl-actions-and-the-input-that-created-them}))
 
-(defn prepare [state]
+(defn prepare
+  [state]
+  {:pre [(cljs/compiler-state? state)]}
   ;; FIXME: less hardcoded cljs.user
 
   ;; must compile an empty cljs.user to properly populate the ::ana/namespaces
@@ -29,6 +31,9 @@
   ;; so just pretend there is actually an empty ns we never user
   (let [runtime-setup
         (cljs/make-runtime-setup state)
+
+        cljs-user-requires
+        '[cljs.core shadow.runtime-setup cljs.repl]
 
         cljs-user
         {:type :cljs
@@ -39,8 +44,8 @@
                   (str "(ns cljs.user"
                        "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
          :provides #{'cljs.user}
-         :requires #{'cljs.core 'runtime-setup 'cljs.repl}
-         :require-order '[cljs.core runtime-setup cljs.repl]
+         :require-order cljs-user-requires
+         :requires (into #{} cljs-user-requires)
          :last-modified (System/currentTimeMillis)}
 
         state
@@ -366,6 +371,7 @@
 (defn process-input
   "processes a string of forms, may read multiple forms"
   [state ^String repl-input]
+  {:pre [(cljs/compiler-state? state)]}
   (let [reader
         (readers/string-reader repl-input)]
 
@@ -389,6 +395,7 @@
 (defn process-input-stream
   "reads one form of the input stream and calls process-form"
   [{:keys [repl-state] :as state} input-stream]
+  {:pre [(cljs/compiler-state? state)]}
   (let [{:keys [eof?] :as read-result}
         (read-stream! repl-state input-stream)]
     (if eof?

@@ -89,112 +89,64 @@
 
 
 (defn flush-unoptimized-module
-  [{:keys [umd-exports build-modules unoptimizable node-global-prefix] :as state}]
-  (when-not (seq build-modules)
-    (throw (ex-info "flush before compile?" {})))
-
-  (cljs/flush-sources-by-name state (mapcat :sources build-modules))
-
-  (cljs/with-logged-time
-    [state {:type ::flush
-            :optimized false}]
-
-    ;; flush fake modules
-    (let [mod (first build-modules)
-          {:keys [default js-name prepend prepend-js append-js sources web-worker]} mod]
-
-      (let [target (StringWriter.)
-            append-to-target
-            (fn [^String text]
-              (when (seq text)
-                (.write target text)))]
-
-        (append-to-target prepend)
-        (append-to-target prepend-js)
-        (append-to-target unoptimizable)
-        ;; make sure goog is the global.goog so "var goog" isn't something else
-        (when (not= node-global-prefix "global")
-          (append-to-target (str "\n" node-global-prefix " = {};"))
-          ;; properties that closure accesses via goog.global
-          ;; apparently this is not allowed, causes "illegal invocation" when
-          ;; calling global.THING.setTimeout instead of global.setTimeout?
-          #_(doseq [prop ["setTimeout" "clearTimeout" "setInterval" "clearInterval" "console"]]
-              (append-to-target (str "\n" node-global-prefix "." prop "=global." prop ";"))
-              )
-
-          ;; just create delegate functions
-          (append-to-target (str "\n" node-global-prefix ".setTimeout = function(cb, ms) { global.setTimeout(cb, ms); }"))
-          (append-to-target (str "\n" node-global-prefix ".setInterval = function(cb, ms) { global.setInteval(cb, ms); }"))
-          (append-to-target (str "\n" node-global-prefix ".clearTimeout = function(id) { global.clearTimeout(id); }"))
-          (append-to-target (str "\n" node-global-prefix ".clearInterval = function(id) { global.clearInterval(id); }"))
-          )
-        (append-to-target (str "\nvar goog = " node-global-prefix ".goog = {};"))
-        (append-to-target (str "\nvar SHADOW_MODULES = " node-global-prefix ".SHADOW_MODULES = {};"))
-        (append-to-target (str "\nvar CLOSURE_IMPORT_SCRIPT = " node-global-prefix ".CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"))
-        (append-to-target (node/closure-defines state))
-        (append-to-target
-          (node/replace-goog-global
-            (node/closure-base state)
-            node-global-prefix))
-
-        ;; FIXME: this only really needs to var the top level (eg. cljs, not cljs.core)
-        (let [node-compat (generate-node-compat-namespaces state mod)]
-          (append-to-target node-compat))
-
-        ;; FIXME: source-map! (same index stuff from flush-unoptimized-compact)
-        ;; need to check if node supports those
-
-        (doseq [src-name sources
-                :let [{:keys [output name js-name] :as rc} (get-in state [:sources src-name])]]
-          (append-to-target (str "// SOURCE=" name "\n"))
-          (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
-          (append-to-target (str (str/trim output) "\n")))
-
-        (append-to-target (str "\n\nSHADOW_MODULES[" (-> mod :name str pr-str) "] = true;\n"))
-        (append-to-target append-js)
-
-        (append-to-target "\nmodule.exports = shadow_umd_helper.get_exports();")
-
-        (let [output-file (umd-output-file state)]
-          (spit output-file (str target))
-          ))))
-
-  ;; return unmodified state
-  state)
-
+  [state]
+  (node/flush-unoptimized state))
 
 (defn create-module
   ([state exports]
    (create-module state exports {}))
-  ([state exports opts]
-   {:pre [(map? exports)
+  ([state exports {:keys [output-to public-dir] :as opts}]
+   {:pre [(cljs/compiler-state? state)
+          (map? exports)
           (seq exports)
           (map? opts)]}
-   (let [entries (->> exports
-                      (vals)
-                      (map namespace)
-                      (map symbol)
-                      (into #{}))
+   (let [entries
+         (->> exports
+              (vals)
+              (map namespace)
+              (map symbol)
+              (into #{}))
 
-         requires (set/union #{'cljs.core} entries)
+         requires
+         (set/union #{'cljs.core} entries)
 
          umd-helper
-         {:name "shadow_umd_helper.cljs"
-          :js-name "shadow_umd_helper.js"
+         {:name "shadow/umd_helper.cljs"
+          :js-name "shadow/umd_helper.js"
           :type :cljs
-          :provides #{'shadow-umd-helper}
+          :provides #{'shadow.umd-helper}
           :requires requires
           :require-order (into [] requires)
-          :ns 'shadow-umd-helper
-          :input (atom [`(~'ns ~'shadow-umd-helper
+          :ns 'shadow.umd-helper
+          :input (atom [`(~'ns ~'shadow.umd-helper
                            (:require ~@(mapv vector entries)))
                         `(defn ~(with-meta 'get-exports {:export true}) []
                            (cljs.core/js-obj ~@(->> exports (mapcat (fn [[k v]] [(name k) v])))))])
-          :last-modified (System/currentTimeMillis)}]
+          :last-modified (System/currentTimeMillis)}
+
+         output-to
+         (io/file output-to)
+
+         output-name
+         (.getName output-to)
+
+         module-name
+         (-> output-name (str/replace #".js$" "") (keyword))
+
+         public-dir
+         (if (seq public-dir)
+           (io/file public-dir)
+           (io/file "target" "shadow.umd"))
+
+         node-config
+         {:output-to output-to
+          :public-dir public-dir}]
 
      (-> state
-         (assoc :umd-options opts)
-         (assoc :umd-exports exports)
+         (assoc ::options opts)
+         (assoc ::exports exports)
+         (assoc :node-config node-config)
+         (assoc :public-dir public-dir)
          (cljs/merge-resource umd-helper)
-         (infer-public-dir)
-         (cljs/configure-module :umd '[shadow-umd-helper] #{})))))
+         (cljs/configure-module :umd '[shadow.umd-helper] #{}
+           {:append-js "\nmodule.exports = shadow.umd_helper.get_exports();"})))))

@@ -1,10 +1,18 @@
 var goog = global.goog = {};
 
+goog.dependencies_ = {};
+goog.dependencies_.written = {};
+
 var PATH = require("path");
 var VM = require("vm");
 var FS = require("fs");
 
 var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
+  console.info("CLOSURE load:", src);
+
+  // FIXME: for live reloading, otherwise unused
+  goog.dependencies_.written[src] = true;
+
   // this works, but has issues with :none vs :simple
   // var x = require.cache[filePath];
   // if (x) {
@@ -18,15 +26,21 @@ var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
   var js = FS.readFileSync(filePath);
   // the args are all constant as they will be in :simple where things are actually all in the same file
   // exports are ignored as goog/cljs files should never export anything
-  var code = "(function (exports, require, module, __filename, __dirname) {\n" + js + "\n});";
+  var code = "(function (exports, require, module, __filename, __dirname, goog) {\n" + js + "\n});";
 
   // -1 because we have one more line than original (the wrapper above)
   var fn = VM.runInThisContext(code, {filename: filePath, lineOffset: -1, displayErrors: true});
 
   // the comment is for source-map-support which unfortunately shows the wrong piece of code but the stack is correct
-  /* ignore this, look at stacktrace */ fn({}, require, module, __filename, __dirname);
+  /* ignore this, look at stacktrace */ fn({}, require, module, __filename, __dirname, goog);
 
   return true;
+};
+
+global.NODE_EVAL = function(js) {
+  var code = "(function (exports, require, module, __filename, __dirname, goog) {\n return (" + js + ");\n});";
+  var fn = VM.runInThisContext(code, {filename: "node-repl.cljs", displayErrors: true});
+  return fn({}, require, module, __filename, __dirname, goog);
 };
 
 var CLOSURE_LOAD_FILE_SYNC = global.CLOSURE_LOAD_FILE_SYNC = function(src) {

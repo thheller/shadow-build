@@ -254,7 +254,7 @@
         (if (= 'cljs.core name)
           require-order
           ;; inject implicit deps
-          (into '[cljs.core runtime-setup] require-order))]
+          (into '[cljs.core shadow.runtime-setup] require-order))]
     (assoc rc
       :ns name
       :ns-info (dissoc ast :env)
@@ -880,7 +880,7 @@ normalize-resource-name
     (fn [age-map source-name]
       (let [last-modified (get-max-last-modified-for-source state source-name)]
         ;; zero? is a pretty ugly indicator for deps that should not affect cache
-        ;; eg. runtime-setup
+        ;; eg. shadow.runtime-setup
         (if (pos? last-modified)
           (assoc age-map source-name last-modified)
           age-map)))
@@ -999,7 +999,7 @@ normalize-resource-name
   [{:keys [cache-dir cache-level] :as state} {:keys [from-jar file] :as src}]
   (let [cache? (and cache-dir
                     ;; even with :all only cache resources that are in jars or have a file
-                    ;; cljs.user (from repl) or runtime-setup should never be cached
+                    ;; cljs.user (from repl) or shadow.runtime-setup should never be cached
                     (or (and (= cache-level :all)
                              (or from-jar file))
                         (and (= cache-level :jars)
@@ -1533,7 +1533,8 @@ normalize-resource-name
      :last-modified 0
      }))
 
-(defn make-runtime-setup [{:keys [runtime] :as state}]
+(defn make-runtime-setup
+  [{:keys [runtime] :as state}]
   (let [src (str/join "\n"
               [(case (:print-fn runtime)
                  ;; Browser
@@ -1541,9 +1542,10 @@ normalize-resource-name
                  ;; Node.JS
                  :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
     {:type :js
-     :name "runtime_setup.js"
-     :js-name "runtime_setup.js"
-     :provides #{'runtime-setup}
+     :name "shadow/runtime_setup.js"
+     :js-name "shadow/runtime_setup.js"
+     :ns 'shadow.runtime-setup
+     :provides #{'shadow.runtime-setup}
      :requires #{'cljs.core}
      :require-order ['cljs.core]
      :input (atom src)
@@ -1709,9 +1711,9 @@ normalize-resource-name
   (compile-sources state build-sources))
 
 (defn prepare-compile
-  "prepares for compilation (eg. create source lookup index, runtime-setup)"
+  "prepares for compilation (eg. create source lookup index, shadow.runtime-setup)"
   [state]
-  ;; FIXME: re-creating runtime-setup with every incremental compile
+  ;; FIXME: re-creating shadow.runtime-setup with every incremental compile
   ;; should do this once?
   (let [runtime-setup
         (make-runtime-setup state)]
@@ -2187,14 +2189,17 @@ normalize-resource-name
        (map #(str "'" (comp/munge %) "'"))
        (str/join ",")))
 
-(defn closure-goog-deps [state]
-  (->> (:sources state)
-       (vals)
-       (map (fn [{:keys [js-name require-order provides]}]
-              (str "goog.addDependency(\"" js-name "\","
-                   "[" (ns-list-string provides) "],"
-                   "[" (ns-list-string require-order) "]);")))
-       (str/join "\n")))
+(defn closure-goog-deps
+  ([state]
+    (closure-goog-deps state (-> state :sources keys)))
+  ([state source-names]
+   (->> source-names
+        (map #(get-in state [:sources %]))
+        (map (fn [{:keys [js-name require-order provides]}]
+               (str "goog.addDependency(\"" js-name "\","
+                    "[" (ns-list-string provides) "],"
+                    "[" (ns-list-string require-order) "]);")))
+        (str/join "\n"))))
 
 (defn flush-sources-by-name
   ([state]

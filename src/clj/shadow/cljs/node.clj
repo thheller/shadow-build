@@ -109,9 +109,6 @@
       (let [{:keys [js-name prepend prepend-js append-js sources]}
             (first build-modules)
 
-            provided-ns
-            (mapcat #(reverse (get-in state [:sources % :provides])) sources)
-
             out
             (str/join "\n"
               [;; FIXME: what if there are two?
@@ -135,23 +132,47 @@
                         (.getAbsolutePath))
                     "\";")
 
+               ;; provides CLOSURE_IMPORT_SCRIPT and other things
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
 
-               (replace-goog-global
-                 (closure-base state)
-                 node-global-prefix)
+               ;; inlining goog/base.js
+               #_(replace-goog-global
+                   (closure-base state)
+                   node-global-prefix)
 
-               ;; FIXME: only need this when running a REPL
+               ;; inline goog/deps.js (CLOSURE_NO_DEPS set by closure-defines)
+               ;; bypassing loading things per goog.require
+               #_(cljs/closure-goog-deps state sources)
+
+               #_(->> sources
+                      (mapcat #(reverse (get-in state [:sources %])))
+                      (map (fn [ns]
+                             (str "goog.require('" (comp/munge ns) "');")))
+                      (str/join "\n"))
+
+               "CLOSURE_IMPORT_SCRIPT(\"goog/base.js\");"
+
+               ;; FIXME: only need this when running a REPL with hot loading
                "goog.isProvided_ = function(name) { return false; }"
 
-               ;; FIXME: we don't need every known dependency
-               (cljs/closure-goog-deps state)
+               ;; FIXME: good idea to noop require?
+               "goog.require = function(name) { return true; }"
 
-               (->> provided-ns
-                    (map (fn [ns]
-                           (str "goog.require('" (comp/munge ns) "');")))
+               (->> sources
+                    (map #(get-in state [:sources %]))
+                    (map :js-name)
+                    (map (fn [src]
+                           (str "CLOSURE_IMPORT_SCRIPT(" (pr-str src) ");")))
                     (str/join "\n"))
                append-js])]
+
+        (let [base-js
+              (io/file public-dir cljs-runtime-path "goog" "base.js")]
+
+          (spit base-js
+            (replace-goog-global
+              (closure-base state)
+              node-global-prefix)))
 
         (io/make-parents output-to)
         (spit output-to out))))
@@ -235,7 +256,7 @@
 
 (defn setup-test-runner [state test-namespaces]
   (let [require-order
-        (into ['cljs.core 'runtime-setup 'cljs.test] test-namespaces)
+        (into ['cljs.core 'shadow.runtime-setup 'cljs.test] test-namespaces)
         test-runner-src
         {:name "test_runner.cljs"
          :js-name "test_runner.js"
