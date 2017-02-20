@@ -460,31 +460,39 @@ normalize-resource-name
           (dissoc manifest "deps.cljs")
           foreign-libs)))))
 
+(defonce JAR-LOCK (Object.))
 
 (defn find-jar-resources
   [{:keys [manifest-cache-dir cache-level] :as state} path]
   {:pre [(compiler-state? state)]}
   ;; FIXME: assuming a jar with the same name and same last modified is always identical, probably not. should md5 the full path?
-  (let [manifest-name
-        (let [jar (io/file path)]
-          (str (.lastModified jar) "-" (.getName jar) ".manifest"))
 
-        mfile
-        (io/file manifest-cache-dir manifest-name)
+  ;; locking to avoice race-condition in cache where two threads might be read/writing jar manifests at the same time
+  ;; A is writing
+  ;; B sees that file exists and starts reading although A is not finished yet
+  ;; boom strange EOF errors
+  ;; could instead write to temp file and move and but that basically just causes manifests to be generated twice
+  (locking JAR-LOCK
+    (let [manifest-name
+          (let [jar (io/file path)]
+            (str (.lastModified jar) "-" (.getName jar) ".manifest"))
 
-        jar-file
-        (io/file path)
+          mfile
+          (io/file manifest-cache-dir manifest-name)
 
-        manifest
-        (if (and (.exists mfile)
-                 (>= (.lastModified mfile) (.lastModified jar-file)))
-          (read-jar-manifest mfile)
-          (let [manifest (create-jar-manifest state path)]
-            (io/make-parents mfile)
-            (write-jar-manifest mfile manifest)
-            manifest))]
-    (-> (process-deps-cljs state manifest path)
-        (vals))))
+          jar-file
+          (io/file path)
+
+          manifest
+          (if (and (.exists mfile)
+                   (>= (.lastModified mfile) (.lastModified jar-file)))
+            (read-jar-manifest mfile)
+            (let [manifest (create-jar-manifest state path)]
+              (io/make-parents mfile)
+              (write-jar-manifest mfile manifest)
+              manifest))]
+      (-> (process-deps-cljs state manifest path)
+          (vals)))))
 
 (defn make-fs-resource [state source-path rc-name ^File rc-file]
   (inspect-resource
