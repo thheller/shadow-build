@@ -32,7 +32,7 @@ var CLOSURE_EXTRACT_ROOTS = function(js) {
 };
 
 var CLOSURE_PROVIDE = function(name) {
-  return goog.exportPath_(name, {}, CLOSURE_GLOBAL);
+  return goog.exportPath_(name, undefined, CLOSURE_GLOBAL);
 };
 
 var CLOSURE_REQUIRE = function(name) {
@@ -41,17 +41,22 @@ var CLOSURE_REQUIRE = function(name) {
 
 var CLOSURE_WRAP = function(js) {
   var code = "(function (require, module, __filename, __dirname, CLOSURE_GLOBAL) {\n";
+  // this is part of goog/base.js and for some reason the only global var not on goog or goog.global
+  code += "var COMPILED = false;\n"
+
   CLOSURE_ROOTS.forEach(function(root) {
     code += "var " + root + "=CLOSURE_GLOBAL." + root + ";\n";
   });
+
   code += js;
+
   code += "\n});";
   return code;
 };
 
 var CLOSURE_WRAP_OFFSET = function() {
   // -1 because we have one more lines than original (the wrapper above)
-  return (1 + CLOSURE_ROOTS.length) * -1;
+  return (2 + CLOSURE_ROOTS.length) * -1;
 };
 
 var CLOSURE_IMPORT_SCRIPT = CLOSURE_GLOBAL.CLOSURE_IMPORT_SCRIPT = function(src) {
