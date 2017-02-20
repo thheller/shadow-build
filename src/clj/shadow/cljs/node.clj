@@ -67,21 +67,17 @@
 (defn optimize [state]
   (cljs/closure-optimize state (get-in state [:node-opts :optimization] :simple)))
 
-;; FIXME: we now control what "this" is and it is actually the global, so we should skip this
-(defn replace-goog-global [s node-global-prefix]
+(defn closure-defines
+  [state]
+  (str "\nCLOSURE_GLOBAL.CLOSURE_NO_DEPS = true;\n"
+       "\nCLOSURE_GLOBAL.CLOSURE_DEFINES = " (json/write-str (:closure-defines state {})) ";\n"))
+
+(defn replace-goog-global [s]
   (str/replace s
     ;; browsers have window as this
     #"goog.global(\s?)=(\s?)this;"
     ;; node "this" is the local module, global is the actual global
-    (str "goog.global=" node-global-prefix ";")))
-
-
-(defn closure-defines
-  [{:keys [node-global-prefix] :as state}]
-  (str "\nvar CLOSURE_NO_DEPS = " node-global-prefix ".CLOSURE_NO_DEPS = true;\n"
-       "\nvar CLOSURE_DEFINES = " node-global-prefix ".CLOSURE_DEFINES = "
-       (json/write-str (:closure-defines state {}))
-       ";\n"))
+    (str "goog.global=global;")))
 
 (defn closure-base
   [state]
@@ -90,7 +86,7 @@
     ))
 
 (defn flush-unoptimized
-  [{:keys [build-modules cljs-runtime-path source-map public-dir node-global-prefix node-config] :as state}]
+  [{:keys [build-modules cljs-runtime-path source-map public-dir node-config] :as state}]
   {:pre [(cljs/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
@@ -112,10 +108,7 @@
               [prepend
                prepend-js
 
-               ;; FIXME: what if there are two?
-               ;; we would break the other CLOSURE_IMPORT_SCRIPT and probably others things by replacing them
-               ;; we could actually make all this work without global at all, probably not worth it though
-               "if (global.goog) { throw new Error('cannot have two active GOOG dev builds'); }"
+               (str "var CLOSURE_GLOBAL = {};")
 
                (when source-map
                  (str "try {"
@@ -126,7 +119,7 @@
 
                (closure-defines state)
 
-               (str "var NODE_INCLUDE_PATH = \""
+               (str "var CLOSURE_IMPORT_PATH = \""
                     (-> (io/file public-dir cljs-runtime-path)
                         (.getAbsolutePath))
                     "\";")
@@ -136,12 +129,8 @@
 
                "CLOSURE_IMPORT_SCRIPT(\"goog/base.js\");"
 
-               ;; FIXME: only need this when running a REPL with hot loading
-               "goog.provide = goog.constructNamespace_;"
-
-               ;; FIXME: good idea to noop require?
-               ;; REPL won't go through goog.require
-               "goog.require = function(name) { return true; }"
+               "goog.provide = CLOSURE_PROVIDE;"
+               "goog.require = CLOSURE_REQUIRE;"
 
                (->> sources
                     (map #(get-in state [:sources %]))
@@ -150,16 +139,17 @@
                            (str "CLOSURE_IMPORT_SCRIPT(" (pr-str src) ");")))
                     (str/join "\n"))
 
+               ;; make these local always
+               ;; these are needed by node/configure :main and the umd exports
+               "var shadow = CLOSURE_GLOBAL.shadow || {};"
+               "var cljs = CLOSURE_GLOBAL.cljs || {};"
+
                append-js
                append])]
 
         (let [base-js
               (io/file public-dir cljs-runtime-path "goog" "base.js")]
-
-          (spit base-js
-            (replace-goog-global
-              (closure-base state)
-              node-global-prefix)))
+          (spit base-js (closure-base state)))
 
         (io/make-parents output-to)
         (spit output-to out))))

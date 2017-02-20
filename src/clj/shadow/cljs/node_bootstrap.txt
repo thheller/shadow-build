@@ -1,45 +1,99 @@
-var goog = global.goog = {};
+var CLOSURE_ROOTS = ["goog"];
 
-goog.dependencies_ = {};
-goog.dependencies_.written = {};
+var goog = CLOSURE_GLOBAL.goog = {};
+
+CLOSURE_GLOBAL.CLOSURE_IMPORTS = {};
 
 var PATH = require("path");
 var VM = require("vm");
 var FS = require("fs");
 
-var CLOSURE_IMPORT_SCRIPT = global.CLOSURE_IMPORT_SCRIPT = function(src) {
+// extract [root] for all goog.provide('[root].something');
+// we need to pull them into local scope for every eval
+var CLOSURE_EXTRACT_ROOTS = function(js) {
+  var re = /goog.provide\(([^)]+)\);/g
+  var match = null;
+  while (match = re.exec(js)) {
+    var provide = match[1];
+    var end = provide.indexOf('.');
+    if (end == -1) {
+      end = provide.length - 1;
+    }
+
+    // skip first char as match will be "cljs.core" or 'cljs.core' but always with quotes
+    // end at either the first dot or end of provide-1 for one-segement namespaces
+    var root = provide.substring(1, end);
+
+    if (!CLOSURE_ROOTS.includes(root)) {
+      CLOSURE_GLOBAL[root] = {};
+      CLOSURE_ROOTS.push(root);
+    }
+  }
+};
+
+var CLOSURE_PROVIDE = function(name) {
+  return goog.exportPath_(name, {}, CLOSURE_GLOBAL);
+};
+
+var CLOSURE_REQUIRE = function(name) {
+  return true;
+};
+
+var CLOSURE_WRAP = function(js) {
+  var code = "(function (require, module, __filename, __dirname, CLOSURE_GLOBAL) {\n";
+  CLOSURE_ROOTS.forEach(function(root) {
+    code += "var " + root + "=CLOSURE_GLOBAL." + root + ";\n";
+  });
+  code += js;
+  code += "\n});";
+  return code;
+};
+
+var CLOSURE_WRAP_OFFSET = function() {
+  // -1 because we have one more lines than original (the wrapper above)
+  return (1 + CLOSURE_ROOTS.length) * -1;
+};
+
+var CLOSURE_IMPORT_SCRIPT = CLOSURE_GLOBAL.CLOSURE_IMPORT_SCRIPT = function(src) {
   console.info("CLOSURE load:", src);
 
-  // FIXME: for live reloading, otherwise unused
-  // probably should move this to a better var, as none of the other goog.dependencies_ stuff will be present
-  // and we don't really need it
-  goog.dependencies_.written[src] = true;
+  CLOSURE_GLOBAL.CLOSURE_IMPORTS[src] = true;
 
   // NODE_INCLUDE_PATH points to an absolute path, injected by shadow/cljs/node.clj
-  var filePath = NODE_INCLUDE_PATH + '/' + src;
+  var filePath = CLOSURE_IMPORT_PATH + '/' + src;
 
   var js = FS.readFileSync(filePath);
-  // the args are all constant as they will be in :simple where things are actually all in the same file
-  // exports are ignored as goog/cljs files should never export anything
-  var code = "(function (exports, require, module, __filename, __dirname, goog) {\n" + js + "\n});";
 
-  // -1 because we have one more line than original (the wrapper above)
-  var fn = VM.runInThisContext(code, {filename: filePath, lineOffset: -1, displayErrors: true});
+  CLOSURE_EXTRACT_ROOTS(js);
+  var code = CLOSURE_WRAP(js);
 
-  // controlling "this" by using fn.call(global, ...)
+  var fn = VM.runInThisContext(code,
+    {filename: filePath,
+     lineOffset: CLOSURE_WRAP_OFFSET(),
+     displayErrors: true
+     });
 
   // the comment is for source-map-support which unfortunately shows the wrong piece of code but the stack is correct
-  /* ignore this, look at stacktrace */ fn.call(global, {}, require, module, __filename, __dirname, goog);
+  try {
+  /* ignore this, look at stacktrace */ fn.call(CLOSURE_GLOBAL, require, module, __filename, __dirname, CLOSURE_GLOBAL);
+  } catch (e) {
+    console.log("CLOSURE import error", filePath);
+    throw e;
+  }
 
   return true;
 };
 
-global.NODE_EVAL = function(js) {
-  var code = "(function (exports, require, module, __filename, __dirname, goog) {\n return (" + js + ");\n});";
-  var fn = VM.runInThisContext(code, {filename: "node-repl.cljs", displayErrors: true});
-  return fn.call(global, {}, require, module, __filename, __dirname, goog);
+CLOSURE_GLOBAL.NODE_EVAL = function(js) {
+  var code = CLOSURE_WRAP("return (" + js + ");");
+  var fn = VM.runInThisContext(code,
+    {filename: "node-repl.cljs",
+     lineOffset: CLOSURE_WRAP_OFFSET(),
+     displayErrors: true
+     });
+  return fn.call(CLOSURE_GLOBAL, require, module, __filename, __dirname, CLOSURE_GLOBAL);
 };
 
-var CLOSURE_LOAD_FILE_SYNC = global.CLOSURE_LOAD_FILE_SYNC = function(src) {
+var CLOSURE_LOAD_FILE_SYNC = CLOSURE_GLOBAL.CLOSURE_LOAD_FILE_SYNC = function(src) {
   return CLOSURE_IMPORT_SCRIPT(src);
 };

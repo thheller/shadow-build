@@ -52,6 +52,7 @@
       )))
 
 (defn read-cache [^File file]
+  {:pre [(.exists file)]}
   (with-open [in (FileInputStream. file)]
     (let [r (transit/reader in :json {:handlers {"url" (transit/read-handler #(URL. %))}})]
       (transit/read r)
@@ -1533,7 +1534,9 @@ normalize-resource-name
 (defn make-runtime-setup
   [{:keys [runtime] :as state}]
   (let [src (str/join "\n"
-              [(case (:print-fn runtime)
+              ["goog.provide('shadow.runtime_setup');"
+               "goog.require('cljs.core');"
+               (case (:print-fn runtime)
                  ;; Browser
                  :console "cljs.core.enable_console_print_BANG_();"
                  ;; Node.JS
