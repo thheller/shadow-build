@@ -12,11 +12,13 @@
    [com.cognitect/transit-clj "0.8.295"]]
 
   :source-paths
-  ["src/clj"
-   "src/cljs"]
+  ["src/main"]
 
   :java-source-paths
   ["src/java"]
+
+  :test-paths
+  ["src/test"]
 
   :profiles
   {:dev
@@ -31,6 +33,6 @@
   [[codox "0.8.13"]]
 
   :codox
-  {:sources ["src/clj"]
+  {:sources ["src/main"]
    :exclude [shadow.cljs.util]
    :output-dir "doc/codox"})

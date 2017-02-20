@@ -108,6 +108,11 @@
               [prepend
                prepend-js
 
+               ;; this is here and not in boostrap since defines already accesses them
+               (str "var SHADOW_IMPORT_PATH = \""
+                    (-> (io/file public-dir cljs-runtime-path)
+                        (.getAbsolutePath))
+                    "\";")
                (str "var SHADOW_ENV = {};")
 
                (when source-map
@@ -117,12 +122,11 @@
                       "console.warn('no source map support, install npm source-map-support');"
                       "}"))
 
+               ;; FIXME: these operate on SHADOW_ENV
+               ;; this means they rely on goog.global = this AND fn.call(SHADOW_ENV, ...)
+               ;; I eventually want to turn the "this" of shadow imports into the module
+               ;; to match what node does.
                (closure-defines state)
-
-               (str "var SHADOW_IMPORT_PATH = \""
-                    (-> (io/file public-dir cljs-runtime-path)
-                        (.getAbsolutePath))
-                    "\";")
 
                ;; provides SHADOW_IMPORT and other things
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
