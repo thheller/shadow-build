@@ -55,21 +55,21 @@ See: https://github.com/thheller/shadow-build/blob/master/src/clj/shadow/cljs/no
 
 The generated `:output-to` file uses a different bootstrap strategy from CLJS (or ClojureJS).
 
-It first creates a `CLOSURE_GLOBAL` object instead of using `global`. `CLOSURE_GLOBAL` is only exposed in `:none` and should thus only be used by development related things.
+It first creates a `SHADOW_ENV` object instead of using `global`. `SHADOW_ENV` is only exposed in `:none` and should thus only be used by development related things.
 
-The `CLOSURE_IMPORT_SCRIPT(relPath)` function will first read the file at `CLOSURE_IMPORT_PATH` + `relPath`.
+The `SHADOW_IMPORT(relPath)` function will first read the file at `SHADOW_IMPORT_PATH` + `relPath`.
 
 From the code every `goog.provide` will be extracted to find "root" names that must exist (ie. `cljs.core` must have a `cljs` object to work);
 
-These roots will be created on the `CLOSURE_GLOBAL` object.
+These roots will be created on the `SHADOW_ENV` object.
 
-The code will then be wrapped similar to what `js/require` does by default. The wrapper will pull all "roots" into the local scope from the `CLOSURE_GLOBAL`. This is done because node will only look up vars in the local scope and `global` but not `CLOSURE_GLOBAL`.
+The code will then be wrapped similar to what `js/require` does by default. The wrapper will pull all "roots" into the local scope from the `SHADOW_ENV`. This is done because node will only look up vars in the local scope and `global` but not `SHADOW_ENV`.
 
 ```
-(function (require, module, __filename, __dirname, CLOSURE_GLOBAL) {
-var goog = CLOSURE_GLOBAL.goog;
-var cljs = CLOSURE_GLOBAL.cljs;
-var foo = CLOSURE_GLOBAL.foo;
+(function (require, module, __filename, __dirname, SHADOW_ENV) {
+var goog = SHADOW_ENV.goog;
+var cljs = SHADOW_ENV.cljs;
+var foo = SHADOW_ENV.foo;
 
 // the actual code here
 });
@@ -77,11 +77,11 @@ var foo = CLOSURE_GLOBAL.foo;
 
 This code is then executed via `vm.runInThisContext` where the context is inside the `:output-to` file.
 
-After creating the `CLOSURE_IMPORT_SCRIPT` function the generated file will start by importing `goog/base.js`.
+After creating the `SHADOW_IMPORT` function the generated file will start by importing `goog/base.js`.
 
 `goog.require` is replace to do nothing as we control the import process and don't need the `goog` dependency management.
 
-`goog.provide` is replaced to ensure objects are created on `CLOSURE_GLOBAL` and not `goog.global`.
+`goog.provide` is replaced to ensure objects are created on `SHADOW_ENV` and not `goog.global`.
 
 Then all dependencies (ordered) of `:main` (or the exports) are imported. 
 

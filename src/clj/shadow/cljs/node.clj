@@ -69,8 +69,8 @@
 
 (defn closure-defines
   [state]
-  (str "\nCLOSURE_GLOBAL.CLOSURE_NO_DEPS = true;\n"
-       "\nCLOSURE_GLOBAL.CLOSURE_DEFINES = " (json/write-str (:closure-defines state {})) ";\n"))
+  (str "\nSHADOW_ENV.CLOSURE_NO_DEPS = true;\n"
+       "\nSHADOW_ENV.CLOSURE_DEFINES = " (json/write-str (:closure-defines state {})) ";\n"))
 
 (defn replace-goog-global [s]
   (str/replace s
@@ -108,7 +108,7 @@
               [prepend
                prepend-js
 
-               (str "var CLOSURE_GLOBAL = {};")
+               (str "var SHADOW_ENV = {};")
 
                (when source-map
                  (str "try {"
@@ -119,30 +119,30 @@
 
                (closure-defines state)
 
-               (str "var CLOSURE_IMPORT_PATH = \""
+               (str "var SHADOW_IMPORT_PATH = \""
                     (-> (io/file public-dir cljs-runtime-path)
                         (.getAbsolutePath))
                     "\";")
 
-               ;; provides CLOSURE_IMPORT_SCRIPT and other things
+               ;; provides SHADOW_IMPORT and other things
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
 
-               "CLOSURE_IMPORT_SCRIPT(\"goog/base.js\");"
+               "SHADOW_IMPORT(\"goog/base.js\");"
 
-               "goog.provide = CLOSURE_PROVIDE;"
-               "goog.require = CLOSURE_REQUIRE;"
+               "goog.provide = SHADOW_PROVIDE;"
+               "goog.require = SHADOW_REQUIRE;"
 
                (->> sources
                     (map #(get-in state [:sources %]))
                     (map :js-name)
                     (map (fn [src]
-                           (str "CLOSURE_IMPORT_SCRIPT(" (pr-str src) ");")))
+                           (str "SHADOW_IMPORT(" (pr-str src) ");")))
                     (str/join "\n"))
 
                ;; make these local always
                ;; these are needed by node/configure :main and the umd exports
-               "var shadow = CLOSURE_GLOBAL.shadow || {};"
-               "var cljs = CLOSURE_GLOBAL.cljs || {};"
+               "var shadow = SHADOW_ENV.shadow || {};"
+               "var cljs = SHADOW_ENV.cljs || {};"
 
                append-js
                append])]

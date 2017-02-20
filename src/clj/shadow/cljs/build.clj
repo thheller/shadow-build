@@ -2470,9 +2470,9 @@ normalize-resource-name
             (str unoptimizable
                  "var SHADOW_MODULES = {};\n"
                  (if web-worker
-                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n"
+                   "\nvar SHADOW_IMPORT = function(src) { importScripts(src); };\n"
                    ;; FIXME: should probably throw an error because we NEVER want to import anything this way
-                   "\nvar CLOSURE_IMPORT_SCRIPT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"
+                   "\nvar SHADOW_IMPORT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"
                    )
                  (closure-defines-and-base state)
                  (closure-goog-deps state)
