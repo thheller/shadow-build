@@ -159,7 +159,7 @@
 
 
 (defn flush-optimized
-  [{modules :optimized :keys [node-global-prefix node-config] :as state}]
+  [{modules :optimized :keys [node-config] :as state}]
   (let [{:keys [output-to]} node-config]
     (cljs/with-logged-time
       [state {:type ::flush-optimized

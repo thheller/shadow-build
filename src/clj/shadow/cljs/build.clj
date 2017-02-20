@@ -889,7 +889,6 @@ normalize-resource-name
 (def cache-affecting-options
   [:static-fns
    :elide-asserts
-   :node-global-prefix
    :source-map])
 
 (defn load-cached-cljs-resource
@@ -2207,7 +2206,7 @@ normalize-resource-name
 (defn flush-sources-by-name
   ([state]
    (flush-sources-by-name state (mapcat :sources (:build-modules state))))
-  ([{:keys [public-dir cljs-runtime-path node-global-prefix] :as state} source-names]
+  ([{:keys [public-dir cljs-runtime-path] :as state} source-names]
    (with-logged-time
      [state {:type :flush-sources
              :source-names source-names}]
@@ -2234,42 +2233,16 @@ normalize-resource-name
                (when (nil? output)
                  (throw (ex-info (format "no output for resource: %s" js-name) src)))
 
-               (let [[output sm-offset]
-                     (if (= node-global-prefix "global")
-                       [output 0]
+               (spit js-target output)
 
-                       ;; rewrite output to add local names
-                       ;; first line should be goog.provide which must be moved
-                       (let [namespaces
-                             (into requires provides)
-
-                             local-names
-                             (util/js-for-local-names namespaces)
-
-                             ;; FIXME: assumes goog.provide is first line which is usually is
-                             [provide & lines]
-                             (str/split output #"\n")]
-                         [(str "var goog = " node-global-prefix ".goog;\n"
-                               ;; must call the provide before creating local name
-                               provide "\n"
-                               ;; lookup global names, make local vars
-                               (str/join "\n" local-names)
-                               "\n"
-                               ;; rest of normal output
-                               (str/join "\n" lines))
-                          ;; source-map must be aware that we added some lines
-                          (-> local-names (count) (inc))]))]
-
-                 (spit js-target output)
-
-                 ;; source-map on the resource is always generated
-                 ;; only output it though if globally activated
-                 (when (and source-map (:source-map state))
-                   (let [source-map-name (str js-name ".map")]
-                     (spit (io/file public-dir cljs-runtime-path source-map-name)
-                       (sm/encode {name source-map} {:file js-name
-                                                     :preamble-line-count sm-offset}))
-                     (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name)) :append true)))))
+               ;; source-map on the resource is always generated
+               ;; only output it though if globally activated
+               (when (and source-map (:source-map state))
+                 (let [source-map-name (str js-name ".map")]
+                   (spit (io/file public-dir cljs-runtime-path source-map-name)
+                     (sm/encode {name source-map} {:file js-name
+                                                   :preamble-line-count 0}))
+                   (spit js-target (str "//# sourceMappingURL=" (file-basename source-map-name)) :append true))))
 
              ;; spit original source, cljs needed for source maps
              (spit target @input))
@@ -2831,8 +2804,6 @@ enable-emit-constants [state]
 
        :public-dir (io/file "public" "js")
        :public-path "js"
-
-       :node-global-prefix "global"
 
        :optimizations :none
        :n-compile-threads (.. Runtime getRuntime availableProcessors)
