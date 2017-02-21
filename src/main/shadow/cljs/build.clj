@@ -308,7 +308,7 @@
               )))))))
 
 (defn inspect-resource
-  [state {:keys [name] :as rc}]
+  [state {:keys [url name] :as rc}]
   {:pre [(compiler-state? state)]}
   (cond
     (is-js-file? name)
@@ -322,7 +322,7 @@
         (peek-into-cljs-resource state rc)))
 
     :else
-    (throw (ex-info "cannot identify as cljs resource" rc))))
+    (throw (ex-info "cannot identify as cljs resource" {:name name :url (str url)}))))
 
 (def ^{:doc "windows filenames need to be normalized because they contain backslashes which browsers don't understand"}
 normalize-resource-name
@@ -1485,6 +1485,16 @@ normalize-resource-name
                     (assoc module :sources sources))))
            (vec)))))
 
+(defn extract-warnings
+  "collect warnings for listed sources only"
+  [state source-names]
+  (->> (for [name source-names
+             :let [{:keys [warnings] :as src}
+                   (get-in state [:sources name])]
+             warning warnings]
+         (assoc warning :source-name name))
+       (into [])))
+
 (defn print-warnings!
   "print warnings after building modules, repeat warnings for files that weren't recompiled!"
   [state]
@@ -1494,7 +1504,6 @@ normalize-resource-name
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (doseq [warning warnings]
-
       (log state {:type :warning
                   :name name
                   :warning warning})
@@ -2759,14 +2768,14 @@ enable-emit-constants [state]
 (defn get-closure-compiler [state]
   (::cc state))
 
-(defn timing-prefix [{:keys [depth timing duration] :as event} msg]
-  (str (when (= :exit timing) "<-")
-       (str/join (repeat depth "-") "")
-       (when (= :enter timing) "->")
-       " "
-       msg
-       (when (= :exit timing)
-         (format " (%d ms)" duration))))
+(defonce stdout-lock (Object.))
+
+(def stdout-log
+  (reify log/BuildLog
+    (log* [_ state evt]
+      (locking stdout-lock
+        (println (log/event-text evt))
+        ))))
 
 (defn init-state []
   (-> {::is-compiler-state true
@@ -2836,15 +2845,7 @@ enable-emit-constants [state]
         "goog.LOCALE" "en"}
 
        :logger
-       (let [log-lock (Object.)]
-         (reify log/BuildLog
-           (log* [_ state evt]
-             (locking log-lock
-               (let [s (log/event->str evt)
-                     s (if (contains? evt :timing)
-                         (timing-prefix evt s)
-                         s)]
-                 (println s))))))}
+       stdout-log}
 
       (add-closure-configurator closure-add-replace-constants-pass)
       ))

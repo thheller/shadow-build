@@ -1,5 +1,6 @@
 (ns shadow.cljs.log
-  (:require [clojure.pprint :refer (pprint)]))
+  (:require [clojure.pprint :refer (pprint)]
+            [clojure.string :as str]))
 
 (defprotocol BuildLog
   (log* [this compiler-state log-event]))
@@ -7,6 +8,21 @@
 (defmulti event->str
   (fn [event] (:type event))
   :default ::default)
+
+(defn timing-prefix [{:keys [depth timing duration] :as event} msg]
+  (str (when (= :exit timing) "<-")
+       (str/join (repeat depth "-") "")
+       (when (= :enter timing) "->")
+       " "
+       msg
+       (when (= :exit timing)
+         (format " (%d ms)" duration))))
+
+(defn event-text [evt]
+  (let [s (event->str evt)]
+    (if (contains? evt :timing)
+      (timing-prefix evt s)
+      s)))
 
 (defmethod event->str ::default
   [event]
@@ -22,16 +38,16 @@
   "Compiling modules")
 
 (defmethod event->str :compile-sources
-  [{:keys [source-names] :as event}]
-  (format "Compiling %d sources" (count source-names)))
+  [{:keys [source-names n-compile-threads] :as event}]
+  (format "Compiling %d sources (%d threads)" (count source-names) n-compile-threads))
 
 (defmethod event->str :cache-read
   [{:keys [name] :as event}]
-  (format "[CACHE] read: %s" name))
+  (format "[CACHED] %s" name))
 
 (defmethod event->str :cache-write
   [{:keys [name] :as event}]
-  (format "[CACHE] write: %s" name))
+  (format "Cache write: %s" name))
 
 (defmethod event->str :flush-unoptimized
   [{:keys [name] :as event}]

@@ -152,21 +152,27 @@
                (-> state
                    (cljs/swap-compiler-env! update-in [::ana/namespaces current-ns] merge full-ns-info)
                    (assoc-in [:repl-state :current :ns-info] full-ns-info))
-               )))]
+               )))
 
-     (-> state
-         (cljs/do-compile-sources deps)
-         (cljs/flush-sources-by-name deps)
-         (load-macros-and-set-ns-info)
-         (update-in [:repl-state :repl-actions] conj
-           {:type :repl/require
-            :sources new-deps
-            :reload reload-flag
-            :js-sources
-            (->> new-deps
-                 (map #(get-in state [:sources % :js-name]))
-                 (into []))
-            })))))
+         state
+         (-> state
+             (cljs/do-compile-sources deps)
+             (cljs/flush-sources-by-name deps)
+             (load-macros-and-set-ns-info))
+
+         action
+         {:type :repl/require
+          :sources new-deps
+          :reload reload-flag
+          :js-sources
+          (->> new-deps
+               (map #(get-in state [:sources % :js-name]))
+               (into []))
+          :warnings
+          (cljs/extract-warnings state deps)}]
+
+     (update-in state [:repl-state :repl-actions] conj action)
+     )))
 
 (defn repl-load-file [{:keys [source-paths] :as state} read-result file-path]
   ;; FIXME: could clojure.core/load-file .clj files?
@@ -208,6 +214,11 @@
             repl-deps
             (remove-already-required-repl-deps state deps)
 
+            state
+            (-> state
+                (cljs/do-compile-sources deps)
+                (cljs/flush-sources-by-name deps))
+
             action
             {:type :repl/require
              :source repl-deps
@@ -215,12 +226,12 @@
              (->> repl-deps
                   (map #(get-in state [:sources % :js-name]))
                   (into []))
-             :reload :reload}]
+             :warnings
+             (cljs/extract-warnings state deps)
+             :reload :reload}
 
-        (-> state
-            (cljs/do-compile-sources deps)
-            (cljs/flush-sources-by-name deps)
-            (update-in [:repl-state :repl-actions] conj action))
+            ]
+        (update-in state [:repl-state :repl-actions] conj action)
         ))))
 
 (def repl-special-forms
@@ -290,15 +301,7 @@
           handler
           (get repl-special-forms special-fn)]
 
-      (try
-        (apply handler state read-result args)
-        (catch Exception e
-          (cljs/log state {:type ::special-fn-error
-                           :source source
-                           :special-fn special-fn
-                           :error e})
-          state
-          )))
+      (apply handler state read-result args))
 
     ;; compile normally
     :else
@@ -311,11 +314,17 @@
                                    :gen-col 0
                                    :gen-line 0})]
 
-                    {:type :repl/invoke
-                     :js (let [ast (cljs/analyze state (:current repl-state) form :expr)]
-                           (with-out-str
-                             (comp/emit ast)))
-                     :source source
+                    {:type
+                     :repl/invoke
+
+                     :js
+                     (let [ast (cljs/analyze state (:current repl-state) form :expr)]
+                       (with-out-str
+                         (comp/emit ast)))
+
+                     :source
+                     source
+
                      ;; FIXME: need actual json source map
                      ;; :source-map (:source-map @comp/*source-map-data*)
                      }))]
