@@ -1760,13 +1760,27 @@ normalize-resource-name
       )))
 
 (defn compile-all-for-ns
-  "compiles files to given ns, ignores configured :modules"
+  "compiles all files required by ns"
   [state ns]
   (let [state
         (prepare-compile state)
 
         deps
         (get-deps-for-ns state ns)]
+
+    (-> state
+        (assoc :build-sources deps)
+        (compile-sources deps))
+    ))
+
+(defn compile-all-for-src
+  "compiles all files required by src name"
+  [state src-name]
+  (let [state
+        (prepare-compile state)
+
+        deps
+        (get-deps-for-src state src-name)]
 
     (-> state
         (assoc :build-sources deps)

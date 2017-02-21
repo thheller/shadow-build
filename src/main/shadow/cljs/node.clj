@@ -148,6 +148,15 @@
                "var shadow = SHADOW_ENV.shadow || {};"
                "var cljs = SHADOW_ENV.cljs || {};"
 
+               (when-some [main (:main node-config)]
+                 (let [root
+                       (-> (str main)
+                           (comp/munge))
+                       root
+                       (subs root 0 (str/index-of root "."))
+                       ]
+                   (str "var " root " = SHADOW_ENV." root ";")))
+
                append-js
                append])]
 
