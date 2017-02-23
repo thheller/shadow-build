@@ -843,10 +843,11 @@
             (cljs/find-resources-in-classpath)
             (cljs/find-resources "cljs-data/dummy/src")
             (umd/create-module
-              {:test 'basic/hello})
+              {:test 'basic/hello}
+              {:output-to "target/umd/dummy.js"})
             (cljs/compile-modules)
             (cljs/closure-optimize :advanced)
-            (umd/flush-module "target/umd/dummy.js"))]
+            (umd/flush-module))]
     :done
     ))
 

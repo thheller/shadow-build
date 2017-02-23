@@ -30,7 +30,6 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-            [clojure.pprint :refer (pprint)]
             ))
 
 ;; (set! *warn-on-reflection* true)
@@ -2388,6 +2387,12 @@ normalize-resource-name
 (defn flush-unoptimized!
   [{:keys [build-modules public-dir] :as state}]
   {:pre [(directory? public-dir)]}
+
+  ;; FIXME: this always flushes
+  ;; it could do partial flushes when nothing was actually compiled
+  ;; a change in :closure-defines won't trigger a recompile
+  ;; so just checking if nothing was compiled is not reliable enough
+  ;; flushing really isn't that expensive so just do it always
 
   (when-not (seq build-modules)
     (throw (ex-info "flush before compile?" {})))

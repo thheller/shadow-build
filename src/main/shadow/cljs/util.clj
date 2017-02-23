@@ -4,7 +4,6 @@
             [cljs.analyzer :as ana]
             [cljs.analyzer.api :as ana-api]
             [cljs.env :as env]
-            [clojure.pprint :refer (pprint)]
             [cljs.compiler :as comp]
             [cljs.core]) ;; not really, just to ensure it is loaded so we can query it form macros?
   (:import (clojure.lang Namespace)))

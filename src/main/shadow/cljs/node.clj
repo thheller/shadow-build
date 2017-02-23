@@ -3,10 +3,10 @@
   (:require [shadow.cljs.build :as cljs]
             [shadow.cljs.log :as log]
             [clojure.java.io :as io]
-            [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [cljs.compiler :as comp]
-            [clojure.data.json :as json]))
+            [clojure.data.json :as json])
+  (:import (java.lang ProcessBuilder$Redirect)))
 
 (defmethod log/event->str ::flush-unoptimized
   [{:keys [output-file] :as ev}]
@@ -119,7 +119,7 @@
                  (str "try {"
                       "require('source-map-support').install();"
                       "} catch (e) {"
-                      "console.warn('no source map support, install npm source-map-support');"
+                      "console.warn('no \"source-map-support\" (run \"npm install source-map-support --save-dev\" to get it)');"
                       "}"))
 
                ;; FIXME: these operate on SHADOW_ENV
@@ -208,29 +208,26 @@
     (flush-unoptimized state)
     (flush-optimized state)))
 
-(defn execute! [{:keys [public-path] :as state} program & args]
+(defmethod log/event->str ::execute!
+  [{:keys [args]}]
+  (format "Execute: %s" (pr-str args)))
+
+(defn execute! [{:keys [node-config] :as state}]
   (when (not= 1 (-> state :build-modules count))
     (throw (ex-info "can only execute non modular builds" {})))
 
-  (let [script-name
-        (-> state :build-modules first :js-name)
+  (let [{:keys [output-to]}
+        node-config
 
         script-args
-        (->> args
-             (map (fn [arg]
-                    (cond
-                      (string? arg)
-                      arg
-                      (= :script arg)
-                      (str public-path "/" script-name)
-                      :else
-                      (throw (ex-info "invalid execute args" {:args args})))))
-             (into [program]))
+        ["node"]
 
         pb
         (doto (ProcessBuilder. script-args)
+          (.directory nil)
           ;; (.directory public-dir)
-          (.inheritIO))]
+          (.redirectOutput ProcessBuilder$Redirect/INHERIT)
+          (.redirectError ProcessBuilder$Redirect/INHERIT))]
 
     ;; not using this because we only get output once it is done
     ;; I prefer to see progress
@@ -239,23 +236,33 @@
     (cljs/with-logged-time
       [state {:type ::execute!
               :args script-args}]
-      (let [proc (.start pb)
-            ;; FIXME: what if this doesn't terminate?
-            exit-code (.waitFor proc)]
-        (assoc state ::exit-code exit-code)))))
+      (let [proc
+            (.start pb)]
+
+        (let [out (.getOutputStream proc)]
+          (io/copy (io/file output-to) out)
+          (.close out))
+
+        ;; FIXME: what if this doesn't terminate?
+        (let [exit-code (.waitFor proc)]
+          (assoc state ::exit-code exit-code))))))
 
 (defn setup-test-runner [state test-namespaces]
   (let [require-order
         (into ['cljs.core 'shadow.runtime-setup 'cljs.test] test-namespaces)
+
+        test-runner-ns
+        'shadow.test-runner
+
         test-runner-src
-        {:name "test_runner.cljs"
-         :js-name "test_runner.js"
+        {:name "shadow/test_runner.cljs"
+         :js-name "shadow/test_runner.js"
          :type :cljs
-         :provides #{'test-runner}
+         :ns test-runner-ns
+         :provides #{test-runner-ns}
          :requires (into #{} require-order)
          :require-order require-order
-         :ns 'test-runner
-         :input (atom [`(~'ns ~'test-runner
+         :input (atom [`(~'ns ~test-runner-ns
                           (:require [cljs.test]
                             ~@(mapv vector test-namespaces)))
 
@@ -265,16 +272,17 @@
                             (js/process.exit 1)
                             ))
 
-                       `(cljs.test/run-tests
-                          (cljs.test/empty-env)
-                          ~@(for [it test-namespaces]
-                              `(quote ~it)))])
+                       `(defn ~'main []
+                          (cljs.test/run-tests
+                            (cljs.test/empty-env)
+                            ~@(for [it test-namespaces]
+                                `(quote ~it))))])
          :last-modified (System/currentTimeMillis)}]
 
     (-> state
         (cljs/merge-resource test-runner-src)
         (cljs/reset-modules)
-        (cljs/configure-module :test-runner ['test-runner] #{}))))
+        (configure {:main test-runner-ns :output-to "target/shadow-test-runner.js"}))))
 
 (defn find-all-test-namespaces [state]
   (->> (get-in state [:sources])
@@ -282,6 +290,7 @@
        (remove :jar)
        (filter cljs/has-tests?)
        (map :ns)
+       (remove #{'shadow.test-runner})
        (into [])))
 
 (defn make-test-runner
@@ -290,9 +299,8 @@
   ([state test-namespaces]
    (-> state
        (setup-test-runner test-namespaces)
-       (cljs/compile-modules)
-       (flush))))
-
+       (compile)
+       (flush-unoptimized))))
 
 (defn to-source-name [state source-name]
   (cond
@@ -306,9 +314,11 @@
 
 (defn execute-affected-tests!
   [state source-names]
-  (let [source-names (->> source-names
-                          (map #(to-source-name state %))
-                          (into []))
+  (let [source-names
+        (->> source-names
+             (map #(to-source-name state %))
+             (into []))
+
         test-namespaces
         (->> (concat source-names (cljs/find-dependents-for-names state source-names))
              (filter #(cljs/has-tests? (get-in state [:sources %])))
@@ -322,14 +332,14 @@
           state)
       (do (-> state
               (make-test-runner test-namespaces)
-              (execute! "node" :script))
+              (execute!))
           ;; return unmodified state, otherwise previous module information and config is lost
           state))))
 
 (defn execute-all-tests! [state]
   (-> state
       (make-test-runner)
-      (execute! "node" :script))
+      (execute!))
 
   ;; return unmodified state!
   state
@@ -338,6 +348,6 @@
 (defn execute-all-tests-and-exit! [state]
   (let [state (-> state
                   (make-test-runner)
-                  (execute! "node" :script))]
+                  (execute!))]
     (System/exit (::exit-code state))))
 

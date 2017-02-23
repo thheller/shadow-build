@@ -9,11 +9,11 @@
             [clojure.string :as str]
             [clojure.walk :as walk]
             [clojure.repl :as repl]
-            [shadow.cljs.util :as util]
             [cljs.env :as env]
             [clojure.java.io :as io]
-            [shadow.cljs.log :as log])
-  (:import (clojure.tools.reader.reader_types PushbackReader StringReader)))
+            [shadow.cljs.log :as log]
+            [shadow.cljs.util :as util]
+            ))
 
 (comment
   (def repl-state
@@ -331,7 +331,7 @@
             (update-in state [:repl-state :repl-actions] conj repl-action)
             )))))
 
-(defn- read-one
+(defn read-one
   ([repl-state reader]
    (read-one repl-state reader {}))
   ([repl-state
@@ -345,11 +345,9 @@
           :read-cond :allow
           :features #{:cljs}}
 
-         buf-len 1
-
          in
          (readers/source-logging-push-back-reader
-           (PushbackReader. reader (object-array buf-len) buf-len buf-len)
+           reader ;; (PushbackReader. reader (object-array buf-len) buf-len buf-len)
            1
            filename)
 
@@ -374,8 +372,7 @@
                      (:requires ns-info)
                      (:require-macros ns-info))]
 
-           (readers/log-source in
-             (reader/read opts in)))
+           (reader/read opts in))
 
          eof?
          (identical? form eof-sentinel)]
@@ -410,20 +407,17 @@
           (recur (process-read-result state read-result))))
       )))
 
-(defn read-stream!
-  "performs a blocking read given the current repl-state"
-  [repl-state input-stream]
-  (let [reader (readers/input-stream-reader input-stream)]
-    (read-one repl-state reader)
-    ))
-
 (defn process-input-stream
   "reads one form of the input stream and calls process-form"
   [{:keys [repl-state] :as state} input-stream]
   {:pre [(cljs/compiler-state? state)]}
-  (let [{:keys [eof?] :as read-result}
-        (read-stream! repl-state input-stream)]
+  (let [reader
+        (readers/input-stream-reader input-stream)
+
+        {:keys [eof?] :as read-result}
+        (read-one repl-state reader)]
     (if eof?
       state
       (process-read-result state read-result))))
+
 

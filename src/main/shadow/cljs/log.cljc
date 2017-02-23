@@ -1,6 +1,5 @@
 (ns shadow.cljs.log
-  (:require [clojure.pprint :refer (pprint)]
-            [clojure.string :as str]))
+  (:require [clojure.string :as str]))
 
 (defprotocol BuildLog
   (log* [this compiler-state log-event]))
@@ -26,8 +25,7 @@
 
 (defmethod event->str ::default
   [event]
-  (with-out-str
-    (pprint event)))
+  (pr-str event))
 
 (defmethod event->str :compile-cljs
   [{:keys [name] :as event}]
