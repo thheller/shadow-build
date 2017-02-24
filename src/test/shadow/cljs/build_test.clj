@@ -955,10 +955,11 @@
   (let [in
         (ByteArrayInputStream. (.getBytes "(def foo 1)"))
 
-        {:keys [repl-state] :as state}
+        {:keys [compiler-env repl-state] :as state}
         (-> (cljs/init-state)
             (cljs/find-resources-in-classpath)
             (repl/prepare)
-            (repl/process-input-stream in))]
+            (repl/process-input-stream in)
+            )]
 
     (pprint (:repl-actions repl-state))))

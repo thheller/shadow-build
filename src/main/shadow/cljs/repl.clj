@@ -21,28 +21,21 @@
      :repl-sources list-of-source-names-required-on-repl-init
      :repl-actions list-of-repl-actions-and-the-input-that-created-them}))
 
-(defn prepare
-  [state]
+(defn setup [state]
   {:pre [(cljs/compiler-state? state)]}
-  ;; FIXME: less hardcoded cljs.user
-
-  ;; must compile an empty cljs.user to properly populate the ::ana/namespaces
-  ;; could just manually set the values needed but I don't want to keep track what gets set
-  ;; so just pretend there is actually an empty ns we never user
-  (let [runtime-setup
-        (cljs/make-runtime-setup state)
-
-        cljs-user-requires
+  (let [cljs-user-requires
         '[cljs.core shadow.runtime-setup cljs.repl]
+
+        ;; FIXME: less hardcoded cljs.user
+        cljs-user-src
+        "(ns cljs.user (:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"
 
         cljs-user
         {:type :cljs
          :ns 'cljs.user
          :name "cljs/user.cljs"
          :js-name "cljs/user.js"
-         :input (atom
-                  (str "(ns cljs.user"
-                       "(:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"))
+         :input (atom cljs-user-src)
          :provides #{'cljs.user}
          :require-order cljs-user-requires
          :requires (into #{} cljs-user-requires)
@@ -50,8 +43,13 @@
 
         state
         (-> state
-            (cljs/merge-resource runtime-setup)
-            (cljs/merge-resource cljs-user))
+            (cljs/merge-resource cljs-user)
+            (cljs/prepare-compile))
+
+        repl-sources
+        (cljs/get-deps-for-ns state 'cljs.user)
+
+        ;; FIXME: proper ns-info for cljs.user, can use analyzer data because nothing was compiled yet
 
         repl-state
         {:current {:ns 'cljs.user
@@ -59,33 +57,37 @@
                    ;; will be populated after compile
                    :ns-info nil}
          ;; the sources required to get the repl started
-         :repl-sources []
+         :repl-sources
+         repl-sources
+
+         :repl-js-sources
+         (->> repl-sources
+              (map #(get-in state [:sources % :js-name]))
+              (into []))
+
          ;; each input and the action it should execute
          ;; keeps the entire history of the repl
-         :repl-actions []
-         }
+         :repl-actions []}]
 
-        repl-sources
-        (cljs/get-deps-for-ns state 'cljs.user)
+    (assoc state :repl-state repl-state)
+    ))
 
-        state
-        (-> state
-            (cljs/finalize-config)
-            (cljs/do-compile-sources repl-sources))
+(defn prepare
+  [state]
+  {:pre [(cljs/compiler-state? state)]}
 
-        ns-info
-        (get-in state [:compiler-env ::ana/namespaces 'cljs.user])
+  ;; must compile an empty cljs.user to properly populate the ::ana/namespaces
+  ;; could just manually set the values needed but I don't want to keep track what gets set
+  ;; so just pretend there is actually an empty ns we never user
+  (let [{:keys [repl-state] :as state}
+        (setup state)
 
-        repl-state
-        (-> repl-state
-            (assoc :repl-sources repl-sources
-                   :repl-js-sources (->> repl-sources
-                                         (map #(get-in state [:sources % :js-name]))
-                                         (into [])))
-            (assoc-in [:current :ns-info] ns-info))]
+        {:keys [repl-sources]}
+        repl-state]
 
     (-> state
-        (assoc :repl-state repl-state)
+        (cljs/prepare-compile)
+        (cljs/do-compile-sources repl-sources)
         (cljs/flush-sources-by-name repl-sources))
     ))
 
@@ -289,6 +291,12 @@
 (defn process-read-result
   [{:keys [repl-state] :as state}
    {:keys [form source] :as read-result}]
+
+  ;; cljs.env/default-compiler-env always populates 'cljs.user for some reason
+  ;; we can't work with that as we need the analyzed version
+  (let [x (get-in state [:compiler-env ::ana/namespaces 'cljs.user])]
+    (when (= x {:name 'cljs.user})
+      (throw (ex-info "missing cljs.user, repl not properly configured (must have analyzed cljs.user by now)" {}))))
 
   (cond
     ;; ('special-fn ...)
