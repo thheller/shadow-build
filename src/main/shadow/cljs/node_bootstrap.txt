@@ -60,7 +60,9 @@ var SHADOW_WRAP_OFFSET = function() {
 };
 
 var SHADOW_IMPORT = SHADOW_ENV.SHADOW_IMPORT = function(src) {
-  console.info("SHADOW load:", src);
+  if (SHADOW_ENV.CLOSURE_DEFINES["shadow.debug"]) {
+    console.info("SHADOW load:", src);
+  }
 
   SHADOW_ENV.SHADOW_IMPORTED[src] = true;
 
@@ -82,7 +84,7 @@ var SHADOW_IMPORT = SHADOW_ENV.SHADOW_IMPORT = function(src) {
   try {
   /* ignore this, look at stacktrace */ fn.call(SHADOW_ENV, require, module, __filename, __dirname, SHADOW_ENV);
   } catch (e) {
-    console.log("SHADOW import error", filePath);
+    console.error("SHADOW import error", filePath);
     throw e;
   }
 
