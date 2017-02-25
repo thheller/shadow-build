@@ -99,7 +99,7 @@ SHADOW_ENV.NODE_EVAL = function(js, smJson) {
     code += new Buffer(smJson).toString('base64');
   }
 
-  console.log(code);
+  // console.log(code);
 
   var fn = VM.runInThisContext(code,
     {filename: "<eval>",
