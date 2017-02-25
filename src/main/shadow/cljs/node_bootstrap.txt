@@ -91,11 +91,20 @@ var SHADOW_IMPORT = SHADOW_ENV.SHADOW_IMPORT = function(src) {
   return true;
 };
 
-SHADOW_ENV.NODE_EVAL = function(js) {
-  var code = SHADOW_WRAP("return (" + js + ");");
+SHADOW_ENV.NODE_EVAL = function(js, smJson) {
+  var prefix = "return (";
+  var code = SHADOW_WRAP(prefix + js + ");");
+  if (smJson) {
+    code += "\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,";
+    code += new Buffer(smJson).toString('base64');
+  }
+
+  console.log(code);
+
   var fn = VM.runInThisContext(code,
-    {filename: "node-eval.js",
+    {filename: "<eval>",
      lineOffset: SHADOW_WRAP_OFFSET(),
+     columnOffset: prefix.length,
      displayErrors: true
      });
   return fn.call(SHADOW_ENV, require, module, __filename, __dirname, SHADOW_ENV);

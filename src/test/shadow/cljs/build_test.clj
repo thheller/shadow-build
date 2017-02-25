@@ -931,6 +931,28 @@
     (pprint repl-state)
     ))
 
+(deftest test-repl-require
+  (let [{:keys [repl-state] :as state}
+        (basic-repl-setup)]
+
+    (pprint (:current repl-state))
+
+    (let [{:keys [repl-state] :as state}
+          (-> state
+              (repl/process-input "(require 'clojure.string)"))]
+
+      (pprint (:current repl-state)))
+    ))
+
+(deftest test-repl-source-map
+  (let [{:keys [repl-state] :as state}
+        (-> (basic-repl-setup)
+            (repl/prepare)
+            (repl/process-input "(let [x 1] (throw (js/Error. \"foo\")))"))]
+
+    ;; (pprint repl-state)
+    ))
+
 (deftest test-auto-alias-clojure-to-cljs
   (let [state
         (-> (cljs/init-state)

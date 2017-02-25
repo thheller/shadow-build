@@ -13,7 +13,8 @@
             [clojure.java.io :as io]
             [shadow.cljs.log :as log]
             [shadow.cljs.util :as util]
-            ))
+            [cljs.source-map :as sm])
+  (:import (java.io StringReader BufferedReader)))
 
 (comment
   (def repl-state
@@ -28,18 +29,25 @@
 
         ;; FIXME: less hardcoded cljs.user
         cljs-user-src
-        "(ns cljs.user (:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))"
+        '(ns cljs.user
+           (:require [cljs.repl :refer (doc find-doc source apropos pst dir)]))
 
         cljs-user
         {:type :cljs
          :ns 'cljs.user
          :name "cljs/user.cljs"
          :js-name "cljs/user.js"
-         :input (atom cljs-user-src)
+         :input (atom [cljs-user-src])
          :provides #{'cljs.user}
          :require-order cljs-user-requires
          :requires (into #{} cljs-user-requires)
          :last-modified (System/currentTimeMillis)}
+
+        ns-info
+        (util/parse-ns cljs-user-src)
+
+        {:keys [ns-info] :as cljs-user}
+        (cljs/update-rc-from-ns state cljs-user ns-info)
 
         state
         (-> state
@@ -54,8 +62,7 @@
         repl-state
         {:current {:ns 'cljs.user
                    :name "cljs/user.cljs"
-                   ;; will be populated after compile
-                   :ns-info nil}
+                   :ns-info ns-info}
          ;; the sources required to get the repl started
          :repl-sources
          repl-sources
@@ -315,27 +322,36 @@
     :else
     (-> (cljs/with-compiler-env state
           (let [repl-action
-                ;; FIXME: what actually populates this? emit or analyze?
                 (cljs/with-warnings state
+                  ;; populated by comp/emit
                   (binding [comp/*source-map-data*
                             (atom {:source-map (sorted-map)
                                    :gen-col 0
                                    :gen-line 0})]
 
-                    {:type
-                     :repl/invoke
+                    (let [ast
+                          (cljs/analyze state (:current repl-state) form :expr)
 
-                     :js
-                     (let [ast (cljs/analyze state (:current repl-state) form :expr)]
-                       (with-out-str
-                         (comp/emit ast)))
+                          js
+                          (with-out-str
+                            (comp/emit ast))
 
-                     :source
-                     source
+                          sm-json
+                          (sm/encode
+                            {"<eval>"
+                             (:source-map @comp/*source-map-data*)}
+                            {:source-map-pretty-print true
+                             :file "<eval>"
+                             :lines
+                             (count (line-seq (BufferedReader. (StringReader. source))))
+                             :sources-content
+                             [source]})]
 
-                     ;; FIXME: need actual json source map
-                     ;; :source-map (:source-map @comp/*source-map-data*)
-                     }))]
+                      {:type :repl/invoke
+                       :name "<eval>"
+                       :js js
+                       :source source
+                       :source-map-json sm-json})))]
             (update-in state [:repl-state :repl-actions] conj repl-action)
             )))))
 

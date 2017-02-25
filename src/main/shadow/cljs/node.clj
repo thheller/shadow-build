@@ -42,7 +42,7 @@
         public-dir
         (if (seq public-dir)
           (io/file public-dir)
-          (io/file "target" "shadow.node" main-ns))
+          (io/file "target" "shadow-node" main-ns))
 
         main
         (symbol main-ns main-fn)
