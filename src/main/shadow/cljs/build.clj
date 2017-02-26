@@ -247,18 +247,13 @@
 (defn update-rc-from-ns
   [state rc {:keys [name require-order] :as ast}]
   {:pre [(compiler-state? state)]}
-  (let [require-order
-        (if (= 'cljs.core name)
-          require-order
-          ;; inject implicit deps
-          (into '[cljs.core shadow.runtime-setup] require-order))]
-    (assoc rc
-      :ns name
-      :ns-info (dissoc ast :env)
-      :provides #{name}
-      :macro-namespaces (macros-from-ns-ast state ast)
-      :requires (into #{} require-order)
-      :require-order require-order)))
+  (assoc rc
+    :ns name
+    :ns-info (dissoc ast :env)
+    :provides #{name}
+    :macro-namespaces (macros-from-ns-ast state ast)
+    :requires (into #{} require-order)
+    :require-order require-order))
 
 (defn error-report
   ([state e]

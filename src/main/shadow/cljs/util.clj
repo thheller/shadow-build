@@ -290,7 +290,9 @@
   (when-not (symbol? ns-name)
     (throw (ex-info "Namespaces must be named by a symbol." {:form form})))
 
-  (let [first-arg (first more)
+  (let [first-arg
+        (first more)
+
         [meta more]
         (cond
           (and (string? first-arg) (map? (second more)))
@@ -301,6 +303,10 @@
           [first-arg (rest more)]
           :else
           [nil more])
+
+        name
+        (vary-meta ns-name merge meta)
+
         ns-info
         (reduce
           (fn [{:keys [seen] :as ns-info} part]
@@ -336,12 +342,17 @@
 
           {:excludes #{}
            :seen #{}
-           :name (vary-meta ns-name merge meta)
-           ;; FIXME: stores ns meta on here as well
-           ;; the meta on the name sym is lost on cache write
+           :name name
            :meta meta
-           :requires {}
-           :require-order []
+           :requires
+           (if (= 'cljs.core name)
+             {}
+             '{cljs.core cljs.core
+               shadow.runtime-setup shadow.runtime-setup})
+           :require-order
+           (if (= 'cljs.core name)
+             []
+             '[cljs.core shadow.runtime-setup])
            :require-macros {}
            :uses {}
            :use-macros {}
