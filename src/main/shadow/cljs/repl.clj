@@ -22,6 +22,9 @@
      :repl-sources list-of-source-names-required-on-repl-init
      :repl-actions list-of-repl-actions-and-the-input-that-created-them}))
 
+(defn repl-state? [x]
+  (and (map? x) (::repl-state x)))
+
 (defn setup [state]
   {:pre [(cljs/compiler-state? state)]}
   (let [cljs-user-requires
@@ -60,7 +63,8 @@
         ;; FIXME: proper ns-info for cljs.user, can use analyzer data because nothing was compiled yet
 
         repl-state
-        {:current {:ns 'cljs.user
+        {::repl-state true
+         :current {:ns 'cljs.user
                    :name "cljs/user.cljs"
                    :ns-info ns-info}
          ;; the sources required to get the repl started
@@ -356,63 +360,62 @@
             )))))
 
 (defn read-one
-  ([repl-state reader]
-   (read-one repl-state reader {}))
-  ([repl-state
-    reader
-    {:keys [filename] :or {filename "repl-input.cljs"}}]
-   (let [eof-sentinel
-         (Object.)
+  [repl-state reader {:keys [filename] :or {filename "repl-input.cljs"} :as opts}]
+  {:pre [(repl-state? repl-state)]}
+  (let [eof-sentinel
+        (Object.)
 
-         opts
-         {:eof eof-sentinel
-          :read-cond :allow
-          :features #{:cljs}}
+        opts
+        {:eof eof-sentinel
+         :read-cond :allow
+         :features #{:cljs}}
 
-         in
-         (readers/source-logging-push-back-reader
-           reader ;; (PushbackReader. reader (object-array buf-len) buf-len buf-len)
-           1
-           filename)
+        in
+        (readers/source-logging-push-back-reader
+          reader ;; (PushbackReader. reader (object-array buf-len) buf-len buf-len)
+          1
+          filename)
 
-         {:keys [ns ns-info] :as repl-rc}
-         (:current repl-state)
+        {:keys [ns ns-info] :as repl-rc}
+        (:current repl-state)
 
-         form
-         (binding [*ns*
-                   (create-ns ns)
+        _ (assert (symbol? ns))
 
-                   ana/*cljs-ns*
-                   ns
+        form
+        (binding [*ns*
+                  (create-ns ns)
 
-                   ana/*cljs-file*
-                   name
+                  ana/*cljs-ns*
+                  ns
 
-                   reader/*data-readers*
-                   tags/*cljs-data-readers*
+                  ana/*cljs-file*
+                  name
 
-                   reader/*alias-map*
-                   (merge reader/*alias-map*
-                     (:requires ns-info)
-                     (:require-macros ns-info))]
+                  reader/*data-readers*
+                  tags/*cljs-data-readers*
 
-           (reader/read opts in))
+                  reader/*alias-map*
+                  (merge reader/*alias-map*
+                    (:requires ns-info)
+                    (:require-macros ns-info))]
 
-         eof?
-         (identical? form eof-sentinel)]
+          (reader/read opts in))
 
-     (-> {:eof? eof?}
-         (cond->
-           (not eof?)
-           (assoc :form form
-                  :source
-                  ;; FIXME: poking at the internals of SourceLoggingPushbackReader
-                  ;; not using (-> form meta :source) which log-source provides
-                  ;; since there are things that do not support IMeta, still want the source though
-                  (-> @(.-source-log-frames in)
-                      (:buffer)
-                      (str)))))
-     )))
+        eof?
+        (identical? form eof-sentinel)]
+
+    (-> {:eof? eof?}
+        (cond->
+          (not eof?)
+          (assoc :form form
+                 :source
+                 ;; FIXME: poking at the internals of SourceLoggingPushbackReader
+                 ;; not using (-> form meta :source) which log-source provides
+                 ;; since there are things that do not support IMeta, still want the source though
+                 (-> @(.-source-log-frames in)
+                     (:buffer)
+                     (str)))))
+    ))
 
 (defn process-input
   "processes a string of forms, may read multiple forms"
@@ -424,7 +427,7 @@
     (loop [{:keys [repl-state] :as state} state]
 
       (let [{:keys [eof?] :as read-result}
-            (read-one repl-state reader)]
+            (read-one repl-state reader {})]
 
         (if eof?
           state
@@ -439,7 +442,7 @@
         (readers/input-stream-reader input-stream)
 
         {:keys [eof?] :as read-result}
-        (read-one repl-state reader)]
+        (read-one repl-state reader {})]
     (if eof?
       state
       (process-read-result state read-result))))
