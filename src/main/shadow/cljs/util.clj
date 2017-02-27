@@ -344,21 +344,28 @@
            :seen #{}
            :name name
            :meta meta
-           :requires
-           (if (= 'cljs.core name)
-             {}
-             '{cljs.core cljs.core
-               shadow.runtime-setup shadow.runtime-setup})
-           :require-order
-           (if (= 'cljs.core name)
-             []
-             '[cljs.core shadow.runtime-setup])
+           :requires {}
+           :require-order []
            :require-macros {}
            :uses {}
            :use-macros {}
            :renames {}
            :rename-macros {}}
-          more)]
+          more)
+
+        ns-info
+        (if (= 'cljs.core name)
+          ns-info
+          (-> ns-info
+              (update :requires merge
+                '{cljs.core cljs.core
+                  shadow.runtime-setup shadow.runtime-setup})
+              (update :require-order
+                (fn [ro]
+                  (->> ro
+                       (concat '[cljs.core shadow.runtime-setup])
+                       (distinct)
+                       (into []))))))]
 
     (let [required-ns
           (->> (:requires ns-info)
