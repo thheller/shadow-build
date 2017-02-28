@@ -52,13 +52,21 @@
                     :main-fn main-fn
                     :main main
                     :output-to output-to
-                    :public-dir public-dir)]
+                    :public-dir public-dir)
+
+        main-call
+        (-> node-config :main (make-main-call-js))
+
+        module-opts
+        (-> opts
+            (select-keys [:prepend :append :prepend-js :append-js])
+            (update :append-js str "\n" main-call))]
 
     (-> state
         (assoc :node-config node-config)
         (assoc :public-dir public-dir)
         (cljs/reset-modules)
-        (cljs/configure-module module-name [(symbol main-ns)] #{} {:append-js (-> node-config :main (make-main-call-js))})
+        (cljs/configure-module module-name [(symbol main-ns)] #{} module-opts)
         )))
 
 (defn compile [state]
