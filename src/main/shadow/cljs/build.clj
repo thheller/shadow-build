@@ -643,7 +643,10 @@ normalize-resource-name
 
 (defn post-analyze [{:keys [op] :as ast} opts]
   (case op
-    :ns (post-analyze-ns ast opts)
+    :ns
+    (post-analyze-ns ast opts)
+    :ns*
+    (throw (ex-info "ns* not supported (require, require-macros, import, import-macros, ... must be part of your ns form)" ast))
     ast))
 
 (defn hijacked-parse-ns [env form name opts]
