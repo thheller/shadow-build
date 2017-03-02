@@ -620,7 +620,7 @@ normalize-resource-name
     ))
 
 
-(defn post-analyze-ns [{:keys [name] :as ast} opts]
+(defn post-analyze-ns [{:keys [name] :as ast} compiler-state]
   (let [ast
         (-> ast
             (util/load-macros)
@@ -641,17 +641,17 @@ normalize-resource-name
 
     ast))
 
-(defn post-analyze [{:keys [op] :as ast} opts]
+(defn post-analyze [{:keys [op] :as ast} compiler-state]
   (case op
     :ns
-    (post-analyze-ns ast opts)
+    (post-analyze-ns ast compiler-state)
     :ns*
     (throw (ex-info "ns* not supported (require, require-macros, import, import-macros, ... must be part of your ns form)" ast))
     ast))
 
-(defn hijacked-parse-ns [env form name opts]
+(defn hijacked-parse-ns [env form name {:keys [compiler-state] :as opts}]
   (-> (util/parse-ns form)
-      (rewrite-ns-aliases opts)
+      (rewrite-ns-aliases compiler-state)
       (assoc :env env :form form :op :ns)))
 
 (def default-parse ana/parse)
@@ -675,21 +675,24 @@ normalize-resource-name
           (symbol? ns)
           (string? name)
           (seq name)]}
-    ;; (defmulti parse (fn [op & rest] op))
-   (let [default-parse ana/parse]
 
-     (binding [*ns* (create-ns ns)
-               ana/*passes* [ana/infer-type]
-               ;; [infer-type ns-side-effects] is default, we don't want the side effects
-               ;; altough it is great that the side effects are now optional
-               ;; the default still doesn't handle macros properly
-               ;; so we keep hijacking
-               ana/*cljs-ns* ns
-               ana/*cljs-file* name]
-       (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-           (assoc :context context)
-           (ana/analyze form ns state)
-           (post-analyze state))))))
+   (binding [*ns* (create-ns ns)
+             ana/*passes* [ana/infer-type]
+             ;; [infer-type ns-side-effects] is default, we don't want the side effects
+             ;; altough it is great that the side effects are now optional
+             ;; the default still doesn't handle macros properly
+             ;; so we keep hijacking
+             ana/*cljs-ns* ns
+             ana/*cljs-file* name]
+     (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+         (assoc :context context)
+         (ana/analyze form ns
+           ;; doing this since I no longer want :compiler-options at the root
+           ;; of the compiler state, instead they are in :compiler-options
+           ;; still want the compiler-state accessible though
+           (assoc (:compiler-options state)
+             :compiler-state state))
+         (post-analyze state)))))
 
 (defn do-compile-cljs-string
   [{:keys [name] :as init} reduce-fn cljs-source cljc?]
@@ -810,48 +813,50 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [{:keys [static-fns elide-asserts] :as state} {:keys [name input] :as rc}]
+  [{:keys [compiler-settings] :as state} {:keys [name input] :as rc}]
+  (let [{:keys [static-fns elide-asserts]}
+        compiler-settings]
 
-  (binding [ana/*cljs-static-fns*
-            static-fns
+    (binding [ana/*cljs-static-fns*
+              static-fns
 
-            ;; initialize with default value
-            ;; must set binding to it is thread bound, since the analyzer may set! it
-            ana/*unchecked-if*
-            ana/*unchecked-if*
+              ;; initialize with default value
+              ;; must set binding to it is thread bound, since the analyzer may set! it
+              ana/*unchecked-if*
+              ana/*unchecked-if*
 
-            ;; root binding for warnings so (set! *warn-on-infer* true) can work
-            ana/*cljs-warnings*
-            ana/*cljs-warnings*
+              ;; root binding for warnings so (set! *warn-on-infer* true) can work
+              ana/*cljs-warnings*
+              ana/*cljs-warnings*
 
-            *assert*
-            (not= elide-asserts true)]
+              *assert*
+              (not= elide-asserts true)]
 
-    (let [source @input]
-      (with-logged-time
-        [state {:type :compile-cljs :name name}]
+      (let [source @input]
+        (with-logged-time
+          [state {:type :compile-cljs :name name}]
 
-        (let [{:keys [js ns requires require-order source-map warnings]}
-              (cond
-                (string? source)
-                (compile-cljs-string state source name (is-cljc? name))
-                (vector? source)
-                (compile-cljs-seq state source name)
-                :else
-                (throw (ex-info "invalid cljs source type" {:name name :source source})))]
+          (let [{:keys [js ns requires require-order source-map warnings]}
+                (cond
+                  (string? source)
+                  (compile-cljs-string state source name (is-cljc? name))
+                  (vector? source)
+                  (compile-cljs-seq state source name)
+                  :else
+                  (throw (ex-info "invalid cljs source type" {:name name :source source})))]
 
-          (when-not ns
-            (throw (ex-info "cljs file did not provide a namespace" {:file name})))
+            (when-not ns
+              (throw (ex-info "cljs file did not provide a namespace" {:file name})))
 
-          (assoc rc
-            :output js
-            :requires requires
-            :require-order require-order
-            :compiled-at (System/currentTimeMillis)
-            :provides #{ns}
-            :compiled true
-            :warnings warnings
-            :source-map source-map))))))
+            (assoc rc
+              :output js
+              :requires requires
+              :require-order require-order
+              :compiled-at (System/currentTimeMillis)
+              :provides #{ns}
+              :compiled true
+              :warnings warnings
+              :source-map source-map)))))))
 
 
 ;; FIXME: must manually bump if anything cache related changes
@@ -925,7 +930,10 @@ normalize-resource-name
 
           (when (and (= (:source-path cache-data) (:source-path rc))
                      (= age-of-deps (:age-of-deps cache-data))
-                     (every? #(= (get state %) (get-in cache-data [:cache-options %])) cache-affecting-options))
+                     (every?
+                       #(= (get-in state [:compiler-options %])
+                           (get-in cache-data [:cache-options %]))
+                       cache-affecting-options))
             (log state {:type :cache-read
                         :name name})
 
@@ -966,7 +974,7 @@ normalize-resource-name
               cache-options
               (reduce
                 (fn [cache-options option-key]
-                  (assoc cache-options option-key (get state option-key)))
+                  (assoc cache-options option-key (get-in state [:compiler-options option-key])))
                 {}
                 cache-affecting-options)
 
@@ -1581,12 +1589,16 @@ normalize-resource-name
       :cljs
       (maybe-compile-cljs state src))))
 
+(defn load-core-noop [])
+
 (defn do-compile-sources
   "compiles with just the main thread, can do partial compiles assuming deps are compiled"
   [state source-names]
-  (with-redefs [ana/parse shadow-parse]
-    (with-compiler-env state
-      (ana/load-core)
+  (with-compiler-env state
+    (ana/load-core)
+    (with-redefs [ana/parse shadow-parse
+                  ana/load-core load-core-noop]
+
       (reduce
         (fn [state source-name]
           (let [src (get-in state [:sources source-name])
@@ -1649,9 +1661,11 @@ normalize-resource-name
   "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
    this cannot do a partial incremental compile"
   [{:keys [n-compile-threads] :as state} source-names]
-  (with-redefs [ana/parse shadow-parse]
-    (with-compiler-env state
-      (ana/load-core)
+  (with-compiler-env state
+    (ana/load-core)
+    (with-redefs [ana/parse shadow-parse
+                  ana/load-core load-core-noop]
+
       (let [;; namespaces that are ready to be used
             ready
             (atom #{})
@@ -2134,7 +2148,7 @@ normalize-resource-name
    nothing is written to disk, use flush-optimized to write"
   ([state optimizations]
    (-> state
-       (assoc :optimizations optimizations)
+       (update :compiler-options assoc :optimizations optimizations)
        (closure-optimize)))
   ([{:keys [build-modules closure-configurators] :as state}]
    (when-not (seq build-modules)
@@ -2151,7 +2165,7 @@ normalize-resource-name
            (make-closure-compiler)
 
            co
-           (closure/make-options state)
+           (closure/make-options (:compiler-options state))
 
            ;; (fn [closure-compiler compiler-options])
            _ (doseq [cfg closure-configurators]
@@ -2221,7 +2235,7 @@ normalize-resource-name
 
 (defn closure-goog-deps
   ([state]
-    (closure-goog-deps state (-> state :sources keys)))
+   (closure-goog-deps state (-> state :sources keys)))
   ([state source-names]
    (->> source-names
         (map #(get-in state [:sources %]))
@@ -2751,7 +2765,10 @@ enable-emit-constants [state]
 (defn enable-source-maps [state]
   (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
 
-(defn set-build-options [state opts]
+(defn merge-compiler-options [state opts]
+  (update state :compiler-options merge opts))
+
+(defn merge-build-options [state opts]
   (merge state opts))
 
 (defn merge-build-options [state opts]
@@ -2797,18 +2814,26 @@ enable-emit-constants [state]
 
        ::cc (make-closure-compiler)
 
-       :closure-warnings
-       {:check-types :off}
+       :compiler-options
+       {:optimizations :none
+        :static-fns true
+        :elide-asserts false
 
-       :runtime {:print-fn :console}
+        :closure-warnings
+        {:check-types :off}}
+
+       :closure-defines
+       {"goog.DEBUG" false
+        "goog.LOCALE" "en"}
+
+       :runtime
+       {:print-fn :console}
+
        :macros-loaded #{}
        :use-file-min true
 
        :bundle-foreign :inline
        :dev-inline-js true
-
-       :static-fns true
-       :elide-asserts false
 
        :ns-aliases
        '{clojure.pprint cljs.pprint
@@ -2839,13 +2864,9 @@ enable-emit-constants [state]
        :public-dir (io/file "public" "js")
        :public-path "js"
 
-       :optimizations :none
        :n-compile-threads (.. Runtime getRuntime availableProcessors)
 
        :source-paths {}
-       :closure-defines
-       {"goog.DEBUG" false
-        "goog.LOCALE" "en"}
 
        :logger
        stdout-log}

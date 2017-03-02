@@ -211,11 +211,6 @@
 
   state)
 
-(defn flush [{:keys [optimizations] :as state}]
-  (if (= optimizations :none)
-    (flush-unoptimized state)
-    (flush-optimized state)))
-
 (defmethod log/event->str ::execute!
   [{:keys [args]}]
   (format "Execute: %s" (pr-str args)))

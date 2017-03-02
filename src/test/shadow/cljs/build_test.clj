@@ -18,7 +18,7 @@
   (:import (java.util.regex Pattern)
            (java.io File ByteArrayInputStream)
            (java.net URL)
-           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile )
+           (com.google.javascript.jscomp ClosureCodingConvention CompilerOptions SourceFile)
            (clojure.lang ExceptionInfo)))
 
 (deftest test-initial-scan
@@ -446,9 +446,8 @@
             (cljs/find-resources-in-classpath)
             (cljs/find-resources "cljs-data/node/src")
 
-            (cljs/set-build-options
-              {:cache-dir (io/file "target/test-cljs-cache")
-               :cache-level :jars})
+            (merge {:cache-dir (io/file "target/test-cljs-cache")
+                    :cache-level :jars})
 
             (node/configure
               {:main 'test.server/main
@@ -544,7 +543,7 @@
     (comment
       ;; cljs actually drops the docstring if separate from meta
       (is (= (meta (:name a))
-            (meta (:name b))))))
+             (meta (:name b))))))
 
 
   (is (thrown-with-msg?
@@ -815,10 +814,11 @@
 (deftest test-alias-constants
   (let [state
         (-> (cljs/init-state)
-            (cljs/set-build-options
+            (cljs/merge-compiler-options
               {:optimizations :advanced
-               :pretty-print true
-               :public-dir (io/file "cljs-data/dummy/out")
+               :pretty-print true})
+            (cljs/merge-build-options
+              {:public-dir (io/file "cljs-data/dummy/out")
                :public-path "out"})
             ;; (cljs/enable-emit-constants)
             (cljs/find-resources-in-classpath)
@@ -851,37 +851,17 @@
     :done
     ))
 
-(deftest test-node-global-prefix
-  (let [state
-        (-> (cljs/init-state)
-            (cljs/set-build-options
-              {:cache-level :jars
-               :node-global-prefix "global.FANCY"})
-            (cljs/find-resources-in-classpath)
-            (cljs/find-resources "cljs-data/dummy/src")
-            (umd/create-module
-              {:test 'basic/hello}
-              {:output-to "target/umd-gen/global.js"})
-            (cljs/compile-modules)
-            (cljs/flush-sources-by-name ["basic.cljs"]))]
-
-    ;; FIXME: verify that flush imported local names
-    ;; FIXME: move the generation of this stuff to compile
-    ;; flush should not do important stuff besides writing things to disk
-    (println (slurp "target/umd-gen/cljs-runtime/basic.js"))
-    :done
-    ))
-
 (deftest test-elide-asserts
   (let [state
         (-> (cljs/init-state)
             (cljs/find-resources-in-classpath)
             (cljs/find-resources "cljs-data/dummy/src")
             (cljs/prepare-compile)
-            (cljs/set-build-options
+            (cljs/merge-build-options
               {:public-path "target/assert-out"
-               :public-dir (io/file "target/assert-out")
-               :pretty-print true
+               :public-dir (io/file "target/assert-out")})
+            (cljs/merge-compiler-options
+              {:pretty-print true
                :pseudo-names true
                :closure-defines {"cljs.core._STAR_assert_STAR_" false}})
             (cljs/configure-module :cljs '[cljs.core] #{})
@@ -960,7 +940,7 @@
             (cljs/find-resources-in-classpath)
             (cljs/find-resources "cljs-data/auto-alias")
             (cljs/prepare-compile)
-            (cljs/set-build-options
+            (cljs/merge-build-options
               {:public-path "target/auto-alias-out"
                :public-dir (io/file "target/auto-alias-out")})
             (cljs/configure-module :test '[test.alias] #{})
