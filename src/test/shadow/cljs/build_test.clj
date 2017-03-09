@@ -453,7 +453,7 @@
               {:main 'test.server/main
                :output-to "cljs-data/node/out/my-app.js"})
             (node/compile)
-            (node/flush))]
+            (node/flush-unoptimized))]
 
     (println (slurp "cljs-data/node/out/my-app.js"))
     ;; (println (slurp "cljs-data/node/out/src/test/server.js"))
@@ -891,11 +891,12 @@
          )))
 
 (deftest run-all-tests-breakage
-  (let [state
+  (let [{:keys [repl-state] :as state}
         (-> (basic-repl-setup)
             (repl/process-input "(require 'cljs.test)")
             (repl/process-input "(cljs.test/run-all-tests)"))]
 
+    (pprint repl-state)
     ))
 
 

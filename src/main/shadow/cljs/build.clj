@@ -517,11 +517,11 @@ normalize-resource-name
                                   (normalize-resource-name))]
                    :when (not (should-ignore-resource? state name))]
 
-               (make-fs-resource state path name file))
+               (make-fs-resource state root-path name file))
              (map (juxt :name identity))
              (into {}))]
 
-    (-> (process-deps-cljs state manifest path)
+    (-> (process-deps-cljs state manifest root-path)
         (vals))))
 
 (defn get-resource-for-provide [state ns-sym]
@@ -1743,13 +1743,12 @@ normalize-resource-name
 (defn prepare-compile
   "prepares for compilation (eg. create source lookup index, shadow.runtime-setup)"
   [state]
-  ;; FIXME: re-creating shadow.runtime-setup with every incremental compile
-  ;; should do this once?
-  (let [runtime-setup
-        (make-runtime-setup state)]
-    (-> (finalize-config state)
-        (merge-resource runtime-setup)
-        )))
+  (-> state
+      (cond->
+        (not (get-in state [:sources "shadow/runtime_setup.js"]))
+        (merge-resource (make-runtime-setup state)))
+      (finalize-config)
+      ))
 
 (defn prepare-modules
   "prepares :modules for compilation (sort and compacts duplicate sources)"
@@ -2614,7 +2613,7 @@ normalize-resource-name
     (reduce reset-resource-by-name state names)
     ))
 
-(defn scan-for-new-files
+(defn ^:deprecated scan-for-new-files
   "scans the reloadable paths for new files
 
    returns a seq of resource maps with a {:scan :new} value"
@@ -2632,7 +2631,7 @@ normalize-resource-name
          (map #(assoc % :scan :new))
          (into []))))
 
-(defn scan-for-modified-files
+(defn ^:deprecated scan-for-modified-files
   "scans known sources for modified or deleted files
 
   returns a seq of resource maps with a :scan key which is either :modified :delete
@@ -2684,14 +2683,14 @@ normalize-resource-name
                  result))
              modified-macros)))))
 
-(defn scan-files
+(defn ^:deprecated scan-files
   "scans for new and modified files
    returns resources maps with a :scan key with is either :new :modified :delete"
   [state]
   (concat (scan-for-modified-files state)
     (scan-for-new-files state)))
 
-(defn wait-for-modified-files!
+(defn ^:deprecated wait-for-modified-files!
   "blocks current thread waiting for modified files
   return resource maps with a :scan key which is either :new :modified :delete"
   [{:keys [sources] :as initial-state}]
@@ -2712,7 +2711,7 @@ normalize-resource-name
             (recur state
               (inc i)))))))
 
-(defn reload-modified-resource
+(defn ^:deprecated reload-modified-resource
   [state {:keys [scan name file ns] :as rc}]
   (log state {:type :reload
               :action scan
@@ -2743,7 +2742,7 @@ normalize-resource-name
       (reduce reset-resource-by-name state (cons name dependents))
       )))
 
-(defn reload-modified-files!
+(defn ^:deprecated reload-modified-files!
   [state scan-results]
   (as-> state $state
     (reduce reload-modified-resource $state scan-results)
@@ -2751,7 +2750,7 @@ normalize-resource-name
     (discover-macros $state)
     ))
 
-(defn wait-and-reload!
+(defn ^:deprecated wait-and-reload!
   "wait for modified files, reload them and return reloaded state"
   [state]
   (->> (wait-for-modified-files! state)
@@ -2829,7 +2828,6 @@ enable-emit-constants [state]
        :runtime
        {:print-fn :console}
 
-       :macros-loaded #{}
        :use-file-min true
 
        :bundle-foreign :inline
