@@ -104,9 +104,9 @@
 
          evt#
          (assoc msg#
-           :timing :enter
-           :start start#
-           :depth *time-depth*)]
+                :timing :enter
+                :start start#
+                :depth *time-depth*)]
      (log ~state evt#)
      (let [result#
            (binding [*time-depth* (inc *time-depth*)]
@@ -117,10 +117,10 @@
 
            evt#
            (assoc msg#
-             :timing :exit
-             :depth *time-depth*
-             :stop stop#
-             :duration (- stop# start#))]
+                  :timing :exit
+                  :depth *time-depth*
+                  :stop stop#
+                  :duration (- stop# start#))]
        (log (if (compiler-state? result#) result# ~state) evt#)
        result#)
      ))
@@ -204,16 +204,16 @@
   {:pre [(compiler-state? state)]}
   (if (= "goog/base.js" name)
     (assoc rc
-      :requires #{}
-      :require-order []
-      :provides #{'goog})
+           :requires #{}
+           :require-order []
+           :provides #{'goog})
     ;; parse any other js
     (let [deps (-> (JsFileParser. (.getErrorManager (::cc state)))
                    (.parseFile name name @input))]
       (assoc rc
-        :requires (into #{} (map munge-goog-ns) (.getRequires deps))
-        :require-order (into [] (map munge-goog-ns) (.getRequires deps))
-        :provides (into #{} (map munge-goog-ns) (.getProvides deps))))))
+             :requires (into #{} (map munge-goog-ns) (.getRequires deps))
+             :require-order (into [] (map munge-goog-ns) (.getRequires deps))
+             :provides (into #{} (map munge-goog-ns) (.getProvides deps))))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
   {:pre [(compiler-state? state)]}
@@ -251,24 +251,24 @@
                 ns-map))]
 
         (assoc ast
-          :require-order
-          (into [] (map rewrite-ns) require-order)
-          :requires
-          (rewrite-ns-map requires true)
-          :uses
-          (rewrite-ns-map uses false))
+               :require-order
+               (into [] (map rewrite-ns) require-order)
+               :requires
+               (rewrite-ns-map requires true)
+               :uses
+               (rewrite-ns-map uses false))
         ))))
 
 (defn update-rc-from-ns
   [state rc {:keys [name require-order] :as ast}]
   {:pre [(compiler-state? state)]}
   (assoc rc
-    :ns name
-    :ns-info (dissoc ast :env)
-    :provides #{name}
-    :macro-namespaces (macros-from-ns-ast state ast)
-    :requires (into #{} require-order)
-    :require-order require-order))
+         :ns name
+         :ns-info (dissoc ast :env)
+         :provides #{name}
+         :macro-namespaces (macros-from-ns-ast state ast)
+         :requires (into #{} require-order)
+         :require-order require-order))
 
 (defn error-report
   ([state e]
@@ -309,12 +309,12 @@
           ;; make best estimate guess what the file might provide based on name
           (let [guessed-ns (cljs-file->ns name)]
             (assoc rc
-              :ns guessed-ns
-              :requires #{'cljs.core}
-              :require-order ['cljs.core]
-              :provides #{guessed-ns}
-              :type :cljs
-              )))))))
+                   :ns guessed-ns
+                   :requires #{'cljs.core}
+                   :require-order ['cljs.core]
+                   :provides #{guessed-ns}
+                   :type :cljs
+                   )))))))
 
 (defn inspect-resource
   [state {:keys [url name] :as rc}]
@@ -452,15 +452,15 @@ normalize-resource-name
                                    (apply dissoc m list))
                       ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
                       rc (assoc rc
-                           :foreign true
-                           :requires (set (map symbol requires))
-                           :provides (set (map symbol provides))
-                           :externs externs
-                           :externs-source (->> externs
-                                                (map #(get result %))
-                                                (map :input)
-                                                (map deref)
-                                                (str/join "\n")))]
+                                :foreign true
+                                :requires (set (map symbol requires))
+                                :provides (set (map symbol provides))
+                                :externs externs
+                                :externs-source (->> externs
+                                                     (map #(get result %))
+                                                     (map :input)
+                                                     (map deref)
+                                                     (str/join "\n")))]
                   (-> result
                       (dissoc-all externs)
                       ;; remove :file or :file-min
@@ -610,8 +610,8 @@ normalize-resource-name
          (string? src-name)]}
   (-> state
       (assoc :deps-stack []
-        :deps-ordered []
-        :deps-visited #{})
+             :deps-ordered []
+             :deps-visited #{})
       (get-deps-for-src* src-name)
       :deps-ordered))
 
@@ -723,17 +723,19 @@ normalize-resource-name
              ana/*cljs-ns* ns
              ana/*cljs-file* name]
 
-     (let [orig-analyze-form ana/analyze-form]
-       (with-redefs [ana/analyze-form #(hijacked-analyze-form orig-analyze-form %1 %2 %3 %4)]
-         (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-             (assoc :context context)
-             (ana/analyze form ns
-               ;; doing this since I no longer want :compiler-options at the root
-               ;; of the compiler state, instead they are in :compiler-options
-               ;; still want the compiler-state accessible though
-               (assoc (:compiler-options state)
-                 :compiler-state state))
-             (post-analyze state)))))))
+     #_(let [orig-analyze-form ana/analyze-form]
+         (with-redefs [ana/analyze-form #(hijacked-analyze-form orig-analyze-form %1 %2 %3 %4)]
+           ))
+
+     (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+         (assoc :context context)
+         (ana/analyze form ns
+           ;; doing this since I no longer want :compiler-options at the root
+           ;; of the compiler state, instead they are in :compiler-options
+           ;; still want the compiler-state accessible though
+           (assoc (:compiler-options state)
+                  :compiler-state state))
+         (post-analyze state)))))
 
 (defn do-compile-cljs-string
   [{:keys [name] :as init} reduce-fn cljs-source cljc?]
@@ -898,16 +900,16 @@ normalize-resource-name
               (throw (ex-info "cljs file did not provide a namespace" {:file name})))
 
             (assoc rc
-              :output js
-              :requires requires
-              :require-order require-order
-              :compiled-at (System/currentTimeMillis)
-              :provides #{ns}
-              :compiled true
-              :warnings warnings
-              :ast ast
-              :forms forms
-              :source-map source-map)))))))
+                   :output js
+                   :requires requires
+                   :require-order require-order
+                   :compiled-at (System/currentTimeMillis)
+                   :provides #{ns}
+                   :compiled true
+                   :warnings warnings
+                   :ast ast
+                   :forms forms
+                   :source-map source-map)))))))
 
 
 ;; FIXME: must manually bump if anything cache related changes
@@ -998,7 +1000,7 @@ normalize-resource-name
             (-> (merge rc cache-data)
                 (dissoc :analyzer :cache-options :age-of-deps)
                 (assoc :cached true
-                  :output (slurp cache-js))))))
+                       :output (slurp cache-js))))))
 
       (catch Exception e
         (log state {:type :cache-error
@@ -1020,7 +1022,7 @@ normalize-resource-name
               (-> rc
                   (dissoc :file :output :input :url :forms :ast)
                   (assoc :age-of-deps (make-age-map state ns)
-                    :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+                         :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
 
               cache-options
               (reduce
@@ -1143,9 +1145,9 @@ normalize-resource-name
         ;; remove all provides, otherwise it might end up being used despite the invalid name
         ;; enforce this behavior since the warning might get overlooked easily
         (let [invalid-src (assoc src
-                            :provides #{}
-                            :requires #{}
-                            :require-order [])]
+                                 :provides #{}
+                                 :requires #{}
+                                 :require-order [])]
           (assoc-in state [:sources name] invalid-src)))
 
     ;; do not merge files that are already present from a different source path
@@ -1234,8 +1236,8 @@ normalize-resource-name
              state
              (if (.isDirectory file)
                (assoc-in state [:source-paths abs-path] (assoc path-opts
-                                                          :file file
-                                                          :path abs-path))
+                                                               :file file
+                                                               :path abs-path))
                state)]
          (merge-resources state resources))))))
 
@@ -1636,7 +1638,7 @@ normalize-resource-name
       (if output
         (assoc src :cached true)
         (assoc src :output @(:input src)
-          :cached false))
+               :cached false))
       :cljs
       (maybe-compile-cljs state src))))
 
@@ -1810,8 +1812,8 @@ normalize-resource-name
         modules
         (sort-and-compact-modules state)]
     (assoc state
-      :build-modules modules
-      :build-sources (into [] (mapcat :sources modules)))))
+           :build-modules modules
+           :build-sources (into [] (mapcat :sources modules)))))
 
 (defn compile-modules
   "compiles according to configured :modules"
@@ -2028,24 +2030,24 @@ normalize-resource-name
                             (str (clojure.core/name name) "-foreign-" md5 ".js")]
 
                         (assoc mod
-                          ;; remove foreign from sources list (mainly for a clean manifest)
-                          :sources
-                          (->> sources
-                               (map #(get-in state [:sources %]))
-                               (remove :foreign)
-                               (map :name)
-                               (into []))
+                               ;; remove foreign from sources list (mainly for a clean manifest)
+                               :sources
+                               (->> sources
+                                    (map #(get-in state [:sources %]))
+                                    (remove :foreign)
+                                    (map :name)
+                                    (into []))
 
-                          ;; FIXME: unfinished optmization
-                          ;; I want to be able to split foreigns into multiple files eventually
-                          ;; say you have foreign A,B,C
-                          ;; if A changes more frequently than B,C it might be useful to have it as a separate include
-                          ;; so B,C still benefit from caching and A doesn't cause them to download again
-                          :foreign-files
-                          [{:js-name foreign-name
-                            :provides provides
-                            :output output
-                            }])))
+                               ;; FIXME: unfinished optmization
+                               ;; I want to be able to split foreigns into multiple files eventually
+                               ;; say you have foreign A,B,C
+                               ;; if A changes more frequently than B,C it might be useful to have it as a separate include
+                               ;; so B,C still benefit from caching and A doesn't cause them to download again
+                               :foreign-files
+                               [{:js-name foreign-name
+                                 :provides provides
+                                 :output output
+                                 }])))
                     )))
            (into [])))))
 
@@ -2244,38 +2246,38 @@ normalize-resource-name
                        :errors errors})))
 
        (assoc state
-         :optimized (when (.success result)
-                      (let [source-map (when source-map?
-                                         (.getSourceMap cc))]
+              :optimized (when (.success result)
+                           (let [source-map (when source-map?
+                                              (.getSourceMap cc))]
 
-                        (vec (for [{:keys [js-name js-module sources] :as m} modules
-                                   ;; reset has to be called before .toSource
-                                   :let [_
-                                         (when source-map?
-                                           (.reset source-map))
+                             (vec (for [{:keys [js-name js-module sources] :as m} modules
+                                        ;; reset has to be called before .toSource
+                                        :let [_
+                                              (when source-map?
+                                                (.reset source-map))
 
-                                         output
-                                         (.toSource cc js-module)]]
-                               (-> m
-                                   (dissoc :js-module)
-                                   (merge {:output output}
-                                     (when source-map?
-                                       (let [sw
-                                             (StringWriter.)
+                                              output
+                                              (.toSource cc js-module)]]
+                                    (-> m
+                                        (dissoc :js-module)
+                                        (merge {:output output}
+                                          (when source-map?
+                                            (let [sw
+                                                  (StringWriter.)
 
-                                             source-map-name
-                                             (str js-name ".map")
+                                                  source-map-name
+                                                  (str js-name ".map")
 
-                                             _ (.appendTo source-map sw source-map-name)
+                                                  _ (.appendTo source-map sw source-map-name)
 
-                                             closure-json
-                                             (.toString sw)]
+                                                  closure-json
+                                                  (.toString sw)]
 
-                                         ;; FIXME: not trying to map JS names back to CLJS
-                                         ;; (cljs-source-map-for-module state m sources closure-json)
-                                         {:source-map-json closure-json
-                                          :source-map-name source-map-name})
-                                       ))))))))))))
+                                              ;; FIXME: not trying to map JS names back to CLJS
+                                              ;; (cljs-source-map-for-module state m sources closure-json)
+                                              {:source-map-json closure-json
+                                               :source-map-name source-map-name})
+                                            ))))))))))))
 
 
 (defn- ns-list-string [coll]
@@ -2514,8 +2516,8 @@ normalize-resource-name
                                                        ;; must set sources and file to complete relative paths
                                                        ;; as the source map only contains local references without path
                                                        (assoc sm
-                                                         "sources" [src-name]
-                                                         "file" js-name))
+                                                              "sources" [src-name]
+                                                              "file" js-name))
                                                 })
                 ;; only have source-maps for cljs
                 src-map)
@@ -2703,8 +2705,8 @@ normalize-resource-name
                      (if (<= new-mod last-modified)
                        result
                        (let [macro (assoc macro
-                                     :scan :macro
-                                     :last-modified new-mod)]
+                                          :scan :macro
+                                          :last-modified new-mod)]
 
                          (conj result macro)))))
                  []))

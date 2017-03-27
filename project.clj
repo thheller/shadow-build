@@ -1,4 +1,4 @@
-(defproject thheller/shadow-build "1.0.276"
+(defproject thheller/shadow-build "1.0.279"
   :description "cljs compiler"
   :url "https://github.com/thheller/shadow-build"
   :license
@@ -9,7 +9,7 @@
   [[org.clojure/clojure "1.9.0-alpha14"]
    [org.clojure/clojurescript "1.9.473"]
    [aysylu/loom "1.0.0"]
-   [com.cognitect/transit-clj "0.8.295"]]
+   [com.cognitect/transit-clj "0.8.300"]]
 
   :source-paths
   ["src/main"]
