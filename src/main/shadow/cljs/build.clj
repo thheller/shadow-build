@@ -1,15 +1,4 @@
 (ns shadow.cljs.build
-  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader]
-           [java.net URL]
-           [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph CustomPassExecutionTime]
-           (clojure.lang ExceptionInfo ILookup)
-           (java.util.jar JarFile JarEntry)
-           (com.google.javascript.jscomp.deps JsFileParser)
-           (java.util.logging Level)
-           [java.util.concurrent Executors Future]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner)
-           (java.security MessageDigest)
-           (javax.xml.bind DatatypeConverter))
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.set :as set]
@@ -30,9 +19,23 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-            ))
+            )
+  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader]
+           [java.net URL]
+           [com.google.javascript.jscomp JSModule SourceFile SourceFile$Generated SourceFile$Generator SourceFile$Builder JSModuleGraph CustomPassExecutionTime]
+           (clojure.lang ExceptionInfo ILookup)
+           (java.util.jar JarFile JarEntry)
+           (com.google.javascript.jscomp.deps JsFileParser)
+           (java.util.logging Level)
+           [java.util.concurrent Executors Future]
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner)
+           (java.security MessageDigest)
+           (javax.xml.bind DatatypeConverter)
+           (cljs.tagged_literals JSValue)))
 
 ;; (set! *warn-on-reflection* true)
+
+(def ^:dynamic *cljs-warnings-ref* nil)
 
 (defn ^com.google.javascript.jscomp.Compiler make-closure-compiler []
   (com.google.javascript.jscomp.Compiler/setLoggingLevel Level/WARNING)
@@ -46,14 +49,26 @@
 
 (defn write-cache [^File file data]
   (with-open [out (FileOutputStream. file)]
-    (let [w (transit/writer out :json {:handlers {URL (transit/write-handler "url" str)}})]
+    (let [w (transit/writer out :json
+              {:handlers
+               {URL
+                (transit/write-handler "url" str)
+                JSValue
+                (transit/write-handler "js-value" #(.-val %))
+                }})]
       (transit/write w data)
       )))
 
 (defn read-cache [^File file]
   {:pre [(.exists file)]}
   (with-open [in (FileInputStream. file)]
-    (let [r (transit/reader in :json {:handlers {"url" (transit/read-handler #(URL. %))}})]
+    (let [r (transit/reader in :json
+              {:handlers
+               {"url"
+                (transit/read-handler #(URL. %))
+                "js-value"
+                (transit/read-handler #(JSValue. %))
+                }})]
       (transit/read r)
       )))
 
@@ -595,8 +610,8 @@ normalize-resource-name
          (string? src-name)]}
   (-> state
       (assoc :deps-stack []
-             :deps-ordered []
-             :deps-visited #{})
+        :deps-ordered []
+        :deps-visited #{})
       (get-deps-for-src* src-name)
       :deps-ordered))
 
@@ -667,6 +682,29 @@ normalize-resource-name
     'ns (hijacked-parse-ns env form name opts)
     (default-parse op env form name opts)))
 
+(defn hijacked-analyze-form [orig-analyze-form env form name opts]
+  (let [warnings-before
+        @*cljs-warnings-ref*
+
+        result
+        (orig-analyze-form env form name opts)
+
+        warnings-after
+        @*cljs-warnings-ref*]
+
+    (when-not (identical? warnings-before warnings-after)
+      (swap! *cljs-warnings-ref*
+        (fn [warnings]
+          (->> warnings
+               (map (fn [x]
+                      (if (contains? x :form)
+                        x
+                        (assoc x :form form))))
+               (into [])
+               ))))
+    result
+    ))
+
 (defn analyze
   ([state compile-state form]
    (analyze state compile-state form :statement))
@@ -677,22 +715,25 @@ normalize-resource-name
           (seq name)]}
 
    (binding [*ns* (create-ns ns)
-             ana/*passes* [ana/infer-type]
+             ana/*passes* (:analyzer-passes state)
              ;; [infer-type ns-side-effects] is default, we don't want the side effects
              ;; altough it is great that the side effects are now optional
              ;; the default still doesn't handle macros properly
              ;; so we keep hijacking
              ana/*cljs-ns* ns
              ana/*cljs-file* name]
-     (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
-         (assoc :context context)
-         (ana/analyze form ns
-           ;; doing this since I no longer want :compiler-options at the root
-           ;; of the compiler state, instead they are in :compiler-options
-           ;; still want the compiler-state accessible though
-           (assoc (:compiler-options state)
-             :compiler-state state))
-         (post-analyze state)))))
+
+     (let [orig-analyze-form ana/analyze-form]
+       (with-redefs [ana/analyze-form #(hijacked-analyze-form orig-analyze-form %1 %2 %3 %4)]
+         (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
+             (assoc :context context)
+             (ana/analyze form ns
+               ;; doing this since I no longer want :compiler-options at the root
+               ;; of the compiler state, instead they are in :compiler-options
+               ;; still want the compiler-state accessible though
+               (assoc (:compiler-options state)
+                 :compiler-state state))
+             (post-analyze state)))))))
 
 (defn do-compile-cljs-string
   [{:keys [name] :as init} reduce-fn cljs-source cljc?]
@@ -709,7 +750,7 @@ normalize-resource-name
                      :gen-line 0})]
 
       (let [result
-            (loop [{:keys [ns ns-info] :as compile-state} (assoc init :js "")]
+            (loop [{:keys [ns ns-info] :as compile-state} init]
               (let [form
                     (binding [*ns*
                               (create-ns ns)
@@ -751,9 +792,13 @@ normalize-resource-name
           (update-rc-from-ns state compile-state ast)
           compile-state)]
 
-    (update-in compile-state [:js] str ast-js)
-    ))
-
+    (-> compile-state
+        (update-in [:js] str ast-js)
+        (cond->
+          (:retain-ast state)
+          (-> (update-in [:ast] conj ast)
+              (update-in [:forms] conj form))
+          ))))
 
 (defn warning-collector [build-env warnings warning-type env extra]
   ;; FIXME: currently there is no way to turn off :infer-externs
@@ -789,25 +834,26 @@ normalize-resource-name
          result#
          (ana/with-warning-handlers
            [(partial warning-collector ~build-env warnings#)]
-           ~@body)]
+           (binding [*cljs-warnings-ref* warnings#]
+             ~@body))]
 
      (assoc result# :warnings @warnings#)))
 
 (defn compile-cljs-string
-  [state cljs-source name cljc?]
+  [state compile-state cljs-source name cljc?]
   (with-warnings state
     (do-compile-cljs-string
-      {:name name :ns 'cljs.user}
+      compile-state
       (partial default-compile-cljs state)
       cljs-source
       cljc?)))
 
 (defn compile-cljs-seq
-  [state cljs-forms name]
+  [state compile-state cljs-forms name]
   (with-warnings state
     (reduce
       (partial default-compile-cljs state)
-      {:name name :ns 'cljs.user}
+      compile-state
       cljs-forms)))
 
 (defn do-compile-cljs-resource
@@ -836,12 +882,15 @@ normalize-resource-name
         (with-logged-time
           [state {:type :compile-cljs :name name}]
 
-          (let [{:keys [js ns requires require-order source-map warnings]}
+          (let [compile-init
+                {:name name :ns 'cljs.user :js "" :ast [] :forms []}
+
+                {:keys [js ns requires require-order source-map warnings ast forms]}
                 (cond
                   (string? source)
-                  (compile-cljs-string state source name (is-cljc? name))
+                  (compile-cljs-string state compile-init source name (is-cljc? name))
                   (vector? source)
-                  (compile-cljs-seq state source name)
+                  (compile-cljs-seq state compile-init source name)
                   :else
                   (throw (ex-info "invalid cljs source type" {:name name :source source})))]
 
@@ -856,6 +905,8 @@ normalize-resource-name
               :provides #{ns}
               :compiled true
               :warnings warnings
+              :ast ast
+              :forms forms
               :source-map source-map)))))))
 
 
@@ -947,7 +998,7 @@ normalize-resource-name
             (-> (merge rc cache-data)
                 (dissoc :analyzer :cache-options :age-of-deps)
                 (assoc :cached true
-                       :output (slurp cache-js))))))
+                  :output (slurp cache-js))))))
 
       (catch Exception e
         (log state {:type :cache-error
@@ -967,9 +1018,9 @@ normalize-resource-name
       (try
         (let [cache-data
               (-> rc
-                  (dissoc :file :output :input :url)
+                  (dissoc :file :output :input :url :forms :ast)
                   (assoc :age-of-deps (make-age-map state ns)
-                         :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+                    :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
 
               cache-options
               (reduce
@@ -1585,7 +1636,7 @@ normalize-resource-name
       (if output
         (assoc src :cached true)
         (assoc src :output @(:input src)
-                   :cached false))
+          :cached false))
       :cljs
       (maybe-compile-cljs state src))))
 
@@ -1694,7 +1745,7 @@ normalize-resource-name
           (case (count errs)
             0 nil
             1 (let [[name err] (first errs)]
-                (throw (ex-info (format "compilation of \"%s\" failed" name) {} err)))
+                (throw err))
             (throw (ex-info "compilation failed" errs))))
 
         (-> state
@@ -2812,6 +2863,9 @@ enable-emit-constants [state]
         #"java(/?)$"]
 
        ::cc (make-closure-compiler)
+
+       :analyzer-passes
+       [ana/infer-type]
 
        :compiler-options
        {:optimizations :none

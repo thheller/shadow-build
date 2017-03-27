@@ -25,7 +25,8 @@
    {:source-paths
     ["src/dev"]
     :dependencies
-    [[org.clojure/tools.namespace "0.2.11"]
+    [
+     [org.clojure/tools.namespace "0.2.11"]
      [junit/junit "4.12"]
      ]}}
 
