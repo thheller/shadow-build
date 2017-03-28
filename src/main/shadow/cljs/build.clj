@@ -682,12 +682,18 @@ normalize-resource-name
     'ns (hijacked-parse-ns env form name opts)
     (default-parse op env form name opts)))
 
-(defn hijacked-analyze-form [orig-analyze-form env form name opts]
+(def default-analyze-form ana/analyze-form)
+
+;; FIXME: doing this so I can access the form that caused a warning
+;; some warnings do not include it, should really provide patches to add them
+;; but this is simpler and an experiment anyways
+(defn shadow-analyze-form
+  [env form name opts]
   (let [warnings-before
         @*cljs-warnings-ref*
 
         result
-        (orig-analyze-form env form name opts)
+        (default-analyze-form env form name opts)
 
         warnings-after
         @*cljs-warnings-ref*]
@@ -722,10 +728,6 @@ normalize-resource-name
              ;; so we keep hijacking
              ana/*cljs-ns* ns
              ana/*cljs-file* name]
-
-     #_(let [orig-analyze-form ana/analyze-form]
-         (with-redefs [ana/analyze-form #(hijacked-analyze-form orig-analyze-form %1 %2 %3 %4)]
-           ))
 
      (-> (ana/empty-env) ;; this is anything but empty! requires *cljs-ns*, env/*compiler*
          (assoc :context context)
@@ -1650,7 +1652,8 @@ normalize-resource-name
   (with-compiler-env state
     (ana/load-core)
     (with-redefs [ana/parse shadow-parse
-                  ana/load-core load-core-noop]
+                  ana/load-core load-core-noop
+                  ana/analyze-form shadow-analyze-form]
 
       (reduce
         (fn [state source-name]
@@ -1717,7 +1720,8 @@ normalize-resource-name
   (with-compiler-env state
     (ana/load-core)
     (with-redefs [ana/parse shadow-parse
-                  ana/load-core load-core-noop]
+                  ana/load-core load-core-noop
+                  ana/analyze-form shadow-analyze-form]
 
       (let [;; namespaces that are ready to be used
             ready
