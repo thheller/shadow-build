@@ -863,9 +863,9 @@ normalize-resource-name
 (defn do-compile-cljs-resource
   "given the compiler state and a cljs resource, compile it and return the updated resource
    should not touch global state"
-  [{:keys [compiler-settings] :as state} {:keys [name input] :as rc}]
+  [{:keys [compiler-options] :as state} {:keys [name input] :as rc}]
   (let [{:keys [static-fns elide-asserts]}
-        compiler-settings]
+        compiler-options]
 
     (binding [ana/*cljs-static-fns*
               static-fns
@@ -2249,39 +2249,39 @@ normalize-resource-name
            (log state {:type :closure-errors
                        :errors errors})))
 
-       (assoc state
-              :optimized (when (.success result)
-                           (let [source-map (when source-map?
-                                              (.getSourceMap cc))]
+       (if-not (.success result)
+         state
+         (let [source-map
+               (when source-map? (.getSourceMap cc))
 
-                             (vec (for [{:keys [js-name js-module sources] :as m} modules
-                                        ;; reset has to be called before .toSource
-                                        :let [_
-                                              (when source-map?
-                                                (.reset source-map))
+               optimized-modules
+               (->> modules
+                    (mapv
+                      (fn [{:keys [js-name js-module] :as m}]
+                        (when source-map
+                          (.reset source-map))
+                        (-> m
+                            (dissoc :js-module)
+                            (assoc :output (.toSource cc js-module))
+                            (cond->
+                              source-map
+                              (merge (let [sw
+                                           (StringWriter.)
 
-                                              output
-                                              (.toSource cc js-module)]]
-                                    (-> m
-                                        (dissoc :js-module)
-                                        (merge {:output output}
-                                          (when source-map?
-                                            (let [sw
-                                                  (StringWriter.)
+                                           source-map-name
+                                           (str js-name ".map")
 
-                                                  source-map-name
-                                                  (str js-name ".map")
+                                           _ (.appendTo source-map sw source-map-name)
 
-                                                  _ (.appendTo source-map sw source-map-name)
+                                           closure-json
+                                           (.toString sw)]
 
-                                                  closure-json
-                                                  (.toString sw)]
+                                       ;; FIXME: not trying to map JS names back to CLJS
+                                       ;; (cljs-source-map-for-module state m sources closure-json)
+                                       {:source-map-json closure-json
+                                        :source-map-name source-map-name})))))))]
 
-                                              ;; FIXME: not trying to map JS names back to CLJS
-                                              ;; (cljs-source-map-for-module state m sources closure-json)
-                                              {:source-map-json closure-json
-                                               :source-map-name source-map-name})
-                                            ))))))))))))
+           (assoc state :optimized optimized-modules)))))))
 
 
 (defn- ns-list-string [coll]
@@ -2819,7 +2819,9 @@ enable-emit-constants [state]
   state)
 
 (defn enable-source-maps [state]
-  (assoc state :source-map "cljs.closure/make-options expects a string but we dont use it"))
+  (-> state
+      (update :compiler-options assoc :source-map "cljs.closure/make-options expects a string but we dont use it")
+      (assoc :source-map true)))
 
 (defn merge-compiler-options [state opts]
   (update state :compiler-options merge opts))
