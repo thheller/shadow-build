@@ -2281,7 +2281,7 @@ normalize-resource-name
                                        {:source-map-json closure-json
                                         :source-map-name source-map-name})))))))]
 
-           (assoc state :optimized optimized-modules)))))))
+           (assoc state :closure-result result :optimized optimized-modules)))))))
 
 
 (defn- ns-list-string [coll]
