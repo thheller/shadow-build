@@ -870,6 +870,9 @@ normalize-resource-name
     (binding [ana/*cljs-static-fns*
               static-fns
 
+              ana/*file-defs*
+              (atom #{})
+
               ;; initialize with default value
               ;; must set binding to it is thread bound, since the analyzer may set! it
               ana/*unchecked-if*
