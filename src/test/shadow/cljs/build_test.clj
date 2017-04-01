@@ -1002,7 +1002,7 @@
             (cljs/find-resources "cljs-data/es6/src")
             (cljs/configure-module :a '[cljs.core] #{})
             (cljs/configure-module :b '[test.b] #{:a})
-            (cljs/configure-module :c '[module$test$c] #{:b})
+            (cljs/configure-module :c '[test.c] #{:b})
             (cljs/compile-modules)
             (cljs/flush-unoptimized))]
 

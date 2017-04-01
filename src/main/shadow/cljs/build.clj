@@ -33,6 +33,13 @@
 
 ;; (set! *warn-on-reflection* true)
 
+(def SHADOW-TIMESTAMP
+  (with-open [con (-> (io/resource "shadow/cljs/build.clj")
+                      (.openConnection))]
+    (.getLastModified con)))
+
+(def default-externs (CommandLineRunner/getDefaultExterns))
+
 (def ^:dynamic *cljs-warnings-ref* nil)
 
 (defn noop-error-manager []
@@ -177,9 +184,13 @@
       (ns->path)
       (str ".cljs")))
 
-(defn cljs-file->ns [name]
+(defn filename->ns [^String name]
+  {:pre [(or (.endsWith name ".js")
+             (.endsWith name ".clj")
+             (.endsWith name ".cljs")
+             (.endsWith name ".cljc"))]}
   (-> name
-      (str/replace #"\.clj(s|c)$" "")
+      (str/replace #"\.(js|clj(s|c))$" "")
       (str/replace #"_" "-")
       (str/replace #"[/\\]" ".")
       (symbol)))
@@ -202,35 +213,39 @@
       (str/replace #"_" "-")
       (symbol)))
 
-(defn add-goog-dependencies [state {:keys [name input] :as rc}]
+(defn inspect-js-resource [state {:keys [name input] :as rc}]
   {:pre [(compiler-state? state)]}
-  ;; FIXME: JsFileParser covers this case?
-  (if (= "goog/base.js" name)
-    (assoc rc
-      :requires #{}
-      :require-order []
-      :provides #{'goog})
-    ;; parse any other js
-    (let [deps (-> (JsFileParser. (.getErrorManager (::cc state)))
-                   (.parseFile name name @input))
+  (let [deps (-> (doto (JsFileParser. (.getErrorManager (::cc state)))
+                   (.setIncludeGoogBase true))
+                 (.parseFile name name @input))
 
-          module-type
-          (.. deps (getLoadFlags) (get "module"))
+        module-type
+        (.. deps (getLoadFlags) (get "module"))
 
-          require-order
-          (into [] (map munge-goog-ns) (.getRequires deps))]
+        ;; FIXME: bug in Closure that es6 files do not depend on goog?
+        ;; doesn't hurt that it is missing though
+        require-order
+        (into [] (map munge-goog-ns) (.getRequires deps))
 
-      (-> rc
-          (assoc
-            :dependency-info deps
-            :require-order require-order
-            :requires (into #{} require-order)
-            :provides (into #{} (map munge-goog-ns) (.getProvides deps)))
-          (cond->
-            (seq module-type)
-            (merge {:module-type (keyword module-type)
-                    :js-name (str/replace name #".js$" ".gen.js")})
-            )))))
+        provides
+        (into #{} (map munge-goog-ns) (.getProvides deps))]
+
+    (-> rc
+        (assoc
+          ;; :dependency-info deps ;; FIXME: only add when trying to use it in ModuleLoader, breaks caching
+          :require-order require-order
+          :requires (into #{} require-order)
+          :provides provides)
+        (cond->
+          (seq module-type)
+          (merge (let [ns (filename->ns name)]
+                   (assert (<= 0 (count provides) 1) "module with more than one provide?")
+                   {:module-type (keyword module-type)
+                    :module-alias (first provides)
+                    :ns ns
+                    :provides (conj provides ns)
+                    :js-name (str/replace name #".js$" ".gen.js")}))
+          ))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
   {:pre [(compiler-state? state)]}
@@ -324,7 +339,7 @@
           ;; could not parse NS
           ;; be silent about it until we actually require and attempt to compile the file
           ;; make best estimate guess what the file might provide based on name
-          (let [guessed-ns (cljs-file->ns name)]
+          (let [guessed-ns (filename->ns name)]
             (assoc rc
               :ns guessed-ns
               :requires #{'cljs.core}
@@ -339,7 +354,7 @@
   (cond
     (is-js-file? name)
     (->> (assoc rc :type :js :js-name name)
-         (add-goog-dependencies state))
+         (inspect-js-resource state))
 
     (is-cljs-file? name)
     (let [rc (assoc rc :type :cljs :js-name (str/replace name #"\.clj(s|c)$" ".js"))]
@@ -525,13 +540,19 @@ normalize-resource-name
           (io/file path)
 
           manifest
-          (if (and (.exists mfile)
-                   (>= (.lastModified mfile) (.lastModified jar-file)))
-            (read-jar-manifest mfile)
-            (let [manifest (create-jar-manifest state path)]
-              (io/make-parents mfile)
-              (write-jar-manifest mfile manifest)
-              manifest))]
+          (when (and (.exists mfile) (>= (.lastModified mfile) (.lastModified jar-file)))
+            (try
+              (read-jar-manifest mfile)
+              (catch Exception e
+                (log state {:type :manifest-error :file mfile :e e})
+                nil)))
+
+          manifest
+          (or manifest
+              (let [manifest (create-jar-manifest state path)]
+                (io/make-parents mfile)
+                (write-jar-manifest mfile manifest)
+                manifest))]
       (-> (process-deps-cljs state manifest path)
           (vals)))))
 
@@ -954,13 +975,9 @@ normalize-resource-name
               :source-map source-map)))))))
 
 
-;; FIXME: must manually bump if anything cache related changes
-;; use something similar to clojurescript-version
-(def cache-file-version "v9")
-
 (defn get-cache-file-for-rc
   ^File [{:keys [cache-dir] :as state} {:keys [name] :as rc}]
-  (io/file cache-dir "ana" (str name "." cache-file-version ".cache.transit.json")))
+  (io/file cache-dir "ana" (str name ".cache.transit.json")))
 
 (defn get-max-last-modified-for-source [state source-name]
   (let [{:keys [last-modified macro-namespaces] :as rc}
@@ -987,9 +1004,8 @@ normalize-resource-name
         (if (pos? last-modified)
           (assoc age-map source-name last-modified)
           age-map)))
-    {}
+    {:SHADOW-TIMESTAMP SHADOW-TIMESTAMP}
     (get-deps-for-ns state ns)))
-
 
 (def cache-affecting-options
   [:static-fns
@@ -1375,7 +1391,7 @@ normalize-resource-name
              (map (fn [{:keys [url] :as info}]
                     (if (nil? url)
                       info
-                      (let [con (.openConnection url)]
+                      (with-open [con (.openConnection url)]
                         (assoc info :last-modified (.getLastModified con)))
                       )))
              ;; get file (if not in jar)
@@ -1669,18 +1685,18 @@ normalize-resource-name
      :last-modified 0 ;; this file should never cause recompiles
      }))
 
-(def default-externs (CommandLineRunner/getDefaultExterns))
-
 ;; FIXME: about 100ms for even simple files, might be too slow to process each file indiviually
-(defn compile-es6 [state {:keys [name js-name input] :as src}]
+(defn compile-es6 [state {:keys [module-alias name js-name input] :as src}]
   (with-logged-time
     [state {:type :compile-es6 :name name}]
     (let [co
           (doto (closure/make-convert-js-module-options (:compiler-options state))
             (.setSourceMapOutputPath "/dev/null")
+            (.setPrettyPrint true) ;; FIXME: only useful for debugging really
             (.setLanguageIn CompilerOptions$LanguageMode/ECMASCRIPT6)
             (.setLanguageOut (closure/lang-key->lang-mode (get-in state [:compiler-options :language-out] :ecmascript3))))
 
+          ;; FIXME: should really work out how to just convert the single file
           ;; noop since it will warn about missing module files
           ;; this compiles each file individually so the files aren't really missing
           ;; Compiler.moduleLoader is a bit too hidden to get the inputs there
@@ -1697,6 +1713,8 @@ normalize-resource-name
 
       (when-not (.success result)
         (throw (ex-info (format "failed to compile %s" name) {:result result})))
+
+      (swap! env/*compiler* update-in [:js-module-index] assoc (str module-alias) name)
 
       (let [source-map?
             (boolean (:source-map state))
@@ -2229,10 +2247,7 @@ normalize-resource-name
       state)))
 
 (defn load-externs [{:keys [externs build-modules] :as state}]
-  (let [default-externs
-        (CommandLineRunner/getDefaultExterns)
-
-        manual-externs
+  (let [manual-externs
         (when (seq externs)
           (->> externs
                (map
