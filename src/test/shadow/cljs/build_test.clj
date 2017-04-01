@@ -978,13 +978,6 @@
                :public-path "out"})
             (cljs/merge-compiler-options
               {:optimizations :advanced})
-            (cljs/add-closure-configurator
-              (fn [cc co state]
-
-
-                #_(-> (.getSourceMap cc)
-                      (.setSourceFileMapping cc))
-                ))
             (cljs/find-resources-in-classpath)
             (cljs/find-resources "cljs-data/closure-source-maps/src")
             (cljs/configure-module :a '[test.a] #{})
@@ -992,5 +985,27 @@
             (cljs/compile-modules)
             (cljs/closure-optimize)
             (cljs/flush-modules-to-disk))]
+    :done
+    ))
+
+(deftest test-es6-import
+  (let [{:keys [sources] :as state}
+        (-> (cljs/init-state)
+            (assoc :cache-level :jars)
+            (cljs/merge-build-options
+              {:public-dir (io/file "cljs-data" "es6" "out")
+               :public-path "out"})
+            (cljs/merge-compiler-options
+              {:pretty-print false})
+            (cljs/enable-source-maps)
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/es6/src")
+            (cljs/configure-module :a '[cljs.core] #{})
+            (cljs/configure-module :b '[test.b] #{:a})
+            (cljs/configure-module :c '[module$test$c] #{:b})
+            (cljs/compile-modules)
+            (cljs/flush-unoptimized))]
+
+
     :done
     ))

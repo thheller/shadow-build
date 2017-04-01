@@ -31,6 +31,10 @@
   [{:keys [name] :as event}]
   (format "Compile CLJS: %s" name))
 
+(defmethod event->str :compile-es6
+  [{:keys [name] :as event}]
+  (format "Compile ES6: %s" name))
+
 (defmethod event->str :compile-modules
   [event]
   "Compiling modules")
@@ -56,6 +60,10 @@
   (format "Flushing optimized modules" path))
 
 (defmethod event->str :flush-module
+  [{:keys [name js-name js-size] :as event}]
+  (format "Flushing: %s (%d bytes)" js-name js-size))
+
+(defmethod event->str :flush-foreign
   [{:keys [name js-name js-size] :as event}]
   (format "Flushing: %s (%d bytes)" js-name js-size))
 
