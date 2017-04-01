@@ -1918,65 +1918,57 @@ normalize-resource-name
    (with-logged-time
      [state {:type :flush-sources
              :source-names source-names}]
-     (doseq [{:keys [type name input last-modified] :as src}
+     (doseq [{:keys [type js-name name input output last-modified source-map] :as src}
              (->> source-names
                   (map #(get-in state [:sources %])))
-             :let [target (io/file public-dir cljs-runtime-path name)]
+             :let [js-file
+                   (io/file public-dir cljs-runtime-path js-name)
 
-             ;; skip files we already have since source maps are kinda expensive to generate
-             :when (or (not (.exists target))
+                   src-file
+                   (io/file public-dir cljs-runtime-path name)
+
+                   src-map?
+                   (and source-map (:source-map state))
+
+                   src-map-file
+                   (io/file public-dir cljs-runtime-path (str js-name ".map"))]
+
+             ;; skip files we already have
+             :when (or (not (.exists js-file))
                        (zero? last-modified)
-                       (> (or (:compiled-at src) ;; js is not compiled but maybe modified
-                              last-modified)
-                          (.lastModified target)))]
+                       ;; js is not compiled but maybe modified
+                       (> (or (:compiled-at src) last-modified)
+                          (.lastModified js-file))
+                       (and src-map? (or (not (.exists src-file))
+                                         (not (.exists src-map-file)))))]
 
-       (io/make-parents target)
+       (io/make-parents js-file)
 
-       (case type
-         ;; cljs needs to flush the generated .js, for source-maps also the .cljs and a .map
-         :cljs
-         (do (let [{:keys [source-map js-name output]} src
-                   js-target (io/file public-dir cljs-runtime-path js-name)]
+       ;; must not modify output in any way, will mess up source maps otherwise
+       (spit js-file output)
 
-               (when (nil? output)
-                 (throw (ex-info (format "no output for resource: %s" js-name) src)))
+       (when src-map?
+         ;; spit original source, needed for source maps
+         (spit src-file @input)
 
-               ;; must not modify output in any way, will mess up source maps otherwise
-               (spit js-target output)
+         (spit src-map-file
+           (sm/encode
+             {name source-map}
+             ;; very important that :lines is accurate for closure source maps, otherwise unused
+             {:lines
+              (-> (StringReader. output)
+                  (BufferedReader.)
+                  (line-seq)
+                  (count))
+              :file js-name
+              :preamble-line-count 0})))
 
-               ;; source-map on the resource is always generated
-               ;; only output it though if globally activated
-               (when (and source-map (:source-map state))
-                 (let [source-map-name (str js-name ".map")]
-                   (spit (io/file public-dir cljs-runtime-path source-map-name)
-                     (sm/encode
-                       {name source-map}
-                       {:lines
-                        (-> (StringReader. output)
-                            (BufferedReader.)
-                            (line-seq)
-                            (count))
-                        :file js-name
-                        :preamble-line-count 0}))
-                   )))
-
-             ;; spit original source, cljs needed for source maps
-             (spit target @input))
-
-         ;; js just needs itself
-         ;; FIXME: needs to flush more when js processing is added
-         :js
-         (do (spit target (:output src))
-             ;; foreign libs should play nice with goog require/import and tell what they provide
-             (when (:foreign src)
-               (spit target (make-foreign-js-source src) :append true)
-               ))
-
-         (throw (ex-info "cannot flush" (dissoc src :input :output)))
-         ))
+       ;; foreign libs should play nice with goog require/import and tell what they provide
+       ;; FIXME: this modifies the ouput, but foreign files have no source maps anyways
+       (when (:foreign src)
+         (spit js-file (make-foreign-js-source src) :append true)))
 
      state)))
-
 
 
 ;; FIXME: manifest should be custom step
@@ -2399,7 +2391,7 @@ normalize-resource-name
        (every? #(str/starts-with? (str %) "goog.") provides)
        ))
 
-(defn flush-unoptmized-module!
+(defn flush-unoptimized-module!
   [{:keys [dev-inline-js public-dir public-path unoptimizable] :as state}
    {:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod}]
   (let [inlineable-sources
@@ -2494,7 +2486,7 @@ normalize-resource-name
     (flush-manifest public-dir build-modules)
 
     (doseq [mod build-modules]
-      (flush-unoptmized-module! state mod))
+      (flush-unoptimized-module! state mod))
 
     state
     ))
