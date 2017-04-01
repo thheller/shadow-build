@@ -34,9 +34,9 @@
 ;; (set! *warn-on-reflection* true)
 
 (def SHADOW-TIMESTAMP
-  (with-open [con (-> (io/resource "shadow/cljs/build.clj")
-                      (.openConnection))]
-    (.getLastModified con)))
+  (-> (io/resource "shadow/cljs/build.clj")
+      (.openConnection)
+      (.getLastModified)))
 
 (def default-externs (CommandLineRunner/getDefaultExterns))
 
@@ -240,6 +240,9 @@
           (seq module-type)
           (merge (let [ns (filename->ns name)]
                    (assert (<= 0 (count provides) 1) "module with more than one provide?")
+                   ;; FIXME: cannot do this aliasing, it will break things
+                   ;; source-path-a/lib/foo.js -> lib.foo
+                   ;; source-path-b/lib/foo.js -> lib.foo
                    {:module-type (keyword module-type)
                     :module-alias (first provides)
                     :ns ns
@@ -1391,7 +1394,7 @@ normalize-resource-name
              (map (fn [{:keys [url] :as info}]
                     (if (nil? url)
                       info
-                      (with-open [con (.openConnection url)]
+                      (let [con (.openConnection url)]
                         (assoc info :last-modified (.getLastModified con)))
                       )))
              ;; get file (if not in jar)
