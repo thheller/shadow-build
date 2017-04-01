@@ -101,4 +101,11 @@
          "\n\tProvided: " source-path "/" name
          )))
 
+(defmethod event->str :closure-warnings
+  [{:keys [warnings]}]
+  (->> warnings
+       (map :msg)
+       (map #(str "CLOSURE-WARNING: " %))
+       (str/join "\n\n")))
+
 

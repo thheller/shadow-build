@@ -966,3 +966,31 @@
             )]
 
     (pprint (:repl-actions repl-state))))
+
+(deftest test-closure-source-maps
+  (let [state
+        (-> (cljs/init-state)
+            (cljs/enable-source-maps)
+            (assoc :cache-level :jars)
+
+            (cljs/merge-build-options
+              {:public-dir (io/file "cljs-data" "closure-source-maps" "out")
+               :public-path "out"})
+            (cljs/merge-compiler-options
+              {:optimizations :advanced})
+            (cljs/add-closure-configurator
+              (fn [cc co state]
+
+
+                #_(-> (.getSourceMap cc)
+                      (.setSourceFileMapping cc))
+                ))
+            (cljs/find-resources-in-classpath)
+            (cljs/find-resources "cljs-data/closure-source-maps/src")
+            (cljs/configure-module :a '[test.a] #{})
+            (cljs/configure-module :b '[test.foo test.b] #{:a})
+            (cljs/compile-modules)
+            (cljs/closure-optimize)
+            (cljs/flush-modules-to-disk))]
+    :done
+    ))

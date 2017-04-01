@@ -99,7 +99,7 @@
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
 
-  (cljs/flush-sources-by-name state (mapcat :sources build-modules))
+  (cljs/flush-sources-by-name state)
 
   (let [{:keys [output-to]}
         node-config]

@@ -1,0 +1,9 @@
+goog.provide("test.b");
+goog.require("test.foo");
+console.log("b:3");
+console.log("b:4");
+console.log("b:5");
+console.log("b:6");
+console.log("b:7");
+console.log("b:8");
+console.log("b:9");
