@@ -88,8 +88,25 @@
   (format "Optimizing" path))
 
 (defmethod event->str :bad-resource
-  [{:keys [msg] :as event}]
-  msg)
+  [{:keys [url] :as event}]
+  (format "Ignoring bad file, it attempted to provide cljs.core%n%s" url))
+
+(defmethod event->str :duplicate-resource
+  [{:keys [name path-use path-ignore] :as event}]
+  (format
+    "duplicate file on classpath \"%s\" (using A)%nA: %s%nB: %s"
+    name
+    path-use
+    path-ignore))
+
+(defmethod event->str :provide-conflict
+  [{:keys [source-path name provides conflict-with]}]
+  (str (format "Provide conflict: %s -> %s\n" name provides)
+       (format "File: %s/%s (will not be used)\n" source-path name)
+       (->> conflict-with
+            (map (fn [[file provides]]
+                   (format "Conflict: %s -> %s" file provides)))
+            (str/join "\n"))))
 
 (defmethod event->str :reload
   [{:keys [action ns name file]}]

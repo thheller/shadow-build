@@ -1171,21 +1171,23 @@ normalize-resource-name
        (number? last-modified)
        ))
 
+(defn is-same-resource? [a b]
+  (and (= (:name a) (:name b))
+       (= (:source-path a) (:source-path b))
+       ;; some things might not have an url, be lax about that
+       (or (:url a) (:url b))
+       (= (:url a) (:url b))))
+
 (defn merge-resource
   [state {:keys [name provides url] :as src}]
   (cond
     (not (valid-resource? src))
-    (do (log state {:type :invalid-resource
-                    :name name
-                    :url url})
+    (do (log state {:type :invalid-resource :name name :url url})
         state)
 
     (and (= :js (:type src))
          (contains? (:provides src) 'cljs.core))
-    (do (log state {:type :bad-resource
-                    :reason :compiled-cljs
-                    :url url
-                    :msg (format "Ignoring bad file, it attempted to provide cljs.core%n%s" url)})
+    (do (log state {:type :bad-resource :url url})
         state)
 
     ;; no not merge files that don't have the expected path for their ns
@@ -1212,23 +1214,13 @@ normalize-resource-name
           (assoc-in state [:sources name] invalid-src)))
 
     ;; do not merge files that are already present from a different source path
-    (let [existing (get-in state [:sources name])]
-      (and existing
-           (or (not= (:source-path existing)
-                     (:source-path src))
-               (not= (:url existing)
-                     (:url src)))))
+    (when-let [existing (get-in state [:sources name])]
+      (not (is-same-resource? src existing)))
     (do (log state
-          {:type :bad-resource
-           :reason :duplicate
+          {:type :duplicate-resource
            :name name
            :path-use (get-in state [:sources name :source-path])
-           :path-ignore (:source-path src)
-           :msg (format
-                  "duplicate file on classpath \"%s\" (using A)%nA: %s%nB: %s"
-                  name
-                  (get-in state [:sources name :source-path])
-                  (:source-path src))})
+           :path-ignore (:source-path src)})
         state)
 
     ;; now we need to handle conflicts for cljc/cljs files
@@ -1243,12 +1235,19 @@ normalize-resource-name
 
           cljs-name
           (when cljc?
-            (str/replace name #"cljc$" "cljs"))]
+            (str/replace name #"cljc$" "cljs"))
+
+          lookup-xf
+          (comp (map #(get-in state [:provide->source %]))
+                (remove nil?))
+
+          existing-provides
+          (into #{} lookup-xf provides)]
 
       (cond
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))
-        ;; less noise by not complaining
+        ;; less noise by not complaining, some offenders in cljs package
         (do #_(log state {:type :bad-resource
                           :reason :cljs-over-cljc
                           :name name
@@ -1264,6 +1263,24 @@ normalize-resource-name
             (unmerge-resource cljc-name)
             (assoc-in [:sources name] src)
             (merge-provides name provides))
+
+        ;; ensure that files do not have conflicting provides
+        (and (seq existing-provides)
+             (not (every? #(is-same-resource? src (get-in state [:sources %])) existing-provides)))
+        (do (log state
+              {:type :provide-conflict
+               :name name
+               :source-path (:source-path src)
+               :provides provides
+               :conflict-with
+               (reduce
+                 (fn [m src-name]
+                   (let [{:keys [source-path provides]}
+                         (get-in state [:sources src-name])]
+                     (assoc m (str source-path "/" src-name) provides)))
+                 {}
+                 existing-provides)})
+            state)
 
         :no-conflict
         (-> state
