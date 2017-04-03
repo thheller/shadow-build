@@ -543,7 +543,9 @@ normalize-resource-name
           (io/file path)
 
           manifest
-          (when (and (.exists mfile) (>= (.lastModified mfile) (.lastModified jar-file)))
+          (when (and (.exists mfile)
+                     (>= (.lastModified mfile) (.lastModified jar-file))
+                     (>= (.lastModified mfile) SHADOW-TIMESTAMP))
             (try
               (read-jar-manifest mfile)
               (catch Exception e
@@ -3063,7 +3065,7 @@ enable-emit-constants [state]
        :cljs-runtime-path "cljs-runtime"
 
        :manifest-cache-dir
-       (let [dir (io/file "target" "shadow-build" "jar-manifest" "v4")]
+       (let [dir (io/file "target" "shadow-build" "jar-manifest")]
          (io/make-parents dir)
          dir)
 
