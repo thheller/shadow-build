@@ -10,8 +10,6 @@
             [cljs.source-map :as sm]
             [cljs.env :as env]
             [cljs.tagged-literals :as tags]
-            [cljs.util :as cljs-util]
-            [clojure.repl :refer (pst)]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
             [loom.graph :as lg]
@@ -19,6 +17,7 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
+    ;; [clojure.pprint :refer (pprint)]
             )
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader]
            [java.net URL]
@@ -38,7 +37,8 @@
       (.openConnection)
       (.getLastModified)))
 
-(def default-externs (CommandLineRunner/getDefaultExterns))
+(def default-externs
+  (into [] (CommandLineRunner/getDefaultExterns)))
 
 (def ^:dynamic *cljs-warnings-ref* nil)
 
@@ -304,16 +304,6 @@
     :macro-namespaces (macros-from-ns-ast state ast)
     :requires (into #{} require-order)
     :require-order require-order))
-
-(defn error-report
-  ([state e]
-   (.flush *out*)
-   (.write *err* "====== ERROR ==============\n")
-   (pst e)
-   (.write *err* "===========================\n")
-   (.flush *err*))
-  ([state e rc]
-   (error-report state e)))
 
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
@@ -1525,6 +1515,15 @@ normalize-resource-name
           dep depends-on]
       [name dep])))
 
+(defn closure-defines [{:keys [public-path cljs-runtime-path] :as state}]
+  (str "var CLOSURE_NO_DEPS = true;\n"
+       ;; goog.findBasePath_() requires a base.js which we dont have
+       ;; this is usually only needed for unoptimized builds anyways
+       "var CLOSURE_BASE_PATH = '" public-path "/" cljs-runtime-path "/';\n"
+       "var CLOSURE_DEFINES = "
+       (json/write-str (:closure-defines state {}))
+       ";\n"))
+
 (defn closure-defines-and-base [{:keys [public-path cljs-runtime-path] :as state}]
   (let [goog-rc (get-in state [:sources goog-base-name])
         goog-base @(:input goog-rc)]
@@ -1537,13 +1536,7 @@ normalize-resource-name
       (throw (ex-info "probably not the goog/base.js you were expecting"
                (get-in state [:sources goog-base-name]))))
 
-    (str "var CLOSURE_NO_DEPS = true;\n"
-         ;; goog.findBasePath_() requires a base.js which we dont have
-         ;; this is usually only needed for unoptimized builds anyways
-         "var CLOSURE_BASE_PATH = '" public-path "/" cljs-runtime-path "/';\n"
-         "var CLOSURE_DEFINES = "
-         (json/write-str (:closure-defines state {}))
-         ";\n"
+    (str (closure-defines state)
          goog-base
          "\n")))
 
@@ -2014,7 +2007,8 @@ normalize-resource-name
           (fn [js-mods {:keys [js-name name depends-on sources prepend-js append-js] :as mod}]
             (let [js-mod (JSModule. js-name)]
               (when (:default mod)
-                (.add js-mod (SourceFile/fromCode "closure_setup.js" (closure-defines-and-base state))))
+                ;; goog/base.js is now treated as a normal resource
+                (.add js-mod (SourceFile/fromCode "closure_setup.js" (closure-defines state))))
               (when (seq prepend-js)
                 (.add js-mod (SourceFile/fromCode (str "mod_" name "_prepend.js") prepend-js)))
 
@@ -2269,7 +2263,13 @@ normalize-resource-name
       state)))
 
 (defn load-externs [{:keys [externs build-modules] :as state}]
-  (let [manual-externs
+  (let [externs
+        (distinct
+          (concat
+            (:externs state)
+            (get-in state [:compiler-options :externs])))
+
+        manual-externs
         (when (seq externs)
           (->> externs
                (map
@@ -2418,13 +2418,9 @@ normalize-resource-name
              (log state {:type :closure-warnings
                          :warnings warnings})))
 
-         (let [errors (into [] (js-error-xf cc) (.errors result))]
-           (when (seq errors)
-             (log state {:type :closure-errors
-                         :errors errors})))
-
          (if-not (.success result)
-           state
+           (let [errors (into [] (js-error-xf cc) (.errors result))]
+             (throw (ex-info "optimization failed" {:errors errors})))
            (let [source-map
                  (when source-map? (.getSourceMap cc))
 
