@@ -1779,6 +1779,9 @@ normalize-resource-name
       :cljs
       (maybe-compile-cljs state src))))
 
+
+(defonce REDEF-LOCK (Object.))
+
 (defn load-core-noop [])
 
 (defn do-compile-sources
@@ -1786,17 +1789,18 @@ normalize-resource-name
   [state source-names]
   (with-compiler-env state
     (ana/load-core)
-    (with-redefs [ana/parse shadow-parse
-                  ana/load-core load-core-noop
-                  ana/analyze-form shadow-analyze-form]
+    (locking REDEF-LOCK
+      (with-redefs [ana/parse shadow-parse
+                    ana/load-core load-core-noop
+                    ana/analyze-form shadow-analyze-form]
 
-      (reduce
-        (fn [state source-name]
-          (let [src (get-in state [:sources source-name])
-                compiled-src (generate-output-for-source state src)]
-            (assoc-in state [:sources source-name] compiled-src)))
-        state
-        source-names))))
+        (reduce
+          (fn [state source-name]
+            (let [src (get-in state [:sources source-name])
+                  compiled-src (generate-output-for-source state src)]
+              (assoc-in state [:sources source-name] compiled-src)))
+          state
+          source-names)))))
 
 (defn par-compile-one
   [state ready-ref errors-ref source-name]
@@ -1854,49 +1858,50 @@ normalize-resource-name
   [{:keys [n-compile-threads] :as state} source-names]
   (with-compiler-env state
     (ana/load-core)
-    (with-redefs [ana/parse shadow-parse
-                  ana/load-core load-core-noop
-                  ana/analyze-form shadow-analyze-form]
+    (locking REDEF-LOCK
+      (with-redefs [ana/parse shadow-parse
+                    ana/load-core load-core-noop
+                    ana/analyze-form shadow-analyze-form]
 
-      (let [;; namespaces that are ready to be used
-            ready
-            (atom #{})
+        (let [;; namespaces that are ready to be used
+              ready
+              (atom #{})
 
-            ;; source-name -> exception
-            errors
-            (atom {})
+              ;; source-name -> exception
+              errors
+              (atom {})
 
-            exec
-            (Executors/newFixedThreadPool n-compile-threads)
+              exec
+              (Executors/newFixedThreadPool n-compile-threads)
 
-            tasks
-            (->> (for [source-name source-names]
-                   ;; bound-fn for with-compiler-state
-                   (let [task-fn (bound-fn [] (par-compile-one state ready errors source-name))]
-                     (.submit exec ^Callable task-fn)))
-                 (doall) ;; force submit all, then deref
-                 (into [] (map deref)))]
+              tasks
+              (->> (for [source-name source-names]
+                     ;; bound-fn for with-compiler-state
+                     (let [task-fn (bound-fn [] (par-compile-one state ready errors source-name))]
+                       (.submit exec ^Callable task-fn)))
+                   (doall) ;; force submit all, then deref
+                   (into [] (map deref)))]
 
-        ;; FIXME: might deadlock here if any of the derefs fail
-        (.shutdown exec)
+          ;; FIXME: might deadlock here if any of the derefs fail
+          (.shutdown exec)
 
-        ;; unlikely to encounter 2 concurrent errors
-        ;; so unpack for a single error for better stacktrace
-        (let [errs @errors]
-          (case (count errs)
-            0 nil
-            1 (let [[name err] (first errs)]
-                (throw err))
-            (throw (ex-info "compilation failed" errs))))
+          ;; unlikely to encounter 2 concurrent errors
+          ;; so unpack for a single error for better stacktrace
+          (let [errs @errors]
+            (case (count errs)
+              0 nil
+              1 (let [[name err] (first errs)]
+                  (throw err))
+              (throw (ex-info "compilation failed" errs))))
 
-        (-> state
-            (update :sources (fn [sources]
-                               (reduce
-                                 (fn [sources {:keys [name] :as src}]
-                                   (assoc sources name src))
-                                 sources
-                                 tasks)))
-            )))))
+          (-> state
+              (update :sources (fn [sources]
+                                 (reduce
+                                   (fn [sources {:keys [name] :as src}]
+                                     (assoc sources name src))
+                                   sources
+                                   tasks)))
+              ))))))
 
 (defn names-compiled-in-last-build [{:keys [build-sources build-start] :as state}]
   (->> build-sources
