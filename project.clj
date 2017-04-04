@@ -6,9 +6,8 @@
    :url "http://www.eclipse.org/legal/epl-v10.html"}
 
   :dependencies
-  [[org.clojure/clojure "1.9.0-alpha14"]
+  [[org.clojure/clojure "1.9.0-alpha15"]
    [org.clojure/clojurescript "1.9.473"]
-   [aysylu/loom "1.0.0"]
    [com.cognitect/transit-clj "0.8.300"]]
 
   :source-paths

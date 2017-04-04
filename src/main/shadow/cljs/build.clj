@@ -12,8 +12,6 @@
             [cljs.tagged-literals :as tags]
             [clojure.tools.reader :as reader]
             [clojure.tools.reader.reader-types :as readers]
-            [loom.graph :as lg]
-            [loom.alg :as la]
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
@@ -1499,22 +1497,6 @@ normalize-resource-name
         (spit target output)))
     state))
 
-;; module related stuff
-
-(defn module-graph [modules]
-  (let [module-set (set (keys modules))]
-    (doseq [{:keys [name depends-on]} (vals modules)
-            :when (seq depends-on)]
-      (when-not (set/subset? depends-on module-set)
-        (throw (ex-info "module contains dependency on unknown modules"
-                 {:module name
-                  :unknown (set/difference depends-on module-set)})))))
-
-  (apply lg/digraph
-    (for [{:keys [name depends-on]} (vals modules)
-          dep depends-on]
-      [name dep])))
-
 (defn closure-defines [{:keys [public-path cljs-runtime-path] :as state}]
   (str "var CLOSURE_NO_DEPS = true;\n"
        ;; goog.findBasePath_() requires a base.js which we dont have
@@ -1563,6 +1545,50 @@ normalize-resource-name
     (doseq [input (.getInputs js-mod)]
       (prn [:js-mod input]))))
 
+;; module related stuff
+
+(defn topo-sort-modules*
+  [{:keys [modules deps visited] :as state} name]
+  (let [{:keys [depends-on] :as mod}
+        (get modules name)]
+    (cond
+      (nil? mod)
+      (throw (ex-info "module not defined" {:missing name}))
+
+      (contains? deps name)
+      (throw (ex-info "module circular dependeny" {:deps deps :name name}))
+
+      (contains? visited name)
+      state
+
+      :else
+      (-> state
+          (update :visited conj name)
+          (update :deps conj name)
+          (as-> state
+            (reduce topo-sort-modules* state depends-on))
+          (update :deps disj name)
+          (update :order conj name)))))
+
+(defn topo-sort-modules [modules]
+  (let [{:keys [deps visited order] :as result}
+        (reduce
+          topo-sort-modules*
+          {:deps #{}
+           :visited #{}
+           :order []
+           :modules modules}
+          (keys modules))]
+
+    (assert (empty? deps))
+    (assert (= (count visited) (count modules)))
+
+    order
+    ))
+
+;; FIXME: I should really write this code properly
+;; using the mutable closure JSModule stuff just for .coalesceDuplicateFiles
+;; feels so lazy and dirty, this is not a hard problem
 (defn sort-and-compact-modules
   "sorts modules in dependency order and remove sources provided by parent deps"
   [{:keys [modules] :as state}]
@@ -1573,11 +1599,8 @@ normalize-resource-name
   (if (= 1 (count modules))
     (vec (vals modules))
     ;; else: multiple modules must be sorted in dependency order
-    (let [module-graph
-          (module-graph modules)
-
-          module-order
-          (reverse (la/topsort module-graph))
+    (let [module-order
+          (topo-sort-modules modules)
 
           js-mods
           (reduce
