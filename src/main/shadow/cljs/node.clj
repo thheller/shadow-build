@@ -80,19 +80,6 @@
   (str "\nSHADOW_ENV.CLOSURE_NO_DEPS = true;\n"
        "\nSHADOW_ENV.CLOSURE_DEFINES = " (json/write-str (:closure-defines state {})) ";\n"))
 
-(defn replace-goog-global [s]
-  (str/replace s
-    ;; browsers have window as this
-    #"goog.global(\s?)=(\s?)this;"
-    ;; node "this" is the local module, global is the actual global
-    (str "goog.global=global;")))
-
-(defn closure-base
-  [state]
-  (let [goog-rc (get-in state [:sources cljs/goog-base-name])]
-    @(:input goog-rc)
-    ))
-
 (defn flush-unoptimized
   [{:keys [build-modules cljs-runtime-path source-map public-dir node-config] :as state}]
   {:pre [(cljs/directory? public-dir)]}
