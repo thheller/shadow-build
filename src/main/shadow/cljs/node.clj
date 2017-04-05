@@ -49,10 +49,10 @@
 
         node-config
         (assoc opts :main-ns main-ns
-                    :main-fn main-fn
-                    :main main
-                    :output-to output-to
-                    :public-dir public-dir)
+          :main-fn main-fn
+          :main main
+          :output-to output-to
+          :public-dir public-dir)
 
         main-call
         (-> node-config :main (make-main-call-js))
@@ -139,12 +139,14 @@
                ;; provides SHADOW_IMPORT and other things
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
 
+               ;; manually import goog/base.js so we can patch it before others get imported
                "SHADOW_IMPORT(\"goog/base.js\");"
-
                "goog.provide = SHADOW_PROVIDE;"
                "goog.require = SHADOW_REQUIRE;"
 
+               ;; import all other sources
                (->> sources
+                    (remove #{"goog/base.js"})
                     (map #(get-in state [:sources %]))
                     (map :js-name)
                     (map (fn [src]
@@ -167,10 +169,6 @@
 
                append-js
                append])]
-
-        (let [base-js
-              (io/file public-dir cljs-runtime-path "goog" "base.js")]
-          (spit base-js (closure-base state)))
 
         (io/make-parents output-to)
         (spit output-to out))))
