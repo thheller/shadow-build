@@ -6,8 +6,8 @@
     } else {
         root.returnExports = factory();
   }
-}(this, function () {
+})(this, function () {
     //CLJS-HERE
 
     return shadow.umd_helper.get_exports();
-}));
+});

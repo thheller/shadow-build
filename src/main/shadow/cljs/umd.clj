@@ -56,7 +56,7 @@
          public-dir
          (if (seq public-dir)
            (io/file public-dir)
-           (io/file "target" "shadow.umd"))
+           (io/file "target" "shadow-umd"))
 
          node-config
          {:output-to output-to

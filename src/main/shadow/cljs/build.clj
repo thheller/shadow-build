@@ -15,7 +15,7 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-    ;; [clojure.pprint :refer (pprint)]
+     [clojure.pprint :refer (pprint)]
             )
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader]
            [java.net URL]
@@ -141,10 +141,8 @@
       (str/split sysp #":"))))
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
-  (or (= :cljs type) ;; cljs is always usable
-      (seq provides) ;; provides something is useful
+  (or (seq provides) ;; provides something is useful
       (seq requires) ;; requires something is less useful?
-      (= "goog/base.js" (:name rc)) ;; doesnt provide/require anything but is useful
       ))
 
 (defn is-jar? [^String name]
@@ -243,8 +241,8 @@
                    ;; source-path-b/lib/foo.js -> lib.foo
                    {:module-type (keyword module-type)
                     :module-alias (first provides)
-                    :ns ns
-                    :provides (conj provides ns)
+                    ;; :ns ns
+                    :provides provides ;; (conj provides ns)
                     :js-name (str/replace name #".js$" ".gen.js")}))
           ))))
 
@@ -577,7 +575,6 @@ normalize-resource-name
                                   (.substring root-len)
                                   (normalize-resource-name))]
                    :when (not (should-ignore-resource? state name))]
-
                (make-fs-resource state root-path name file))
              (map (juxt :name identity))
              (into {}))]
@@ -642,6 +639,9 @@ normalize-resource-name
                                        :src name})))
                                 src-name
                                 )))
+                       ;; remove base as it will always be provided
+                       (remove #{"goog/base.js"})
+                       ;; forcing for less confusing stack trace
                        (into [] (distinct))
                        (reduce get-deps-for-src* state))
             state (update state :deps-stack (fn [stack] (into [] (butlast stack))))]
@@ -949,7 +949,7 @@ normalize-resource-name
 
                 js
                 (if (and source-map (:source-map state))
-                  (str js "\n//# sourceMappingURL=" (file-basename js-name) ".map")
+                  (str js "\n//# sourceMappingURL=" (file-basename js-name) ".map\n")
                   js)]
 
             (when-not ns
@@ -1158,8 +1158,7 @@ normalize-resource-name
        (set? provides)
        (set? requires)
        (vector? require-order)
-       (number? last-modified)
-       ))
+       (number? last-modified)))
 
 (defn is-same-resource? [a b]
   (and (= (:name a) (:name b))
@@ -1465,13 +1464,15 @@ normalize-resource-name
          mod
          (merge mod-attrs
            {:name module-name
-            :js-name (str (name module-name) ".js")
+            :js-name (or (:js-name mod-attrs)
+                         (str (name module-name) ".js"))
             :entries module-entries
             :depends-on (into #{} depends-on)
             :default is-default?})]
 
      (when is-default?
        (when-let [default (:default-module state)]
+         (prn [:default default :new module-name])
          (throw (ex-info "default module already defined, are you missing deps?"
                   {:default default :wants-to-be-default module-name}))))
 
@@ -1635,7 +1636,7 @@ normalize-resource-name
                         sources (->> (get js-mods module-key)
                                      (.getInputs)
                                      (map #(.getName %))
-                                     (vec))]
+                                     (into []))]
                     (assoc module :sources sources))))
            (vec)))))
 
@@ -1671,9 +1672,55 @@ normalize-resource-name
 
 (defn do-analyze-module
   "resolve all deps for a given module, based on specified :entries
-   will update state for each module with :sources, a list of sources needed to compile this module "
-  [state {:keys [name entries] :as module}]
-  (assoc-in state [:modules name :sources] (get-deps-for-entries state entries)))
+   will update state for each module with :sources, a list of sources needed to compile this module
+   will add pseudo-resources if :append-js or :prepend-js are present"
+  [state {:keys [name entries append-js prepend-js] :as module}]
+  (let [sources
+        (get-deps-for-entries state entries)
+
+        mod-name
+        (clojure.core/name name)
+
+        state
+        (assoc-in state [:modules name :sources] sources)
+
+        pseudo-rc
+        (fn [name provide js]
+          {:type :js
+           :name name
+           :js-name name
+           :provides #{provide}
+           :requires #{}
+           :require-order []
+           :last-modified 0
+           :input (atom js)
+           :output js})
+
+        state
+        (if-not (seq prepend-js)
+          state
+          (let [prepend-name
+                (str "shadow/module/prepend/" mod-name ".js")
+
+                prepend-provide
+                (symbol (str "shadow.module.prepend." mod-name))]
+            (-> state
+                (update :sources assoc prepend-name (pseudo-rc prepend-name prepend-provide prepend-js))
+                (update-in [:modules name :sources] #(into [prepend-name] %))
+                )))
+
+        state
+        (if-not (seq append-js)
+          state
+          (let [append-name (str "shadow/module/append/" mod-name ".js")
+                append-provide (str "shadow.module.append." mod-name)]
+            (-> state
+                (update :sources assoc append-name (pseudo-rc append-name append-provide append-js))
+                (update-in [:modules name :sources] conj append-name)
+                )))]
+
+    state
+    ))
 
 (defn add-foreign
   [state name provides requires js-source externs-source]
@@ -1788,6 +1835,9 @@ normalize-resource-name
 
 (defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
   {:pre [(valid-resource? src)]}
+  (when (= name "goog/base.js")
+    (throw (ex-info "trying to compile goog/base.js" {})))
+
   (if (and (seq output)
            ;; always recompile files with warnings
            (not (seq warnings)))
@@ -1888,7 +1938,7 @@ normalize-resource-name
 
         (let [;; namespaces that are ready to be used
               ready
-              (atom #{})
+              (atom #{'goog})
 
               ;; source-name -> exception
               errors
@@ -1955,11 +2005,6 @@ normalize-resource-name
         (do-compile-sources source-names))
       (assoc :build-done (System/currentTimeMillis))))
 
-(defn do-compile-modules
-  "compiles source based on :build-modules (created by prepare-modules)"
-  [{:keys [build-sources] :as state}]
-  (compile-sources state build-sources))
-
 (defn prepare-compile
   "prepares for compilation (eg. create source lookup index, shadow.runtime-setup)"
   [state]
@@ -1969,6 +2014,65 @@ normalize-resource-name
         (merge-resource (make-runtime-setup state)))
       (finalize-config)
       ))
+
+(defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
+  (->> sources
+       (map #(get-in state [:sources %]))
+       (filter foreign?)
+       (map :output)
+       (str/join "\n")))
+
+(defn md5hex [^String text]
+  (let [bytes
+        (.getBytes text)
+
+        md
+        (doto (MessageDigest/getInstance "MD5")
+          (.update bytes))
+
+        sig
+        (.digest md)]
+
+    (DatatypeConverter/printHexBinary sig)
+    ))
+
+(defn make-foreign-bundle [state {:keys [name sources] :as mod}]
+  (let [foreign-srcs
+        (->> sources
+             (map #(get-in state [:sources %]))
+             (filter foreign?))]
+
+    (if-not (seq foreign-srcs)
+      mod
+      (let [output
+            (->> foreign-srcs
+                 (map :output)
+                 (str/join "\n"))
+
+            provides
+            (->> foreign-srcs
+                 (map :provides)
+                 (reduce set/union #{}))
+
+            md5
+            (md5hex output)
+
+            foreign-name
+            (str (clojure.core/name name) "-foreign-" md5 ".js")]
+
+        (assoc mod
+          :foreign-files
+          [{:js-name foreign-name
+            :provides provides
+            :output output
+            :sources (into [] (map :name) foreign-srcs)
+            }])))
+    ))
+
+(defn make-foreign-bundles [{:keys [build-modules] :as state}]
+  (let [new-mods
+        (into [] (map #(make-foreign-bundle state %)) build-modules)]
+    (assoc state :build-modules new-mods)))
 
 (defn prepare-modules
   "prepares :modules for compilation (sort and compacts duplicate sources)"
@@ -1982,6 +2086,15 @@ normalize-resource-name
       :build-modules modules
       :build-sources (into [] (mapcat :sources modules)))))
 
+(defn compile-modules*
+  "compiles source based on :build-modules (created by prepare-modules)"
+  [{:keys [build-sources bundle-foreign] :as state}]
+  (-> state
+      (compile-sources build-sources)
+      (cond->
+        (not= bundle-foreign :inline)
+        (make-foreign-bundles))))
+
 (defn compile-modules
   "compiles according to configured :modules"
   [state]
@@ -1991,10 +2104,8 @@ normalize-resource-name
           (-> state
               (prepare-compile)
               (prepare-modules)
-              (do-compile-modules))]
-
+              (compile-modules*))]
       (print-warnings! state)
-
       state
       )))
 
@@ -2032,15 +2143,13 @@ normalize-resource-name
 
   (let [js-mods
         (reduce
-          (fn [js-mods {:keys [js-name name depends-on sources prepend-js append-js] :as mod}]
+          (fn [js-mods {:keys [js-name name depends-on sources] :as mod}]
             (let [js-mod (JSModule. js-name)]
               (when (:default mod)
-                ;; goog/base.js is now treated as a normal resource
-                (.add js-mod (SourceFile/fromCode "closure_setup.js" (closure-defines state))))
-              (when (seq prepend-js)
-                (.add js-mod (SourceFile/fromCode (str "mod_" name "_prepend.js") prepend-js)))
+                (.add js-mod (SourceFile/fromCode "closure_setup.js" (closure-defines-and-base state))))
 
-              (doseq [{:keys [name type js-name output] :as src} (map #(get-in state [:sources %]) sources)]
+              (doseq [{:keys [name type js-name output] :as src}
+                      (map #(get-in state [:sources %]) sources)]
                 ;; throws hard to track NPE otherwise
                 (when-not (and js-name output (seq output))
                   (throw (ex-info "missing output for source" {:js-name js-name :name (:name src)})))
@@ -2058,9 +2167,6 @@ normalize-resource-name
                   (.add js-mod (SourceFile/fromCode js-name output))
 
                   (throw (ex-info "unsupported type for closure" src))))
-
-              (when (seq append-js)
-                (.add js-mod (SourceFile/fromCode (str "mod_" name "_append.js") append-js)))
 
               (doseq [other-mod-name depends-on
                       :let [other-mod (get js-mods other-mod-name)]]
@@ -2135,7 +2241,7 @@ normalize-resource-name
 
 
 ;; FIXME: manifest should be custom step
-(defn flush-manifest [public-dir modules]
+(defn flush-manifest [public-dir modules include-foreign?]
   (spit
     (io/file public-dir "manifest.json")
     (->> modules
@@ -2147,92 +2253,19 @@ normalize-resource-name
                      :default default
                      :sources sources}
                     (cond->
-                      (seq foreign-files)
+                      (and include-foreign? (seq foreign-files))
                       (assoc :foreign (mapv #(select-keys % [:js-name :provides]) foreign-files))))
                 ))
          (json/write-str))))
 
-(defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
-  (->> sources
-       (map #(get-in state [:sources %]))
-       (filter foreign?)
-       (map :output)
-       (str/join "\n")))
-
-(defn md5hex [^String text]
-  (let [bytes
-        (.getBytes text)
-
-        md
-        (doto (MessageDigest/getInstance "MD5")
-          (.update bytes))
-
-        sig
-        (.digest md)]
-
-    (DatatypeConverter/printHexBinary sig)
-    ))
-
-(defn create-foreign-bundles
-  [state]
-  (update state :optimized
-    (fn [modules]
-      (->> modules
-           (map (fn [{:keys [name sources] :as mod}]
-                  (let [foreign-srcs
-                        (->> sources
-                             (map #(get-in state [:sources %]))
-                             (filter foreign?))]
-
-                    (if-not (seq foreign-srcs)
-                      mod
-                      (let [output
-                            (->> foreign-srcs
-                                 (map :output)
-                                 (str/join "\n"))
-
-                            provides
-                            (->> foreign-srcs
-                                 (map :provides)
-                                 (reduce set/union #{})
-                                 (sort)
-                                 (into []))
-
-                            md5
-                            (md5hex output)
-
-                            foreign-name
-                            (str (clojure.core/name name) "-foreign-" md5 ".js")]
-
-                        (assoc mod
-                          ;; remove foreign from sources list (mainly for a clean manifest)
-                          :sources
-                          (->> sources
-                               (map #(get-in state [:sources %]))
-                               (remove foreign?)
-                               (map :name)
-                               (into []))
-
-                          ;; FIXME: unfinished optmization
-                          ;; I want to be able to split foreigns into multiple files eventually
-                          ;; say you have foreign A,B,C
-                          ;; if A changes more frequently than B,C it might be useful to have it as a separate include
-                          ;; so B,C still benefit from caching and A doesn't cause them to download again
-                          :foreign-files
-                          [{:js-name foreign-name
-                            :provides provides
-                            :output output
-                            }])))
-                    )))
-           (into [])))))
-
 (defn flush-foreign-bundles
-  [{:keys [public-dir] :as state}]
-  (doseq [{:keys [foreign-files] :as mod} (:optimized state)
-          :when (seq foreign-files)
-          {:keys [js-name provides output] :as foreign-file} foreign-files]
+  [{:keys [public-dir build-modules] :as state}]
+  (doseq [{:keys [foreign-files] :as mod} build-modules
+          {:keys [js-name provides output]} foreign-files]
     (let [target (io/file public-dir js-name)]
       (when-not (.exists target)
+
+        (io/make-parents target)
 
         (log state {:type :flush-foreign
                     :provides provides
@@ -2240,16 +2273,14 @@ normalize-resource-name
                     :js-size (count output)})
 
         (spit target output))))
-
   state)
 
 (defn flush-modules-to-disk
   [{modules :optimized
-    :keys [unoptimizable
-           bundle-foreign
-           ^File public-dir
-           cljs-runtime-path]
+    :keys [^File public-dir cljs-runtime-path]
     :as state}]
+
+  (flush-foreign-bundles state)
 
   (with-logged-time
     [state {:type :flush-optimized}]
@@ -2260,35 +2291,27 @@ normalize-resource-name
     (when-not public-dir
       (throw (ex-info "missing :public-dir" {})))
 
-    (let [{modules :optimized
-           :as state}
-          (if (not= :inline bundle-foreign)
-            (-> state
-                (create-foreign-bundles)
-                (flush-foreign-bundles))
-            state)]
+    (doseq [{:keys [output source-map-name source-map-json name js-name] :as mod} modules]
+      (let [target (io/file public-dir js-name)]
 
-      (doseq [{:keys [output source-map-name source-map-json name js-name] :as mod} modules]
-        (let [target (io/file public-dir js-name)]
+        (io/make-parents target)
 
-          (io/make-parents target)
+        (spit target output)
 
-          (spit target output)
+        (log state {:type :flush-module
+                    :name name
+                    :js-name js-name
+                    :js-size (count output)})
 
-          (log state {:type :flush-module
-                      :name name
-                      :js-name js-name
-                      :js-size (count output)})
+        (when source-map-name
+          (let [target (io/file public-dir cljs-runtime-path source-map-name)]
+            (io/make-parents target)
+            (spit target source-map-json)))))
 
-          (when source-map-name
-            (let [target (io/file public-dir cljs-runtime-path source-map-name)]
-              (io/make-parents target)
-              (spit target source-map-json)))))
+    (flush-manifest public-dir modules true)
 
-      (flush-manifest public-dir modules)
-
-      ;; with-logged-time expects that we return the compiler-state
-      state)))
+    ;; with-logged-time expects that we return the compiler-state
+    state))
 
 (defn load-externs [{:keys [externs build-modules] :as state}]
   (let [externs
@@ -2455,7 +2478,7 @@ normalize-resource-name
                  optimized-modules
                  (->> modules
                       (mapv
-                        (fn [{:keys [js-name js-module prepend default] :as mod}]
+                        (fn [{:keys [js-name js-module prepend append default] :as mod}]
                           (when source-map
                             (.reset source-map))
                           (let [output
@@ -2492,6 +2515,7 @@ normalize-resource-name
                                 final-output
                                 (str module-prefix
                                      output
+                                     append
                                      (when source-map
                                        (str "\n//# sourceMappingURL=" cljs-runtime-path "/" source-map-name "\n")))]
 
@@ -2525,11 +2549,12 @@ normalize-resource-name
    (closure-goog-deps state (-> state :sources keys)))
   ([state source-names]
    (->> source-names
+        (remove #{"goog/base.js"})
         (map #(get-in state [:sources %]))
         (map (fn [{:keys [js-name require-order provides]}]
                (str "goog.addDependency(\"" js-name "\","
                     "[" (ns-list-string provides) "],"
-                    "[" (ns-list-string require-order) "]);")))
+                    "[" (->> require-order (remove '#{goog}) (ns-list-string)) "]);")))
         (str/join "\n"))))
 
 
@@ -2549,13 +2574,14 @@ normalize-resource-name
        ;; only js is inlineable since we want proper source maps for cljs
        (= :js type)
        ;; only inline goog for now
-       (every? #(str/starts-with? (str %) "goog.") requires)
-       (every? #(str/starts-with? (str %) "goog.") provides)
+       (every? #(str/starts-with? (str %) "goog") requires)
+       (every? #(str/starts-with? (str %) "goog") provides)
        ))
 
 (defn flush-unoptimized-module!
   [{:keys [dev-inline-js public-dir public-path unoptimizable] :as state}
-   {:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod}]
+   {:keys [default js-name prepend append sources web-worker] :as mod}]
+
   (let [inlineable-sources
         (if-not dev-inline-js
           []
@@ -2600,29 +2626,30 @@ normalize-resource-name
              (mapcat #(get-in state [:sources % :provides]))
              (distinct)
              (remove inlined-provides)
+             (remove '#{goog})
              (map (fn [ns]
                     (str "goog.require('" (comp/munge ns) "');")))
              (str/join "\n"))
 
         out
-        (str prepend prepend-js inlined-js closure-require-hack requires append-js)
+        (str inlined-js
+             prepend
+             closure-require-hack
+             requires
+             append)
 
         out
         (if (or default web-worker)
           ;; default mod needs closure related setup and goog.addDependency stuff
           (str unoptimizable
-               "var SHADOW_MODULES = {};\n"
                (when web-worker
                  "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
                (closure-defines-and-base state)
-               (closure-goog-deps state)
+               (closure-goog-deps state (:build-sources state))
                "\n\n"
                out)
           ;; else
-          out)
-
-        out
-        (str out "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n")]
+          out)]
 
     (spit target out)))
 
@@ -2645,7 +2672,7 @@ normalize-resource-name
   (with-logged-time
     [state {:type :flush-unoptimized}]
 
-    (flush-manifest public-dir build-modules)
+    (flush-manifest public-dir build-modules false)
 
     (doseq [mod build-modules]
       (flush-unoptimized-module! state mod))
@@ -2726,27 +2753,26 @@ normalize-resource-name
     [state {:type :flush-unoptimized
             :compact true}]
 
-    (flush-manifest public-dir build-modules)
+    (flush-manifest public-dir build-modules false)
 
     ;; flush fake modules
-    (doseq [{:keys [default js-name name prepend prepend-js append-js sources web-worker] :as mod} build-modules]
+    (doseq [{:keys [default js-name name prepend append sources web-worker] :as mod} build-modules]
       (let [target (io/file public-dir js-name)
             append-to-target
             (fn [text]
               (spit target text :append true))]
 
-        (spit target (str prepend prepend-js))
+        (spit target prepend)
         (when (or default web-worker)
           (append-to-target
             (str unoptimizable
-                 "var SHADOW_MODULES = {};\n"
                  (if web-worker
                    "\nvar SHADOW_IMPORT = function(src) { importScripts(src); };\n"
                    ;; FIXME: should probably throw an error because we NEVER want to import anything this way
                    "\nvar SHADOW_IMPORT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"
                    )
                  (closure-defines-and-base state)
-                 (closure-goog-deps state)
+                 (closure-goog-deps state (:build-sources state))
                  "\n\n"
                  )))
 
@@ -2763,12 +2789,9 @@ normalize-resource-name
           (append-to-target (str "// SOURCE=" name "\n"))
           ;; pretend we actually loaded a separate file, live-reload needs this
           (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
-          (append-to-target (str (str/trim output) "\n")))
+          (append-to-target (str (str/trim (str/replace output "//# sourceMappingURL=" "// ")) "\n")))
 
-        (append-to-target append-js)
-        (append-to-target (str "\n\nSHADOW_MODULES[" (pr-str (str name)) "] = true;\n"))
-
-        (append-to-target (str "//# sourceMappingURL=" cljs-runtime-path "/" (clojure.core/name name) "-index.js.map?r=" (rand)))
+        (append-to-target (str "//# sourceMappingURL=" cljs-runtime-path "/" (clojure.core/name name) "-index.js.map\n"))
         )))
 
   ;; return unmodified state
@@ -3037,7 +3060,7 @@ enable-emit-constants [state]
        #{#"^node_modules/"
          #"^goog/demos/"
          #".aot.js$"
-         #"_test.js$"
+         #"^goog/(.+)_test.js$"
          #"^public/"}
 
        :classpath-excludes

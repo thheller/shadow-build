@@ -88,6 +88,15 @@
 
   (cljs/flush-sources-by-name state)
 
+  ;; FIXME: this is a bit annoying
+  ;; goog/base.js is never compiled and never appears in module :sources
+  ;; manually created the :ouput and flush it
+  (-> state
+      (update-in [:sources "goog/base.js"]
+        (fn [{:keys [input] :as rc}]
+          (assoc rc :output @input)))
+      (cljs/flush-sources-by-name ["goog/base.js"]))
+
   (let [{:keys [output-to]}
         node-config]
 
@@ -95,13 +104,12 @@
       [state {:type ::flush-unoptimized
               :output-file (.getAbsolutePath output-to)}]
 
-      (let [{:keys [prepend prepend-js append-js append sources]}
+      (let [{:keys [prepend append sources]}
             (first build-modules)
 
             out
             (str/join "\n"
               [prepend
-               prepend-js
 
                ;; this is here and not in boostrap since defines already accesses them
                (str "var SHADOW_IMPORT_PATH = \""
@@ -127,13 +135,14 @@
                (slurp (io/resource "shadow/cljs/node_bootstrap.txt"))
 
                ;; manually import goog/base.js so we can patch it before others get imported
+               ;; cannot inline the goog/base.js as the goog.global = this; should match
+               ;; the this of every other imported file (which is SHADOW_ENV)
                "SHADOW_IMPORT(\"goog/base.js\");"
                "goog.provide = SHADOW_PROVIDE;"
                "goog.require = SHADOW_REQUIRE;"
 
                ;; import all other sources
                (->> sources
-                    (remove #{"goog/base.js"})
                     (map #(get-in state [:sources %]))
                     (map :js-name)
                     (map (fn [src]
@@ -150,11 +159,9 @@
                        (-> (str main)
                            (comp/munge))
                        root
-                       (subs root 0 (str/index-of root "."))
-                       ]
+                       (subs root 0 (str/index-of root "."))]
                    (str "var " root " = SHADOW_ENV." root ";")))
 
-               append-js
                append])]
 
         (io/make-parents output-to)
@@ -177,20 +184,9 @@
       (when-not (seq modules)
         (throw (ex-info "flush before optimize?" {})))
 
-      (let [{:keys [output prepend append js-name]}
-            (first modules)
-
-            ;; prepend-js and append-js went through the closure compiler
-            out
-            (str prepend output append)]
-
+      (let [{:keys [output js-name]} (first modules)]
         (io/make-parents output-to)
-        (spit output-to out)
-
-        ;; FIXME: add source-map support for node
-        #_(when source-map-name
-            (spit target (str "\n//# sourceMappingURL=src/" (cljs/file-basename source-map-name) "\n")
-              :append true))
+        (spit output-to output)
         )))
 
 
