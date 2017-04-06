@@ -78,7 +78,7 @@
 (defn closure-defines
   [state]
   (str "\nSHADOW_ENV.CLOSURE_NO_DEPS = true;\n"
-       "\nSHADOW_ENV.CLOSURE_DEFINES = " (json/write-str (:closure-defines state {})) ";\n"))
+       "\nSHADOW_ENV.CLOSURE_DEFINES = " (cljs/closure-defines-json state) ";\n"))
 
 (defn flush-unoptimized
   [{:keys [build-modules cljs-runtime-path source-map public-dir node-config] :as state}]

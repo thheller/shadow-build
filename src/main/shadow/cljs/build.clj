@@ -1498,14 +1498,23 @@ normalize-resource-name
         (spit target output)))
     state))
 
+(defn closure-defines-json [{:keys [closure-defines] :as state}]
+  (let [closure-defines
+        (reduce-kv
+          (fn [def key value]
+            (let [key (if (symbol? key) (str (comp/munge key)) key)]
+              (assoc def key value)))
+          {}
+          closure-defines)]
+
+     (json/write-str closure-defines :escape-slashes false)))
+
 (defn closure-defines [{:keys [public-path cljs-runtime-path] :as state}]
   (str "var CLOSURE_NO_DEPS = true;\n"
        ;; goog.findBasePath_() requires a base.js which we dont have
        ;; this is usually only needed for unoptimized builds anyways
        "var CLOSURE_BASE_PATH = '" public-path "/" cljs-runtime-path "/';\n"
-       "var CLOSURE_DEFINES = "
-       (json/write-str (:closure-defines state {}))
-       ";\n"))
+       "var CLOSURE_DEFINES = " (closure-defines-json state) ";\n"))
 
 (defn closure-defines-and-base [{:keys [public-path cljs-runtime-path] :as state}]
   (let [goog-rc (get-in state [:sources goog-base-name])
