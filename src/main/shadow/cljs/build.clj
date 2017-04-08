@@ -15,15 +15,15 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-     [clojure.pprint :refer (pprint)]
+            [clojure.pprint :refer (pprint)]
             )
-  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader]
+  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader ByteArrayInputStream]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile JSModuleGraph CustomPassExecutionTime]
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            [java.util.concurrent Executors Future]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping)
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping VariableMap)
            (java.security MessageDigest)
            (javax.xml.bind DatatypeConverter)
            (cljs.tagged_literals JSValue)))
@@ -111,9 +111,9 @@
 
          evt#
          (assoc msg#
-           :timing :enter
-           :start start#
-           :depth *time-depth*)]
+                :timing :enter
+                :start start#
+                :depth *time-depth*)]
      (log ~state evt#)
      (let [result#
            (binding [*time-depth* (inc *time-depth*)]
@@ -124,10 +124,10 @@
 
            evt#
            (assoc msg#
-             :timing :exit
-             :depth *time-depth*
-             :stop stop#
-             :duration (- stop# start#))]
+                  :timing :exit
+                  :depth *time-depth*
+                  :stop stop#
+                  :duration (- stop# start#))]
        (log (if (compiler-state? result#) result# ~state) evt#)
        result#)
      ))
@@ -216,7 +216,7 @@
                  (.parseFile name name @input))
 
         module-type
-        (.. deps (getLoadFlags) (get "module"))
+        (-> deps (.getLoadFlags) (.get "module"))
 
         ;; FIXME: bug in Closure that es6 files do not depend on goog?
         ;; doesn't hurt that it is missing though
@@ -282,24 +282,24 @@
                 ns-map))]
 
         (assoc ast
-          :require-order
-          (into [] (map rewrite-ns) require-order)
-          :requires
-          (rewrite-ns-map requires true)
-          :uses
-          (rewrite-ns-map uses false))
+               :require-order
+               (into [] (map rewrite-ns) require-order)
+               :requires
+               (rewrite-ns-map requires true)
+               :uses
+               (rewrite-ns-map uses false))
         ))))
 
 (defn update-rc-from-ns
   [state rc {:keys [name require-order] :as ast}]
   {:pre [(compiler-state? state)]}
   (assoc rc
-    :ns name
-    :ns-info (dissoc ast :env)
-    :provides #{name}
-    :macro-namespaces (macros-from-ns-ast state ast)
-    :requires (into #{} require-order)
-    :require-order require-order))
+         :ns name
+         :ns-info (dissoc ast :env)
+         :provides #{name}
+         :macro-namespaces (macros-from-ns-ast state ast)
+         :requires (into #{} require-order)
+         :require-order require-order))
 
 (defn peek-into-cljs-resource
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
@@ -330,12 +330,12 @@
           ;; make best estimate guess what the file might provide based on name
           (let [guessed-ns (filename->ns name)]
             (assoc rc
-              :ns guessed-ns
-              :requires #{'cljs.core}
-              :require-order ['cljs.core]
-              :provides #{guessed-ns}
-              :type :cljs
-              )))))))
+                   :ns guessed-ns
+                   :requires #{'cljs.core}
+                   :require-order ['cljs.core]
+                   :provides #{guessed-ns}
+                   :type :cljs
+                   )))))))
 
 (defn inspect-resource
   [state {:keys [url name] :as rc}]
@@ -490,12 +490,12 @@ normalize-resource-name
                       ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
                       rc
                       (assoc rc
-                        :type :foreign
-                        :requires (set require-order)
-                        :require-order require-order
-                        :provides (set (map symbol provides))
-                        :externs externs
-                        :externs-source externs-source)]
+                             :type :foreign
+                             :requires (set require-order)
+                             :require-order require-order
+                             :provides (set (map symbol provides))
+                             :externs externs
+                             :externs-source externs-source)]
 
                   (-> result
                       (dissoc-all externs)
@@ -656,8 +656,8 @@ normalize-resource-name
          (string? src-name)]}
   (-> state
       (assoc :deps-stack []
-        :deps-ordered []
-        :deps-visited #{})
+             :deps-ordered []
+             :deps-visited #{})
       (get-deps-for-src* src-name)
       :deps-ordered))
 
@@ -782,7 +782,7 @@ normalize-resource-name
            ;; of the compiler state, instead they are in :compiler-options
            ;; still want the compiler-state accessible though
            (assoc (:compiler-options state)
-             :compiler-state state))
+                  :compiler-state state))
          (post-analyze state)))))
 
 (defn do-compile-cljs-string
@@ -956,16 +956,16 @@ normalize-resource-name
               (throw (ex-info "cljs file did not provide a namespace" {:file name})))
 
             (assoc rc
-              :output js
-              :requires requires
-              :require-order require-order
-              :compiled-at (System/currentTimeMillis)
-              :provides #{ns}
-              :compiled true
-              :warnings warnings
-              :ast ast
-              :forms forms
-              :source-map source-map)))))))
+                   :output js
+                   :requires requires
+                   :require-order require-order
+                   :compiled-at (System/currentTimeMillis)
+                   :provides #{ns}
+                   :compiled true
+                   :warnings warnings
+                   :ast ast
+                   :forms forms
+                   :source-map source-map)))))))
 
 
 (defn get-cache-file-for-rc
@@ -1051,7 +1051,7 @@ normalize-resource-name
             (-> (merge rc cache-data)
                 (dissoc :analyzer :cache-options :age-of-deps)
                 (assoc :cached true
-                  :output (slurp cache-js))))))
+                       :output (slurp cache-js))))))
 
       (catch Exception e
         (log state {:type :cache-error
@@ -1073,7 +1073,7 @@ normalize-resource-name
               (-> rc
                   (dissoc :file :output :input :url :forms :ast)
                   (assoc :age-of-deps (make-age-map state ns)
-                    :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
+                         :analyzer (get-in @env/*compiler* [::ana/namespaces ns])))
 
               cache-options
               (reduce
@@ -1197,9 +1197,9 @@ normalize-resource-name
         ;; remove all provides, otherwise it might end up being used despite the invalid name
         ;; enforce this behavior since the warning might get overlooked easily
         (let [invalid-src (assoc src
-                            :provides #{}
-                            :requires #{}
-                            :require-order [])]
+                                 :provides #{}
+                                 :requires #{}
+                                 :require-order [])]
           (assoc-in state [:sources name] invalid-src)))
 
     ;; do not merge files that are already present from a different source path
@@ -1303,8 +1303,8 @@ normalize-resource-name
              state
              (if (.isDirectory file)
                (assoc-in state [:source-paths abs-path] (assoc path-opts
-                                                          :file file
-                                                          :path abs-path))
+                                                               :file file
+                                                               :path abs-path))
                state)]
          (merge-resources state resources))))))
 
@@ -1507,7 +1507,7 @@ normalize-resource-name
           {}
           closure-defines)]
 
-     (json/write-str closure-defines :escape-slashes false)))
+    (json/write-str closure-defines :escape-slashes false)))
 
 (defn closure-defines [{:keys [public-path cljs-runtime-path] :as state}]
   (str "var CLOSURE_NO_DEPS = true;\n"
@@ -1829,9 +1829,9 @@ normalize-resource-name
             (cond->
               source-map?
               (-> (assoc :source-map-json
-                    (let [sw (StringWriter.)]
-                      (.appendTo sm sw js-name)
-                      (.toString sw)))
+                         (let [sw (StringWriter.)]
+                           (.appendTo sm sw js-name)
+                           (.toString sw)))
                   (update :output str "\n//# sourceMappingURL=" (file-basename js-name) ".map\n"))))))))
 
 
@@ -2071,12 +2071,12 @@ normalize-resource-name
             (str (clojure.core/name name) "-foreign-" md5 ".js")]
 
         (assoc mod
-          :foreign-files
-          [{:js-name foreign-name
-            :provides provides
-            :output output
-            :sources (into [] (map :name) foreign-srcs)
-            }])))
+               :foreign-files
+               [{:js-name foreign-name
+                 :provides provides
+                 :output output
+                 :sources (into [] (map :name) foreign-srcs)
+                 }])))
     ))
 
 (defn make-foreign-bundles [{:keys [build-modules] :as state}]
@@ -2093,8 +2093,8 @@ normalize-resource-name
         modules
         (sort-and-compact-modules state)]
     (assoc state
-      :build-modules modules
-      :build-sources (into [] (mapcat :sources modules)))))
+           :build-modules modules
+           :build-sources (into [] (mapcat :sources modules)))))
 
 (defn compile-modules*
   "compiles source based on :build-modules (created by prepare-modules)"
@@ -2369,6 +2369,33 @@ normalize-resource-name
 (defn closure-add-replace-constants-pass [cc ^CompilerOptions co state]
   (.addCustomPass co CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
 
+(defn read-variable-map [{:keys [cache-dir] :as state} name]
+  (let [map-file (io/file cache-dir name)]
+    (when (.exists map-file)
+      (try
+        (VariableMap/load (.getAbsolutePath map-file))
+        (catch Exception e
+          (prn [:variable-map-load map-file e])
+          nil)))))
+
+(defn write-variable-map [{:keys [cache-dir] :as state} name map]
+  (let [map-file
+        (doto (io/file cache-dir name)
+          (io/make-parents))
+
+        bytes
+        (ByteArrayInputStream. (.toBytes map))]
+
+    (with-open [out (FileOutputStream. map-file)]
+      (io/copy bytes out))))
+
+(defn closure-add-variable-maps [cc co {:keys [cache-dir] :as state}]
+  (when-some [data (read-variable-map state "closure.property.map")]
+    (.setInputPropertyMap co data))
+
+  (when-some [data (read-variable-map state "closure.variable.map")]
+    (.setInputVariableMap co data)))
+
 (defn add-closure-configurator
   "adds a closure configurator 2-arity function that will be called before the compiler is invoked
    signature of the callback is (fn [compiler compiler-options])
@@ -2469,9 +2496,9 @@ normalize-resource-name
 
              state
              (assoc state
-               :build-externs externs
-               :closure-compiler cc
-               :closure-compiler-options co)
+                    :build-externs externs
+                    :closure-compiler cc
+                    :closure-compiler-options co)
 
              _ (when source-map?
                  (add-input-source-maps state cc))
@@ -2551,8 +2578,11 @@ normalize-resource-name
                                            {:source-map-json closure-json
                                             :source-map-name source-map-name}))))))))]
 
-             (assoc state :closure-result result :optimized optimized-modules))))))))
+             ;; see closure-add-variable-maps configurator which loads these before compiling
+             (write-variable-map state "closure.variable.map" (.-variableMap result))
+             (write-variable-map state "closure.property.map" (.-propertyMap result))
 
+             (assoc state :closure-result result :optimized optimized-modules))))))))
 
 (defn- ns-list-string [coll]
   (->> coll
@@ -2737,8 +2767,8 @@ normalize-resource-name
                                                        ;; must set sources and file to complete relative paths
                                                        ;; as the source map only contains local references without path
                                                        (assoc sm
-                                                         "sources" [src-name]
-                                                         "file" js-name))
+                                                              "sources" [src-name]
+                                                              "file" js-name))
                                                 })
                 ;; only have source-maps for cljs
                 src-map)
@@ -2922,8 +2952,8 @@ normalize-resource-name
                      (if (<= new-mod last-modified)
                        result
                        (let [macro (assoc macro
-                                     :scan :macro
-                                     :last-modified new-mod)]
+                                          :scan :macro
+                                          :last-modified new-mod)]
 
                          (conj result macro)))))
                  []))
@@ -3145,6 +3175,7 @@ enable-emit-constants [state]
        stdout-log}
 
       (add-closure-configurator closure-add-replace-constants-pass)
+      (add-closure-configurator closure-add-variable-maps)
       ))
 
 (defn watch-and-repeat! [state callback]
