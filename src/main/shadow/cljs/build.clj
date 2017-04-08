@@ -15,7 +15,7 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-            [clojure.pprint :refer (pprint)]
+    ;; [clojure.pprint :refer (pprint)]
             )
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader ByteArrayInputStream]
            [java.net URL]
