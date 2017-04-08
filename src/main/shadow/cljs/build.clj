@@ -1764,10 +1764,11 @@ normalize-resource-name
               ["goog.provide('shadow.runtime_setup');"
                "goog.require('cljs.core');"
                (case (:print-fn runtime)
-                 ;; Browser
-                 :console "cljs.core.enable_console_print_BANG_();"
-                 ;; Node.JS
-                 :print "cljs.core._STAR_print_fn_STAR_ = require(\"util\").print;")])]
+                 :console
+                 "cljs.core.enable_console_print_BANG_();"
+                 :none
+                 ""
+                 )])]
     {:type :js
      :name "shadow/runtime_setup.js"
      :js-name "shadow/runtime_setup.js"
@@ -2253,19 +2254,21 @@ normalize-resource-name
 (defn flush-manifest [public-dir modules include-foreign?]
   (spit
     (io/file public-dir "manifest.json")
-    (->> modules
-         (map (fn [{:keys [name js-name entries depends-on default sources foreign-files] :as mod}]
-                (-> {:name name
-                     :js-name js-name
-                     :entries entries
-                     :depends-on depends-on
-                     :default default
-                     :sources sources}
-                    (cond->
-                      (and include-foreign? (seq foreign-files))
-                      (assoc :foreign (mapv #(select-keys % [:js-name :provides]) foreign-files))))
-                ))
-         (json/write-str))))
+    (let [data
+          (->> modules
+               (map (fn [{:keys [name js-name entries depends-on default sources foreign-files] :as mod}]
+                      (-> {:name name
+                           :js-name js-name
+                           :entries entries
+                           :depends-on depends-on
+                           :default default
+                           :sources sources}
+                          (cond->
+                            (and include-foreign? (seq foreign-files))
+                            (assoc :foreign (mapv #(select-keys % [:js-name :provides]) foreign-files))))
+                      )))]
+      (with-out-str
+        (json/pprint data :escape-slash false)))))
 
 (defn flush-foreign-bundles
   [{:keys [public-dir build-modules] :as state}]
@@ -2465,7 +2468,10 @@ normalize-resource-name
              (load-externs state)
 
              state
-             (assoc state :build-externs externs)
+             (assoc state
+               :build-externs externs
+               :closure-compiler cc
+               :closure-compiler-options co)
 
              _ (when source-map?
                  (add-input-source-maps state cc))
@@ -2480,7 +2486,7 @@ normalize-resource-name
 
          (if-not (.success result)
            (let [errors (into [] (js-error-xf cc) (.errors result))]
-             (throw (ex-info "optimization failed" {:errors errors})))
+             (throw (ex-info "optimization failed" {:tag ::closure :errors errors})))
            (let [source-map
                  (when source-map? (.getSourceMap cc))
 
@@ -3095,7 +3101,7 @@ enable-emit-constants [state]
         "goog.LOCALE" "en"}
 
        :runtime
-       {:print-fn :console}
+       {:print-fn :none}
 
        :use-file-min true
 

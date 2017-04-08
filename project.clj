@@ -8,7 +8,9 @@
   :dependencies
   [[org.clojure/clojure "1.9.0-alpha15"]
    [org.clojure/clojurescript "1.9.473"]
-   [com.cognitect/transit-clj "0.8.300"]]
+   [com.cognitect/transit-clj "0.8.300"
+    :exclusions
+    [org.msgpack/msgpack]]]
 
   :source-paths
   ["src/main"]
