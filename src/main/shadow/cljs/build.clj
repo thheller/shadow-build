@@ -1483,21 +1483,6 @@ normalize-resource-name
            (assoc :default-module module-name)
            )))))
 
-(defn flush-to-disk
-  "flush all generated sources to disk, not terribly useful, use flush-unoptimized to include source maps"
-  [{:keys [work-dir sources] :as state}]
-  (with-logged-time
-    [state {:type :flush-to-disk}]
-    (doseq [{:keys [type name compiled] :as src} (vals sources)
-            :when (and (= :cljs type)
-                       compiled)]
-
-      (let [{:keys [js-name output]} src
-            target (io/file work-dir js-name)]
-        (io/make-parents target)
-        (spit target output)))
-    state))
-
 (defn closure-defines-json [{:keys [closure-defines] :as state}]
   (let [closure-defines
         (reduce-kv
@@ -2249,27 +2234,6 @@ normalize-resource-name
 
      state)))
 
-
-;; FIXME: manifest should be custom step
-(defn flush-manifest [public-dir modules include-foreign?]
-  (spit
-    (io/file public-dir "manifest.json")
-    (let [data
-          (->> modules
-               (map (fn [{:keys [name js-name entries depends-on default sources foreign-files] :as mod}]
-                      (-> {:name name
-                           :js-name js-name
-                           :entries entries
-                           :depends-on depends-on
-                           :default default
-                           :sources sources}
-                          (cond->
-                            (and include-foreign? (seq foreign-files))
-                            (assoc :foreign (mapv #(select-keys % [:js-name :provides]) foreign-files))))
-                      )))]
-      (with-out-str
-        (json/pprint data :escape-slash false)))))
-
 (defn flush-foreign-bundles
   [{:keys [public-dir build-modules] :as state}]
   (doseq [{:keys [foreign-files] :as mod} build-modules
@@ -2319,8 +2283,6 @@ normalize-resource-name
           (let [target (io/file public-dir cljs-runtime-path source-map-name)]
             (io/make-parents target)
             (spit target source-map-json)))))
-
-    (flush-manifest public-dir modules true)
 
     ;; with-logged-time expects that we return the compiler-state
     state))
@@ -2717,8 +2679,6 @@ normalize-resource-name
   (with-logged-time
     [state {:type :flush-unoptimized}]
 
-    (flush-manifest public-dir build-modules false)
-
     (doseq [mod build-modules]
       (flush-unoptimized-module! state mod))
 
@@ -2797,8 +2757,6 @@ normalize-resource-name
   (with-logged-time
     [state {:type :flush-unoptimized
             :compact true}]
-
-    (flush-manifest public-dir build-modules false)
 
     ;; flush fake modules
     (doseq [{:keys [default js-name name prepend append sources web-worker] :as mod} build-modules]
