@@ -635,7 +635,8 @@ normalize-resource-name
                                   (throw
                                     (ex-info
                                       (format "ns \"%s\" not available, required by %s" require-sym name)
-                                      {:ns require-sym
+                                      {:tag ::missing-ns
+                                       :ns require-sym
                                        :src name})))
                                 src-name
                                 )))
@@ -675,7 +676,7 @@ normalize-resource-name
                       (filter #(contains? (:requires %) ns-sym))
                       (map :name)
                       (into #{}))]
-        (throw (ex-info (format "ns \"%s\" not available, required by %s" ns-sym reqs) {:ns ns-sym :required-by reqs}))))
+        (throw (ex-info (format "ns \"%s\" not available, required by %s" ns-sym reqs) {:tag ::missing-ns :ns ns-sym :required-by reqs}))))
 
     (get-deps-for-src state name)
     ))
@@ -2285,7 +2286,8 @@ normalize-resource-name
             (spit target source-map-json)))))
 
     ;; with-logged-time expects that we return the compiler-state
-    state))
+    state
+    ))
 
 (defn load-externs [{:keys [externs build-modules] :as state}]
   (let [externs
@@ -2326,7 +2328,6 @@ normalize-resource-name
          (into []))
     ))
 
-
 ;; added by default in init-state
 (defn closure-add-replace-constants-pass [cc ^CompilerOptions co state]
   (.addCustomPass co CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
@@ -2341,15 +2342,16 @@ normalize-resource-name
           nil)))))
 
 (defn write-variable-map [{:keys [cache-dir] :as state} name map]
-  (let [map-file
-        (doto (io/file cache-dir name)
-          (io/make-parents))
+  (when map
+    (let [map-file
+          (doto (io/file cache-dir name)
+            (io/make-parents))
 
-        bytes
-        (ByteArrayInputStream. (.toBytes map))]
+          bytes
+          (ByteArrayInputStream. (.toBytes map))]
 
-    (with-open [out (FileOutputStream. map-file)]
-      (io/copy bytes out))))
+      (with-open [out (FileOutputStream. map-file)]
+        (io/copy bytes out)))))
 
 (defn closure-add-variable-maps [cc co {:keys [cache-dir] :as state}]
   (when-some [data (read-variable-map state "closure.property.map")]
@@ -2659,7 +2661,6 @@ normalize-resource-name
           out)]
 
     (spit target out)))
-
 
 (defn flush-unoptimized!
   [{:keys [build-modules public-dir] :as state}]
