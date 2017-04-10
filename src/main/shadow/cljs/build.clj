@@ -4,6 +4,7 @@
             [clojure.set :as set]
             [clojure.string :as str]
             [clojure.edn :as edn]
+            [clojure.java.classpath :as cp]
             [cljs.analyzer :as ana]
             [cljs.closure :as closure]
             [cljs.compiler :as comp]
@@ -131,14 +132,6 @@
        (log (if (compiler-state? result#) result# ~state) evt#)
        result#)
      ))
-
-(defn classpath-entries
-  "finds all js files on the classpath matching the path provided"
-  []
-  (let [sysp (System/getProperty "java.class.path")]
-    (if (.contains sysp ";")
-      (str/split sysp #";")
-      (str/split sysp #":"))))
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
   (or (seq provides) ;; provides something is useful
@@ -1288,8 +1281,9 @@ normalize-resource-name
     (find-jar-resources state path)
     (find-fs-resources state path)))
 
-(defn should-exclude-classpath [exclude path]
-  (boolean (some #(re-find % path) exclude)))
+(defn should-exclude-classpath [exclude ^File file]
+  (let [abs-path (.getAbsolutePath file)]
+    (boolean (some #(re-find % abs-path) exclude))))
 
 (defn merge-resources-in-path
   ([state path]
@@ -1337,7 +1331,7 @@ normalize-resource-name
    (with-logged-time
      [state {:type :find-resources-classpath}]
      (let [paths
-           (->> (classpath-entries)
+           (->> (cp/classpath)
                 (remove #(should-exclude-classpath exclude %)))]
        (reduce merge-resources-in-path state paths)
        ))))
