@@ -16,8 +16,8 @@
             [cognitect.transit :as transit]
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
-    ;; [clojure.pprint :refer (pprint)]
-            )
+            [shadow.cljs.cljs-specs :as cljs-specs]
+            [clojure.spec :as s])
   (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader ByteArrayInputStream]
            [java.net URL]
            [com.google.javascript.jscomp JSModule SourceFile JSModuleGraph CustomPassExecutionTime]
@@ -354,24 +354,6 @@ normalize-resource-name
     (fn [^String name]
       (str/replace name File/separatorChar \/))))
 
-(defn extract-foreign-libs
-  [{:keys [foreign-libs externs] :as deps} source-path]
-  (let [foreign-libs (cond
-                       (nil? foreign-libs)
-                       []
-                       (vector? foreign-libs)
-                       foreign-libs
-                       (map? foreign-libs)
-                       [foreign-libs]
-                       (list? foreign-libs)
-                       (into [] foreign-libs)
-                       :else
-                       (throw (ex-info (format "invalid :foreign-libs in deps.cljs of %s" source-path) {:deps deps})))]
-    (if (seq externs)
-      ;; FIXME: :externs at top level
-      (update-in foreign-libs [0 :externs] #(into (or % []) externs))
-      foreign-libs)))
-
 (defn should-ignore-resource?
   [{:keys [ignore-patterns] :as state} name]
   (loop [patterns ignore-patterns]
@@ -433,70 +415,117 @@ normalize-resource-name
       entries)))
 
 (defn process-deps-cljs
+  "manifest is a {source-name source-info} map, transform that into
+   {:resources [source-info] :externs [orphan-externs]} using deps.cljs if present"
   [{:keys [use-file-min] :as state} manifest source-path]
   {:pre [(compiler-state? state)
          (map? manifest)]}
-  (let [deps (get manifest "deps.cljs")]
+  (let [{:keys [url] :as deps}
+        (get manifest "deps.cljs")]
     (if (nil? deps)
-      manifest
-      (let [foreign-libs
-            (-> @(:input deps)
-                (edn/read-string)
-                (extract-foreign-libs source-path))]
+      {:resources (vals manifest)}
+      (let [{:keys [externs foreign-libs] :as deps-cljs}
+            (-> @(:input deps) (edn/read-string))
 
-        (reduce
-          (fn [result {:keys [externs provides requires] :as foreign-lib}]
-            (if-not (or (contains? foreign-lib :file)
-                        (contains? foreign-lib :file-min))
-              (do (when (seq externs)
-                    (prn [:FIXME :ignoring-externs foreign-lib]))
-                  result)
-              (let [[lib-key lib-other]
-                    (cond
-                      (and use-file-min (contains? foreign-lib :file-min))
-                      [:file-min :file]
-                      (:file foreign-lib)
-                      [:file :file-min])
+            _ (when-not (s/valid? ::cljs-specs/deps-cljs deps-cljs)
+                (throw (ex-info "invalid deps.cljs"
+                         (assoc (s/explain-data ::cljs-specs/deps-cljs deps-cljs)
+                                :tag ::deps-cljs
+                                :url url))))
+            manifest
+            (dissoc manifest "deps.cljs")
 
-                    lib-name
-                    (get foreign-lib lib-key)
+            get-externs-source
+            (fn [manifest ext-name]
+              (or (get manifest ext-name)
+                  (throw (ex-info "deps.cljs error, :externs file not in sources"
+                           {:tag ::deps-cljs :url url :ext-name ext-name}))))
 
-                    rc
-                    (get result lib-name)]
-                (when (nil? rc)
-                  (throw (ex-info "deps.cljs refers to file not in jar" {:foreign-lib foreign-lib})))
+            ;; a foreign lib groups several files into one actual resource
+            #_{:externs ["foo.ext.js" "bar.ext.js"]
+               :file-min "foo.min.js"
+               :file "foo.js"
+               :provides ["foo" "bar"]
+               :requires ["baz"]}
 
-                (let [dissoc-all
-                      (fn [m list]
-                        (apply dissoc m list))
+            ;; this is extracted to actual shadow-build resources
+            ;; the foreign-lib "include" files "foo.ext.js" "bar.ext.js" ...
+            ;; are removed as they are now included in this rc
+            #_{:type :foreign
+               :name "foo.js" ;; or foo.min.js
+               :externs [...]
+               :externs-source "concatenated externs source so these are not loaded from cp"
+               :provides #{as-symbols}
+               :requires #{as-symbols}}
 
-                      require-order
-                      (into [] (map symbol) requires)
+            manifest
+            (reduce
+              (fn [manifest {:keys [externs provides requires] :as foreign-lib}]
+                (when-not (seq provides)
+                  (throw (ex-info "deps.cljs foreign-lib without provides"
+                           {:tag ::deps-cljs :url url :foreign-lib foreign-lib})))
 
-                      externs-source
-                      (->> externs
-                           (map #(get result %))
-                           (map :input)
-                           (map deref)
-                           (str/join "\n"))
+                (let [[lib-key lib-other]
+                      (cond
+                        (and use-file-min (contains? foreign-lib :file-min))
+                        [:file-min :file]
+                        (:file foreign-lib)
+                        [:file :file-min])
 
-                      ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
+                      lib-name
+                      (get foreign-lib lib-key)
+
                       rc
-                      (assoc rc
-                             :type :foreign
-                             :requires (set require-order)
-                             :require-order require-order
-                             :provides (set (map symbol provides))
-                             :externs externs
-                             :externs-source externs-source)]
+                      (get manifest lib-name)]
 
-                  (-> result
-                      (dissoc-all externs)
-                      ;; remove :file or :file-min
-                      (dissoc (get foreign-lib lib-other))
-                      (assoc lib-name rc))))))
-          (dissoc manifest "deps.cljs")
-          foreign-libs)))))
+                  (when (nil? rc)
+                    (throw (ex-info "deps.cljs refers to file not in jar"
+                             {:tag ::deps-cljs :url url :foreign-lib foreign-lib})))
+
+                  (let [dissoc-all
+                        (fn [m list]
+                          (apply dissoc m list))
+
+                        require-order
+                        (into [] (map symbol) requires)
+
+                        externs-source
+                        (->> externs
+                             (map #(get-externs-source manifest %))
+                             (map :input)
+                             (map deref)
+                             (str/join "\n"))
+
+                        ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
+                        rc
+                        (assoc rc
+                               :type :foreign
+                               :requires (set require-order)
+                               :require-order require-order
+                               :provides (set (map symbol provides))
+                               :externs externs
+                               :externs-source externs-source)]
+
+                    (-> manifest
+                        (dissoc-all externs)
+                        ;; remove :file or :file-min
+                        (dissoc (get foreign-lib lib-other))
+                        (assoc lib-name rc)))))
+              manifest
+              foreign-libs)
+
+            ;; this is to ensure that all "orphan" externs are actually in the jar
+            ;; will be looked up using io/resource later
+            _ (doseq [ext-name externs]
+                (get-externs-source manifest ext-name))
+
+            ;; remove them from resource listing
+            manifest
+            (apply dissoc manifest externs)]
+
+        {:resources (vals manifest)
+         :externs externs}
+        ))))
 
 (defonce JAR-LOCK (Object.))
 
@@ -537,8 +566,8 @@ normalize-resource-name
                 (io/make-parents mfile)
                 (write-jar-manifest mfile manifest)
                 manifest))]
-      (-> (process-deps-cljs state manifest path)
-          (vals)))))
+
+      (process-deps-cljs state manifest path))))
 
 (defn make-fs-resource [state source-path rc-name ^File rc-file]
   (inspect-resource
@@ -572,8 +601,7 @@ normalize-resource-name
              (map (juxt :name identity))
              (into {}))]
 
-    (-> (process-deps-cljs state manifest root-path)
-        (vals))))
+    (process-deps-cljs state manifest root-path)))
 
 (defn get-resource-for-provide [state ns-sym]
   {:pre [(compiler-state? state)
@@ -1294,14 +1322,18 @@ normalize-resource-name
      ;; checkout deps with a lot of symlinks can cause duplicates on classpath
      (if (contains? (:source-paths state) abs-path)
        state
-       (let [resources (do-find-resources-in-path state abs-path)
+       (let [{:keys [resources externs] :as dir-contents}
+             (do-find-resources-in-path state abs-path)
+
              state
              (if (.isDirectory file)
-               (assoc-in state [:source-paths abs-path] (assoc path-opts
-                                                               :file file
-                                                               :path abs-path))
+               (assoc-in state [:source-paths abs-path]
+                 (assoc path-opts :file file :path abs-path))
                state)]
-         (merge-resources state resources))))))
+
+         (-> state
+             (update :deps-externs assoc abs-path externs)
+             (merge-resources resources)))))))
 
 (defn find-resources
   "finds cljs resources in the given path"
@@ -2283,7 +2315,7 @@ normalize-resource-name
     state
     ))
 
-(defn load-externs [{:keys [externs build-modules] :as state}]
+(defn load-externs [{:keys [externs deps-externs build-modules] :as state}]
   (let [externs
         (distinct
           (concat
@@ -2307,6 +2339,13 @@ normalize-resource-name
                ;; just to force the logging
                (into [])))
 
+        deps-externs
+        (->> deps-externs
+             (vals)
+             (mapcat identity)
+             (map #(SourceFile/fromCode (str %) (slurp (io/resource %))))
+             (into []))
+
         foreign-externs
         (->> build-modules
              (mapcat :sources)
@@ -2318,7 +2357,7 @@ normalize-resource-name
              ;; just to force the logging
              (into []))]
 
-    (->> (concat default-externs foreign-externs manual-externs)
+    (->> (concat default-externs deps-externs foreign-externs manual-externs)
          (into []))
     ))
 
@@ -3067,6 +3106,11 @@ enable-emit-constants [state]
         #"java(/?)$"]
 
        ::cc (make-closure-compiler)
+
+       ;; map of {source-path [global-extern-names ...]}
+       ;; provided by the deps.cljs of all source-paths
+       :deps-externs
+       {}
 
        :analyzer-passes
        [ana/infer-type]

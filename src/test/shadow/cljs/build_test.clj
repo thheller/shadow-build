@@ -1030,3 +1030,14 @@
     ))
 
 
+(deftest test-random-jar
+  (let [{:keys [resources externs] :as x}
+        (-> (cljs/init-state)
+            (cljs/do-find-resources-in-path
+              "/Users/zilence/.m2/repository/cljsjs/google-maps/3.18-1/google-maps-3.18-1.jar"
+              #_ "/Users/zilence/.m2/repository/datascript/datascript/0.15.4/datascript-0.15.4.jar"))]
+    (doseq [x resources]
+      (pprint (dissoc x :input :output :externs-source)))
+
+    (pprint externs)
+    ))
