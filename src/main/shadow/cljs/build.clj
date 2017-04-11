@@ -3155,9 +3155,7 @@ enable-emit-constants [state]
         :elide-asserts false
 
         :closure-warnings
-        {:check-types :off
-         ;; https://groups.google.com/forum/?fromgroups=#!topic/closure-compiler-discuss/Alir64i9z34
-         :check-variables :warning}}
+        {:check-types :off}}
 
        :closure-defines
        {"goog.DEBUG" false
