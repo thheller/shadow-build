@@ -197,6 +197,11 @@
     (conj x y)
     #{y}))
 
+(defn vec-conj [x y]
+  (if x
+    (conj x y)
+    [y]))
+
 (defn munge-goog-ns [s]
   (-> s
       (str/replace #"_" "-")
@@ -437,7 +442,8 @@ normalize-resource-name
 
             get-externs-source
             (fn [manifest ext-name]
-              (or (get manifest ext-name)
+              (or (when-some [input (get-in manifest [ext-name :input])]
+                    @input)
                   (throw (ex-info "deps.cljs error, :externs file not in sources"
                            {:tag ::deps-cljs :url url :ext-name ext-name}))))
 
@@ -492,8 +498,6 @@ normalize-resource-name
                         externs-source
                         (->> externs
                              (map #(get-externs-source manifest %))
-                             (map :input)
-                             (map deref)
                              (str/join "\n"))
 
                         ;; mark rc as foreign and merge with externs instead of leaving externs as seperate rc
@@ -514,10 +518,15 @@ normalize-resource-name
               manifest
               foreign-libs)
 
-            ;; this is to ensure that all "orphan" externs are actually in the jar
-            ;; will be looked up using io/resource later
-            _ (doseq [ext-name externs]
-                (get-externs-source manifest ext-name))
+            ;; grab externs source from manifest and export
+            ;; this is so we don't use io/resource to load the externs later
+            ;; some CLJS libs with externs.js at the root will otherwise overwrite each other
+            externs
+            (->> externs
+                 (map (fn [ext-name]
+                        {:name ext-name
+                         :source (get-externs-source manifest ext-name)}))
+                 (into []))
 
             ;; remove them from resource listing
             manifest
@@ -1608,9 +1617,6 @@ normalize-resource-name
     order
     ))
 
-;; FIXME: I should really write this code properly
-;; using the mutable closure JSModule stuff just for .coalesceDuplicateFiles
-;; feels so lazy and dirty, this is not a hard problem
 (defn sort-and-compact-modules
   "sorts modules in dependency order and remove sources provided by parent deps"
   [{:keys [modules] :as state}]
@@ -1624,42 +1630,68 @@ normalize-resource-name
     (let [module-order
           (topo-sort-modules modules)
 
-          js-mods
+          src-refs
+          (->> (for [mod-id module-order
+                     :let [{:keys [sources depends-on] :as mod} (get modules mod-id)]
+                     src sources]
+                 [src mod-id])
+               (reduce
+                 (fn [src-refs [src dep]]
+                   (update src-refs src set-conj dep))
+                 {}))
+
+          ;; could be optimized
+          find-mod-deps
+          (fn find-mod-deps [mod-id]
+            (let [{:keys [name depends-on] :as mod}
+                  (get modules mod-id)]
+              (reduce set/union (into #{name} depends-on) (map find-mod-deps depends-on))))
+
+          find-closest-common-dependency
+          (fn [src deps]
+            (let [all
+                  (map #(find-mod-deps %) deps)
+
+                  common
+                  (apply set/intersection all)]
+              (condp = (count common)
+                0
+                (throw (ex-info "no common dependency found for src" {:src src :deps deps}))
+
+                1
+                (first common)
+
+                (->> module-order
+                     (reverse)
+                     (drop-while #(not (contains? common %)))
+                     (first)))))
+
+          all-sources
+          (->> module-order
+               (mapcat #(get-in modules [% :sources]))
+               (distinct)
+               (into []))
+
+          final-sources
           (reduce
-            (fn [js-mods module-key]
-              (let [{:keys [js-name name depends-on sources]} (get modules module-key)
-                    js-mod (JSModule. js-name)]
+            (fn [final src]
+              (let [deps
+                    (get src-refs src)
 
-                (doseq [name sources]
-                  ;; we don't actually need code yet
-                  (.add js-mod (SourceFile. name)))
+                    target-mod
+                    (if (= 1 (count deps))
+                      (first deps)
+                      (find-closest-common-dependency src deps))]
 
-                (doseq [other-mod-name depends-on
-                        :let [other-mod (get js-mods other-mod-name)]]
-                  (when-not other-mod
-                    (throw (ex-info "module depends on undefined module" {:mod name :other other-mod-name})))
-                  (.addDependency js-mod other-mod))
-
-                (assoc js-mods module-key js-mod)))
+                (update final target-mod vec-conj src)))
             {}
-            module-order)]
-
-      ;; eek mutable code
-      ;; this will move duplicate files from each module to the closest common ancestor
-      (doto (JSModuleGraph. (into-array (for [module-key module-order]
-                                          (get js-mods module-key))))
-        (.coalesceDuplicateFiles))
+            all-sources)]
 
       (->> module-order
-           (map (fn [module-key]
-                  (let [module (get modules module-key)
-                        ;; enough with the mutable stuff
-                        sources (->> (get js-mods module-key)
-                                     (.getInputs)
-                                     (map #(.getName %))
-                                     (into []))]
-                    (assoc module :sources sources))))
-           (vec)))))
+           (map (fn [mod-id]
+                  (-> (get modules mod-id)
+                      (assoc :sources (get final-sources mod-id)))))
+           (into [])))))
 
 (defn extract-warnings
   "collect warnings for listed sources only"
@@ -1887,7 +1919,8 @@ normalize-resource-name
     (locking REDEF-LOCK
       (with-redefs [ana/parse shadow-parse
                     ana/load-core load-core-noop
-                    ana/analyze-form shadow-analyze-form]
+                    ana/analyze-form shadow-analyze-form
+                    comp/checking-types? (constantly true)]
 
         (reduce
           (fn [state source-name]
@@ -1956,7 +1989,8 @@ normalize-resource-name
     (locking REDEF-LOCK
       (with-redefs [ana/parse shadow-parse
                     ana/load-core load-core-noop
-                    ana/analyze-form shadow-analyze-form]
+                    ana/analyze-form shadow-analyze-form
+                    comp/checking-types? (constantly true)]
 
         (let [;; namespaces that are ready to be used
               ready
@@ -2331,7 +2365,7 @@ normalize-resource-name
                                    (let [file (io/file ext)]
                                      (when (.exists file)
                                        file)))]
-                     (SourceFile/fromCode (str "EXTERNS/" ext) (slurp rc))
+                     (SourceFile/fromCode (str "EXTERNS:" ext) (slurp rc))
                      (do (log state {:type :missing-externs
                                      :extern ext})
                          nil))))
@@ -2340,10 +2374,10 @@ normalize-resource-name
                (into [])))
 
         deps-externs
-        (->> deps-externs
-             (vals)
-             (mapcat identity)
-             (map #(SourceFile/fromCode (str %) (slurp (io/resource %))))
+        (->> (for [[deps-path externs] deps-externs
+                   {:keys [name source] :as ext} externs]
+               ;; FIXME: use url? deps-path is accurate enough for now
+               (SourceFile/fromCode (str "EXTERNS:" deps-path "!/" name) source))
              (into []))
 
         foreign-externs
@@ -2352,8 +2386,8 @@ normalize-resource-name
              (map #(get-in state [:sources %]))
              (filter foreign?)
              (filter :externs-source)
-             (map (fn [{:keys [js-name externs externs-source] :as foreign-src}]
-                    (SourceFile/fromCode (str "EXTERNS/" js-name) externs-source)))
+             (map (fn [{:keys [source-path js-name externs externs-source] :as foreign-src}]
+                    (SourceFile/fromCode (str "EXTERNS:" source-path "!/" js-name) externs-source)))
              ;; just to force the logging
              (into []))]
 
@@ -3121,11 +3155,14 @@ enable-emit-constants [state]
         :elide-asserts false
 
         :closure-warnings
-        {:check-types :off}}
+        {:check-types :off
+         ;; https://groups.google.com/forum/?fromgroups=#!topic/closure-compiler-discuss/Alir64i9z34
+         :check-variables :warning}}
 
        :closure-defines
        {"goog.DEBUG" false
-        "goog.LOCALE" "en"}
+        "goog.LOCALE" "en"
+        "goog.TRANSPILE" "never"}
 
        :runtime
        {:print-fn :none}
