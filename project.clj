@@ -7,7 +7,7 @@
 
   :dependencies
   [[org.clojure/clojure "1.9.0-alpha15"]
-   [org.clojure/clojurescript "1.9.473"]
+   [org.clojure/clojurescript "1.9.518"]
    [com.cognitect/transit-clj "0.8.300"
     :exclusions
     [org.msgpack/msgpack]]
@@ -27,15 +27,12 @@
    {:source-paths
     ["src/dev"]
     :dependencies
-    [
-     [org.clojure/tools.namespace "0.2.11"]
-     [junit/junit "4.12"]
-     ]}}
+    []}}
 
-  :plugins
-  [[codox "0.8.13"]]
+  #_[:plugins
+     [[codox "0.8.13"]]
 
-  :codox
-  {:sources ["src/main"]
-   :exclude [shadow.cljs.util]
-   :output-dir "doc/codox"})
+     :codox
+     {:sources ["src/main"]
+      :exclude [shadow.cljs.util]
+      :output-dir "doc/codox"}])
