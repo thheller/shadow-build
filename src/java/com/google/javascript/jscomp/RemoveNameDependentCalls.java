@@ -30,6 +30,7 @@ public class RemoveNameDependentCalls implements CompilerPass, NodeTraversal.Cal
     @Override
     public boolean shouldTraverse(NodeTraversal nodeTraversal, Node n, Node parent) {
         switch (n.getToken()) {
+            case ROOT:
             case BLOCK:
             case SCRIPT:
             case EXPR_RESULT:
