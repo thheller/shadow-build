@@ -23,13 +23,14 @@
            [com.google.javascript.jscomp JSModule SourceFile JSModuleGraph CustomPassExecutionTime]
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
-           [java.util.concurrent Executors Future]
+           [java.util.concurrent Executors Future ExecutorService]
            (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping VariableMap)
            (java.security MessageDigest)
            (javax.xml.bind DatatypeConverter)
            (cljs.tagged_literals JSValue)))
 
 ;; (set! *warn-on-reflection* true)
+(defonce stdout-lock (Object.))
 
 (def SHADOW-TIMESTAMP
   (-> (io/resource "shadow/cljs/build.clj")
@@ -746,47 +747,56 @@ normalize-resource-name
       (rewrite-ns-aliases compiler-state)
       (assoc :env env :form form :op :ns)))
 
-(def default-parse ana/parse)
+;; FIXME: this hijacks unconditionally which may break other CLJS tools
+;; with-redefs is probably safer
+(defmethod ana/parse 'ns
+  [op env form name opts]
+  (hijacked-parse-ns env form name opts))
 
-(defn shadow-parse [op env form name opts]
-  (condp = op
-    ;; the default ana/parse 'ns has way too many side effects we don't need or want
-    ;; don't want analyze-deps -> never needed
-    ;; don't want require or macro ns -> post-analyze
-    ;; don't want check-uses -> doesn't recognize macros
-    ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
-    ;; don't want swap into compiler env -> post-analyze
-    'ns (hijacked-parse-ns env form name opts)
-    (default-parse op env form name opts)))
+(comment
+  ;; FIXME: these rely on with-redefs which isn't threadsafe
 
-(def default-analyze-form ana/analyze-form)
+  (def default-parse ana/parse)
 
-;; FIXME: doing this so I can access the form that caused a warning
-;; some warnings do not include it, should really provide patches to add them
-;; but this is simpler and an experiment anyways
-(defn shadow-analyze-form
-  [env form name opts]
-  (let [warnings-before
-        @*cljs-warnings-ref*
+  (defn shadow-parse [op env form name opts]
+    (condp = op
+      ;; the default ana/parse 'ns has way too many side effects we don't need or want
+      ;; don't want analyze-deps -> never needed
+      ;; don't want require or macro ns -> post-analyze
+      ;; don't want check-uses -> doesn't recognize macros
+      ;; don't want check-use-macros -> doesnt handle (:require [some-ns :refer (a-macro)])
+      ;; don't want swap into compiler env -> post-analyze
+      'ns (hijacked-parse-ns env form name opts)
+      (default-parse op env form name opts)))
 
-        result
-        (default-analyze-form env form name opts)
+  (def default-analyze-form ana/analyze-form)
 
-        warnings-after
-        @*cljs-warnings-ref*]
+  ;; FIXME: doing this so I can access the form that caused a warning
+  ;; some warnings do not include it, should really provide patches to add them
+  ;; but this is simpler and an experiment anyways
+  (defn shadow-analyze-form
+    [env form name opts]
+    (let [warnings-before
+          @*cljs-warnings-ref*
 
-    (when-not (identical? warnings-before warnings-after)
-      (swap! *cljs-warnings-ref*
-        (fn [warnings]
-          (->> warnings
-               (map (fn [x]
-                      (if (contains? x :form)
-                        x
-                        (assoc x :form form))))
-               (into [])
-               ))))
-    result
-    ))
+          result
+          (default-analyze-form env form name opts)
+
+          warnings-after
+          @*cljs-warnings-ref*]
+
+      (when-not (identical? warnings-before warnings-after)
+        (swap! *cljs-warnings-ref*
+          (fn [warnings]
+            (->> warnings
+                 (map (fn [x]
+                        (if (contains? x :form)
+                          x
+                          (assoc x :form form))))
+                 (into [])
+                 ))))
+      result
+      )))
 
 (defn analyze
   ([state compile-state form]
@@ -1888,7 +1898,8 @@ normalize-resource-name
   (assoc src :output @input))
 
 (defn generate-output-for-source [state {:keys [name type output warnings] :as src}]
-  {:pre [(valid-resource? src)]}
+  {:pre [(valid-resource? src)]
+   :post [(string? (:output %))]}
   (when (= name "goog/base.js")
     (throw (ex-info "trying to compile goog/base.js" {})))
 
@@ -1912,11 +1923,15 @@ normalize-resource-name
 (defn load-core-noop [])
 
 (defmacro shadow-redefs [& body]
-  `(locking REDEF-LOCK
-     (with-redefs [ana/parse shadow-parse
-                   ana/load-core load-core-noop
-                   ana/analyze-form shadow-analyze-form]
-       ~@body)))
+  ;; FIXME: can't redef without the lock
+  ;; but the lock prevents multiple builds from running in parallel
+  #_(locking REDEF-LOCK
+      (with-redefs [ana/parse shadow-parse
+                    ana/load-core load-core-noop
+                    ana/analyze-form shadow-analyze-form]
+        ~@body))
+
+  `(do ~@body))
 
 (defn do-compile-sources
   "compiles with just the main thread, can do partial compiles assuming deps are compiled"
@@ -1985,7 +2000,7 @@ normalize-resource-name
 (defn par-compile-sources
   "compile files in parallel, files MUST be in dependency order and ALL dependencies must be present
    this cannot do a partial incremental compile"
-  [{:keys [n-compile-threads] :as state} source-names]
+  [state source-names]
   (with-compiler-env state
     (ana/load-core)
     (shadow-redefs
@@ -1998,18 +2013,22 @@ normalize-resource-name
             (atom {})
 
             exec
-            (Executors/newFixedThreadPool n-compile-threads)
+            (or (:executor state)
+                (Executors/newFixedThreadPool (:n-compile-threads state)))
 
             tasks
             (->> (for [source-name source-names]
                    ;; bound-fn for with-compiler-state
                    (let [task-fn (bound-fn [] (par-compile-one state ready errors source-name))]
-                     (.submit exec ^Callable task-fn)))
+                     ;; things go WTF without the type tags, tasks will return nil
+                     (.submit ^ExecutorService exec ^Callable task-fn)))
                  (doall) ;; force submit all, then deref
                  (into [] (map deref)))]
 
-        ;; FIXME: might deadlock here if any of the derefs fail
-        (.shutdown exec)
+        ;; only shutdown executor if we werent given one
+        (when-not (contains? state :executor)
+          ;; FIXME: might deadlock here if any of the derefs fail
+          (.shutdown exec))
 
         ;; unlikely to encounter 2 concurrent errors
         ;; so unpack for a single error for better stacktrace
@@ -2024,6 +2043,8 @@ normalize-resource-name
             (update :sources (fn [sources]
                                (reduce
                                  (fn [sources {:keys [name] :as src}]
+                                   (when (nil? src)
+                                     (throw (ex-info "a compile task returned nil?" {})))
                                    (assoc sources name src))
                                  sources
                                  tasks)))
@@ -3111,8 +3132,6 @@ enable-emit-constants [state]
 
 (defn get-closure-compiler [state]
   (::cc state))
-
-(defonce stdout-lock (Object.))
 
 (def stdout-log
   (reify log/BuildLog
