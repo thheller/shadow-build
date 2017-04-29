@@ -281,6 +281,18 @@
               )]
     (println (get-in s [:sources "with_use.cljs" :output]))))
 
+(deftest test-ns-with-require-macros-refer
+  (let [s (-> (cljs/init-state)
+              (assoc :cache-level :off)
+              (cljs/find-resources-in-classpath)
+              (cljs/configure-module :test ['shadow.macro-require-test] #{})
+              (cljs/compile-modules)
+              ;; (cljs/closure-optimize)
+              ;; (cljs/flush-modules-to-disk)
+              ;;(cljs/flush-unoptimized)
+              )]
+    ))
+
 (deftest test-ns-with-rename
   (let [s (-> (cljs/init-state)
               (assoc :optimizations :advanced
@@ -533,7 +545,9 @@
         (pprint))
 
     (is (= (:name a) (:name b)))
-    (is (= (:requires a) (:requires b)))
+    ;; cljs doesn't add cljs.core here but some time later
+    (is (= (dissoc (:requires a) 'shadow.runtime-setup 'cljs.core)
+           (:requires b)))
     (is (= (:require-macros a) (:require-macros b)))
     (is (= (:uses a) (or (:uses b) {}))) ;; CLJS has a bug that leaves :uses as nil if the only refered var was renamed
     (is (= (:use-macros a) (:use-macros b)))

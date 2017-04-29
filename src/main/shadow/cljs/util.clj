@@ -400,8 +400,8 @@
                    macro-info
                    (let [ns (.getName ^Namespace (:ns macro-meta))]
                      (assoc macro-meta
-                       :ns ns
-                       :name (symbol (str ns) (str var-name))))]
+                            :ns ns
+                            :name (symbol (str ns) (str var-name))))]
                (assoc m var-name macro-info))
              m))
          {})))
@@ -490,13 +490,25 @@
     ns-info
     renames))
 
-(defn check-uses! [{:keys [env uses] :as ns-info}]
+(defn error [env error-type error-data]
+  (let [msg (ana/error-message error-type error-data)]
+    (throw
+      (ex-info msg
+        (-> (ana/source-info env)
+            (assoc :tag :cljs/analysis-error
+                   :error-type error-type
+                   :msg msg
+                   :extra error-data))))))
+
+(defn check-uses! [{:keys [env uses use-macros] :as ns-info}]
+  (doseq [[sym lib] use-macros]
+    (when (ana/missing-use-macro? lib sym)
+      (error env :undeclared-ns-form {:type "macro" :lib lib :sym sym})))
+
   (doseq [[sym lib] uses]
     (when (and (not (ana-is-cljs-def? lib sym))
                (not (contains? (get-in @env/*compiler* [::ana/namespaces lib :macros]) sym)))
-      (throw
-        (ana/error env
-          (ana/error-message :undeclared-ns-form {:type "var" :lib lib :sym sym})))))) ;; I hope no one ever sees this ...
+      (error env :undeclared-ns-form {:type "var" :lib lib :sym sym}))))
 
 (defn check-renames! [{:keys [renames rename-macros] :as ns-info}]
   (doseq [[rename-to rename-from] renames

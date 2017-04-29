@@ -747,11 +747,19 @@ normalize-resource-name
       (rewrite-ns-aliases compiler-state)
       (assoc :env env :form form :op :ns)))
 
-;; FIXME: this hijacks unconditionally which may break other CLJS tools
-;; with-redefs is probably safer
+
+;; I don't want to use with-redefs but I also don't want to replace the default
+;; keep a reference to the default impl and dispatch based on binding
+;; this ensures that out path is only taken when wanted
+(defonce default-parse-ns (get-method ana/parse 'ns))
+
+(def ^:dynamic *compiling* false)
+
 (defmethod ana/parse 'ns
   [op env form name opts]
-  (hijacked-parse-ns env form name opts))
+  (if *compiling*
+    (hijacked-parse-ns env form name opts)
+    (default-parse-ns op env form name opts)))
 
 (comment
   ;; FIXME: these rely on with-redefs which isn't threadsafe
@@ -1931,7 +1939,8 @@ normalize-resource-name
                     ana/analyze-form shadow-analyze-form]
         ~@body))
 
-  `(do ~@body))
+  `(binding [*compiling* true]
+     ~@body))
 
 (defn do-compile-sources
   "compiles with just the main thread, can do partial compiles assuming deps are compiled"
