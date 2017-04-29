@@ -2,6 +2,14 @@ var SHADOW_ROOTS = ["goog"];
 
 var goog = SHADOW_ENV.goog = {};
 
+// SHADOW_ENV becomes goog.global which may access some of these
+SHADOW_ENV.setTimeout = global.setTimeout;
+SHADOW_ENV.clearTimeout = global.clearTimeout;
+SHADOW_ENV.setInterval = global.setInterval;
+SHADOW_ENV.clearInterval = global.clearInterval;
+SHADOW_ENV.setImmediate = global.setImmediate;
+SHADOW_ENV.clearImmediate = global.clearImmediate;
+
 SHADOW_ENV.SHADOW_IMPORTED = {};
 
 var PATH = require("path");
