@@ -24,7 +24,7 @@
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            [java.util.concurrent Executors Future ExecutorService]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping VariableMap)
+           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping VariableMap DiagnosticGroups)
            (java.security MessageDigest)
            (javax.xml.bind DatatypeConverter)
            (cljs.tagged_literals JSValue)))
@@ -2469,17 +2469,68 @@ normalize-resource-name
   [state callback]
   (update state :closure-configurators conj callback))
 
-(defn js-error-xf [^com.google.javascript.jscomp.Compiler cc]
-  (let [msg-format (LightweightMessageFormatter. cc)]
-    (doto msg-format
-      (.setColorize false)
-      ;; FIXME: not yet available
-      #_(.setIncludeLevel false))
-    (map (fn [^JSError err]
-           {:source-name (.-sourceName err)
-            :line (.getLineNumber err)
-            :column (.getCharno err)
-            :msg (.format err CheckLevel/WARNING msg-format)}))))
+(defn js-error-xf [state ^com.google.javascript.jscomp.Compiler cc]
+  (comp
+    ;; remove some annoying UNDECLARED_VARIABLES in cljs/core.cljs
+    ;; these are only used in self-hosted but I don't want to provide externs for them in browser builds
+    #_(remove
+        (fn [^JSError err]
+          (and (= "cljs/core.js" (.-sourceName err))
+               (let [text (.-description err)]
+                 (or (= "variable process is undeclared" text)
+                     (= "variable global is undeclared" text))))))
+    (map
+      (fn [^JSError err]
+        (let [sb
+              (StringBuilder.)
+
+              source-name
+              (.-sourceName err)
+
+              line
+              (.getLineNumber err)
+
+              column
+              (.getCharno err)
+
+              mapping
+              (.getSourceMapping cc source-name line column)]
+
+          (when mapping
+            (doto sb
+              (.append (.getOriginalFile mapping))
+              (.append "[")
+              (.append (.getLineNumber mapping))
+              (.append ":")
+              (.append (.getColumnPosition mapping))
+              (.append "]")
+              (.append " (compiled to ")))
+
+          (doto sb
+            (.append source-name)
+            (.append "[")
+            (.append line)
+            (.append ":")
+            (.append column)
+            (.append "]"))
+
+          (when mapping
+            (.append sb ")"))
+
+          (doto sb
+            (.append "\n\t")
+            (.append (.-description err))
+            (.append "\n"))
+
+          (-> {:line line
+               :column column
+               :source-name source-name
+               :msg (.toString sb)}
+              (cond->
+                mapping
+                (assoc :original-line (.getLineNumber mapping)
+                       :original-column (.getColumnPosition mapping)
+                       :original-name (.getOriginalFile mapping)))))))))
 
 ;; FIXME: this only works if flush-sources-by-name was called before optimize
 ;; as it works off the source map file that was generated
@@ -2536,7 +2587,20 @@ normalize-resource-name
              (make-closure-compiler (noop-error-manager))
 
              co
-             (closure/make-options (:compiler-options state))
+             (doto (closure/make-options (:compiler-options state))
+               (.resetWarningsGuard)
+               (.setWarningLevel DiagnosticGroups/CHECK_TYPES CheckLevel/OFF)
+               ;; really only want the undefined variables warnings
+               ;; must turn off CHECK_VARIABLES first or it will complain too much (REDECLARED_VARIABLES)
+               (.setWarningLevel DiagnosticGroups/CHECK_VARIABLES CheckLevel/OFF)
+               ;; this one is very helpful to spot missing externs
+               ;; (js/React...) will otherwise just work without externs
+               (.setWarningLevel DiagnosticGroups/UNDEFINED_VARIABLES CheckLevel/WARNING))
+
+             ;; FIXME: make-options already called set-options
+             ;; but I want to reset warnings and enable UNDEFINED_VARIABLES
+             ;; calling set-options again so user :closure-warnings works
+             _ (closure/set-options (:compiler-options state) co)
 
              _ (when source-map?
                  ;; FIXME: path is not used at all but needs to be set
@@ -2564,13 +2628,13 @@ normalize-resource-name
              result
              (.compileModules cc externs (map :js-module modules) co)]
 
-         (let [warnings (into [] (js-error-xf cc) (.warnings result))]
+         (let [warnings (into [] (js-error-xf state cc) (.warnings result))]
            (when (seq warnings)
              (log state {:type :closure-warnings
                          :warnings warnings})))
 
          (if-not (.success result)
-           (let [errors (into [] (js-error-xf cc) (.errors result))]
+           (let [errors (into [] (js-error-xf state cc) (.errors result))]
              (throw (ex-info "optimization failed" {:tag ::closure :errors errors})))
            (let [source-map
                  (when source-map? (.getSourceMap cc))
