@@ -2464,14 +2464,14 @@ normalize-resource-name
               {:keys [protocol-info]} meta
 
               prefix
-              (str (cljs-comp/protocol-prefix name))]
+              (str (comp/protocol-prefix name))]
 
           ;; the marker prop
           ;; some.prototype.cljs$core$ISeq$ = cljs.core.PROTOCOL_SENTINEL;
           (.registerPropertyOnType type-reg prefix obj-type)
 
           (doseq [[meth-name meth-sigs] (:methods protocol-info)
-                  :let [munged-name (cljs-comp/munge meth-name)]
+                  :let [munged-name (comp/munge meth-name)]
                   meth-sig meth-sigs]
 
             (let [arity
