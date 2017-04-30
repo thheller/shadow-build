@@ -1254,11 +1254,16 @@ normalize-resource-name
     ;; do not merge files that are already present from a different source path
     (when-let [existing (get-in state [:sources name])]
       (not (is-same-resource? src existing)))
-    (do (log state
-          {:type :duplicate-resource
-           :name name
-           :path-use (get-in state [:sources name :source-path])
-           :path-ignore (:source-path src)})
+
+    (do (when (not (and (not (get-in state [:sources name :from-jar]))
+                        (:from-jar src)))
+          ;; don't complain if we have a file from the fs and the conflict is from the jar
+          ;; assume thats an intentional override
+          (log state
+            {:type :duplicate-resource
+             :name name
+             :path-use (get-in state [:sources name :source-path])
+             :path-ignore (:source-path src)}))
         state)
 
     ;; now we need to handle conflicts for cljc/cljs files
@@ -1474,7 +1479,7 @@ normalize-resource-name
   [state]
   (cond-> state
     (nil? (:compiler-env state))
-    (assoc :compiler-env @(env/default-compiler-env state))))
+    (assoc :compiler-env @(env/default-compiler-env (:compiler-options state)))))
 
 (defn finalize-config
   "should be called AFTER all resources have been discovered (ie. after find-resources...)"
@@ -2426,6 +2431,59 @@ normalize-resource-name
 (defn closure-add-replace-constants-pass [cc ^CompilerOptions co state]
   (.addCustomPass co CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
 
+(defn closure-register-cljs-protocol-properties
+  "this is needed to make :check-types work
+
+   It registers all known CLJS protocols with the Closure TypeRegistry
+   each method is as a property on Object since most of the time Closure doesn't know the proper type
+   and annotating everything seems unlikely.
+
+   The property on Object doesn't hurt and won't hinder renaming (as opposed to externs)"
+  [cc co {:keys [compiler-env build-sources] :as state}]
+  (when (contains? #{:warning :error} (get-in state [:compiler-options :closure-warnings :check-types]))
+    (let [type-reg
+          (.getTypeRegistry cc)
+
+          obj-type
+          (.getType type-reg "Object")]
+
+      ;; some general properties
+      (doseq [prop
+              ["cljs$lang$protocol_mask$partition$"
+               "cljs$lang$macro"
+               "cljs$lang$test"]]
+        (.registerPropertyOnType type-reg prop obj-type))
+
+      ;; find all protocols and register the protocol method properties
+      (doseq [ana-ns (vals (::ana/namespaces compiler-env))
+              :let [{:keys [defs]} ana-ns]
+              def (vals defs)
+              :when (-> def :meta :protocol-symbol)]
+
+        (let [{:keys [name meta]} def
+              {:keys [protocol-info]} meta
+
+              prefix
+              (str (cljs-comp/protocol-prefix name))]
+
+          ;; the marker prop
+          ;; some.prototype.cljs$core$ISeq$ = cljs.core.PROTOCOL_SENTINEL;
+          (.registerPropertyOnType type-reg prefix obj-type)
+
+          (doseq [[meth-name meth-sigs] (:methods protocol-info)
+                  :let [munged-name (cljs-comp/munge meth-name)]
+                  meth-sig meth-sigs]
+
+            (let [arity
+                  (count meth-sig)
+
+                  prop
+                  (str prefix munged-name "$arity$" arity)]
+
+              ;; register each arity some.prototype.cljs$core$ISeq$_seq$arity$1
+              (.registerPropertyOnType type-reg prop obj-type)
+              )))))))
+
 (defn read-variable-map [{:keys [cache-dir] :as state} name]
   (let [map-file (io/file cache-dir name)]
     (when (.exists map-file)
@@ -3244,7 +3302,7 @@ enable-emit-constants [state]
         :elide-asserts false
 
         :closure-warnings
-        {:check-types :off}}
+        {:check-types :warning}}
 
        :closure-defines
        {"goog.DEBUG" false
@@ -3295,6 +3353,7 @@ enable-emit-constants [state]
        :logger
        stdout-log}
 
+      (add-closure-configurator closure-register-cljs-protocol-properties)
       (add-closure-configurator closure-add-replace-constants-pass)
       (add-closure-configurator closure-add-variable-maps)
       ))
