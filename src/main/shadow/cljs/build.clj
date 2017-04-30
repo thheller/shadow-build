@@ -2577,8 +2577,7 @@ normalize-resource-name
 
           (doto sb
             (.append "\n\t")
-            (.append (.-description err))
-            (.append "\n"))
+            (.append (.-description err)))
 
           (-> {:line line
                :column column
@@ -3302,7 +3301,7 @@ enable-emit-constants [state]
         :elide-asserts false
 
         :closure-warnings
-        {:check-types :warning}}
+        {:check-types :off}}
 
        :closure-defines
        {"goog.DEBUG" false
