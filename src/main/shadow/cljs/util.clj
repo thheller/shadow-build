@@ -5,8 +5,55 @@
             [cljs.analyzer.api :as ana-api]
             [cljs.env :as env]
             [cljs.compiler :as comp]
-            [cljs.core]) ;; not really, just to ensure it is loaded so we can query it form macros?
+            [cljs.core]
+            [shadow.cljs.log :as log]) ;; not really, just to ensure it is loaded so we can query it form macros?
   (:import (clojure.lang Namespace)))
+
+(defn compiler-state? [state]
+  (true? (::is-compiler-state state)))
+
+(defn foreign? [{:keys [type] :as src}]
+  (= :foreign type))
+
+(defn file-basename [^String path]
+  (let [idx (.lastIndexOf path "/")]
+    (.substring path (inc idx))
+    ))
+
+(defn log [state log-event]
+  {:pre [(compiler-state? state)]}
+  (log/log* (:logger state) state log-event)
+  state)
+
+(def ^{:dynamic true} *time-depth* 0)
+
+(defmacro with-logged-time
+  [[state msg] & body]
+  `(let [msg# ~msg
+         start# (System/currentTimeMillis)
+
+         evt#
+         (assoc msg#
+                :timing :enter
+                :start start#
+                :depth *time-depth*)]
+     (log ~state evt#)
+     (let [result#
+           (binding [*time-depth* (inc *time-depth*)]
+             ~@body)
+
+           stop#
+           (System/currentTimeMillis)
+
+           evt#
+           (assoc msg#
+                  :timing :exit
+                  :depth *time-depth*
+                  :stop stop#
+                  :duration (- stop# start#))]
+       (log (if (compiler-state? result#) result# ~state) evt#)
+       result#)
+     ))
 
 (def require-option-keys
   #{:as

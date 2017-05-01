@@ -1,19 +1,20 @@
 (ns shadow.cljs.repl
-  (:require [shadow.cljs.build :as cljs]
-            [clojure.tools.reader.reader-types :as readers]
-            [cljs.compiler :as comp]
-            [cljs.analyzer :as ana]
-            [clojure.tools.reader :as reader]
-            [cljs.tagged-literals :as tags]
-            [clojure.pprint :refer (pprint)]
+  (:require [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [clojure.repl :as repl]
-            [cljs.env :as env]
             [clojure.java.io :as io]
+            [clojure.tools.reader.reader-types :as readers]
+            [clojure.tools.reader :as reader]
+            [cljs.env :as env]
+            [cljs.source-map :as sm]
+            [cljs.tagged-literals :as tags]
+            [cljs.compiler :as comp]
+            [cljs.analyzer :as ana]
             [shadow.cljs.log :as log]
             [shadow.cljs.util :as util]
-            [cljs.source-map :as sm])
+            [shadow.cljs.build :as cljs]
+            [shadow.cljs.output :as output])
   (:import (java.io StringReader BufferedReader)))
 
 (comment
@@ -26,7 +27,7 @@
   (and (map? x) (::repl-state x)))
 
 (defn setup [state]
-  {:pre [(cljs/compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [cljs-user-requires
         '[cljs.core shadow.runtime-setup cljs.repl]
 
@@ -85,7 +86,7 @@
 
 (defn prepare
   [state]
-  {:pre [(cljs/compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
 
   ;; must compile an empty cljs.user to properly populate the ::ana/namespaces
   ;; could just manually set the values needed but I don't want to keep track what gets set
@@ -99,7 +100,7 @@
     (-> state
         (cljs/prepare-compile)
         (cljs/do-compile-sources repl-sources)
-        (cljs/flush-sources-by-name repl-sources))
+        (output/flush-sources-by-name repl-sources))
     ))
 
 (defn remove-quotes [quoted-form]
@@ -170,7 +171,7 @@
          state
          (-> state
              (cljs/do-compile-sources deps)
-             (cljs/flush-sources-by-name deps)
+             (output/flush-sources-by-name deps)
              (load-macros-and-set-ns-info))
 
          action
@@ -230,7 +231,7 @@
             state
             (-> state
                 (cljs/do-compile-sources deps)
-                (cljs/flush-sources-by-name deps))
+                (output/flush-sources-by-name deps))
 
             action
             {:type :repl/require
@@ -420,7 +421,7 @@
 (defn process-input
   "processes a string of forms, may read multiple forms"
   [state ^String repl-input]
-  {:pre [(cljs/compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [reader
         (readers/string-reader repl-input)]
 
@@ -437,7 +438,7 @@
 (defn process-input-stream
   "reads one form of the input stream and calls process-form"
   [{:keys [repl-state] :as state} input-stream]
-  {:pre [(cljs/compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [reader
         (readers/input-stream-reader input-stream)
 

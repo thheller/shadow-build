@@ -83,9 +83,13 @@
   [{:keys [path] :as event}]
   (format "Finding resources in classpath" path))
 
-(defmethod event->str :optimize
-  [{:keys [path] :as event}]
-  (format "Optimizing" path))
+(defmethod event->str :closure-optimize
+  [event]
+  (format "Closure - Optimizing ..."))
+
+(defmethod event->str :closure-check
+  [event]
+  (format "Closure - Checking ..."))
 
 (defmethod event->str :bad-resource
   [{:keys [url] :as event}]

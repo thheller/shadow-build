@@ -6,7 +6,6 @@
             [clojure.edn :as edn]
             [clojure.java.classpath :as cp]
             [cljs.analyzer :as ana]
-            [cljs.closure :as closure]
             [cljs.compiler :as comp]
             [cljs.source-map :as sm]
             [cljs.env :as env]
@@ -17,17 +16,21 @@
             [shadow.cljs.util :as util]
             [shadow.cljs.log :as log]
             [shadow.cljs.cljs-specs :as cljs-specs]
-            [clojure.spec :as s])
-  (:import [java.io File StringWriter FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader ByteArrayInputStream]
+            [shadow.cljs.closure :as closure]
+            [shadow.cljs.cache :as cache]
+            [clojure.spec :as s]
+            [shadow.cljs.output :as output])
+  (:import [java.io File FileOutputStream FileInputStream StringReader PushbackReader ByteArrayOutputStream BufferedReader ByteArrayInputStream]
            [java.net URL]
-           [com.google.javascript.jscomp JSModule SourceFile JSModuleGraph CustomPassExecutionTime]
            (java.util.jar JarFile JarEntry)
            (com.google.javascript.jscomp.deps JsFileParser)
            [java.util.concurrent Executors Future ExecutorService]
-           (com.google.javascript.jscomp ReplaceCLJSConstants CompilerOptions CommandLineRunner JSError ErrorFormat CheckLevel LightweightMessageFormatter SourceMapInput BasicErrorManager CompilerOptions$LanguageMode CompilerInput ProcessEs6Modules SourceMap SourceMap$LocationMapping VariableMap DiagnosticGroups)
            (java.security MessageDigest)
            (javax.xml.bind DatatypeConverter)
            (cljs.tagged_literals JSValue)))
+
+(defn compiler-state? [x]
+  (util/compiler-state? x))
 
 ;; (set! *warn-on-reflection* true)
 (defonce stdout-lock (Object.))
@@ -37,49 +40,7 @@
       (.openConnection)
       (.getLastModified)))
 
-(def default-externs
-  (into [] (CommandLineRunner/getDefaultExterns)))
-
 (def ^:dynamic *cljs-warnings-ref* nil)
-
-(defn noop-error-manager []
-  (proxy [BasicErrorManager] []
-    (printSummary [])
-    (println [level error])))
-
-(defn ^com.google.javascript.jscomp.Compiler make-closure-compiler
-  ([]
-   (doto (com.google.javascript.jscomp.Compiler.)
-     (.disableThreads)))
-  ([out-or-error-manager]
-   (doto (com.google.javascript.jscomp.Compiler. out-or-error-manager)
-     (.disableThreads))))
-
-
-(defn write-cache [^File file data]
-  (with-open [out (FileOutputStream. file)]
-    (let [w (transit/writer out :json
-              {:handlers
-               {URL
-                (transit/write-handler "url" str)
-                JSValue
-                (transit/write-handler "js-value" #(.-val %))
-                }})]
-      (transit/write w data)
-      )))
-
-(defn read-cache [^File file]
-  {:pre [(.exists file)]}
-  (with-open [in (FileInputStream. file)]
-    (let [r (transit/reader in :json
-              {:handlers
-               {"url"
-                (transit/read-handler #(URL. %))
-                "js-value"
-                (transit/read-handler #(JSValue. %))
-                }})]
-      (transit/read r)
-      )))
 
 (comment
   ;; maybe add some kind of type info later
@@ -95,44 +56,6 @@
       :ns name
       :ns-info ns-info
       }))
-
-(defn compiler-state? [state]
-  (true? (::is-compiler-state state)))
-
-(defn log [state log-event]
-  {:pre [(compiler-state? state)]}
-  (log/log* (:logger state) state log-event)
-  state)
-
-(def ^{:dynamic true} *time-depth* 0)
-
-(defmacro with-logged-time
-  [[state msg] & body]
-  `(let [msg# ~msg
-         start# (System/currentTimeMillis)
-
-         evt#
-         (assoc msg#
-                :timing :enter
-                :start start#
-                :depth *time-depth*)]
-     (log ~state evt#)
-     (let [result#
-           (binding [*time-depth* (inc *time-depth*)]
-             ~@body)
-
-           stop#
-           (System/currentTimeMillis)
-
-           evt#
-           (assoc msg#
-                  :timing :exit
-                  :depth *time-depth*
-                  :stop stop#
-                  :duration (- stop# start#))]
-       (log (if (compiler-state? result#) result# ~state) evt#)
-       result#)
-     ))
 
 (defn usable-resource? [{:keys [type provides requires] :as rc}]
   (or (seq provides) ;; provides something is useful
@@ -185,11 +108,6 @@
       (str/replace #"[/\\]" ".")
       (symbol)))
 
-(defn file-basename [^String path]
-  (let [idx (.lastIndexOf path "/")]
-    (.substring path (inc idx))
-    ))
-
 (defn conj-in [m k v]
   (update-in m k (fn [old] (conj old v))))
 
@@ -203,13 +121,8 @@
     (conj x y)
     [y]))
 
-(defn munge-goog-ns [s]
-  (-> s
-      (str/replace #"_" "-")
-      (symbol)))
-
 (defn inspect-js-resource [state {:keys [name input] :as rc}]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [deps (-> (doto (JsFileParser. (.getErrorManager (::cc state)))
                    (.setIncludeGoogBase true))
                  (.parseFile name name @input))
@@ -220,10 +133,10 @@
         ;; FIXME: bug in Closure that es6 files do not depend on goog?
         ;; doesn't hurt that it is missing though
         require-order
-        (into [] (map munge-goog-ns) (.getRequires deps))
+        (into [] (map closure/munge-goog-ns) (.getRequires deps))
 
         provides
-        (into #{} (map munge-goog-ns) (.getProvides deps))]
+        (into #{} (map closure/munge-goog-ns) (.getProvides deps))]
 
     (-> rc
         (assoc
@@ -246,7 +159,7 @@
           ))))
 
 (defn macros-from-ns-ast [state {:keys [require-macros use-macros]}]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (into #{} (concat (vals require-macros) (vals use-macros))))
 
 (defn rewrite-ns-aliases
@@ -291,7 +204,7 @@
 
 (defn update-rc-from-ns
   [state rc {:keys [name require-order] :as ast}]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (assoc rc
          :ns name
          :ns-info (dissoc ast :env)
@@ -304,7 +217,7 @@
   "looks at the first form in a .cljs file, analyzes it if (ns ...) and returns the updated resource
    with ns-related infos"
   [state {:keys [^String name input] :as rc}]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [eof-sentinel (Object.)
         cljc? (is-cljc? name)
         opts (merge
@@ -338,7 +251,7 @@
 
 (defn inspect-resource
   [state {:keys [url name] :as rc}]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (cond
     (is-js-file? name)
     (->> (assoc rc :type :js :js-name name)
@@ -373,7 +286,7 @@ normalize-resource-name
 (defn create-jar-manifest
   "returns a map of {source-name resource-info}"
   [state path]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (let [file (io/file path)
         abs-path (.getCanonicalPath file)
         jar-file (JarFile. file)
@@ -409,11 +322,11 @@ normalize-resource-name
                   ;; since we are only using a small percentage of those file we delay reading
                   (map #(dissoc % :input))
                   (into []))]
-    (write-cache file data)
+    (cache/write-cache file data)
     ))
 
 (defn read-jar-manifest [file]
-  (let [entries (read-cache file)]
+  (let [entries (cache/read-cache file)]
     (reduce
       (fn [m {:keys [name url] :as v}]
         (assoc m name (assoc v :input (delay (slurp url)))))
@@ -424,7 +337,7 @@ normalize-resource-name
   "manifest is a {source-name source-info} map, transform that into
    {:resources [source-info] :externs [orphan-externs]} using deps.cljs if present"
   [{:keys [use-file-min] :as state} manifest source-path]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (map? manifest)]}
   (let [{:keys [url] :as deps}
         (get manifest "deps.cljs")]
@@ -541,7 +454,7 @@ normalize-resource-name
 
 (defn find-jar-resources
   [{:keys [manifest-cache-dir cache-level] :as state} path]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   ;; FIXME: assuming a jar with the same name and same last modified is always identical, probably not. should md5 the full path?
 
   ;; locking to avoice race-condition in cache where two threads might be read/writing jar manifests at the same time
@@ -567,7 +480,7 @@ normalize-resource-name
             (try
               (read-jar-manifest mfile)
               (catch Exception e
-                (log state {:type :manifest-error :file mfile :e e})
+                (util/log state {:type :manifest-error :file mfile :e e})
                 nil)))
 
           manifest
@@ -591,7 +504,7 @@ normalize-resource-name
 
 (defn find-fs-resources
   [state ^String path]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (seq path)]}
   (let [root (io/file path)
         root-path (.getCanonicalPath root)
@@ -614,13 +527,13 @@ normalize-resource-name
     (process-deps-cljs state manifest root-path)))
 
 (defn get-resource-for-provide [state ns-sym]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (symbol? ns-sym)]}
   (when-let [name (get-in state [:provide->source ns-sym])]
     (get-in state [:sources name])))
 
 (defn find-resource-by-js-name [state js-name]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (string? js-name)]}
   (let [rcs
         (->> (:sources state)
@@ -635,7 +548,7 @@ normalize-resource-name
     (first rcs)))
 
 (defn- get-deps-for-src* [{:keys [deps-stack] :as state} name]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (when-not (string? name)
     (throw (ex-info (format "trying to get deps for \"%s\"" (pr-str name)) {})))
 
@@ -684,7 +597,7 @@ normalize-resource-name
   "returns names of all required sources for a given resource by name (in dependency order), does include self
    (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
   [state src-name]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (string? src-name)]}
   (-> state
       (assoc :deps-stack []
@@ -697,7 +610,7 @@ normalize-resource-name
   "returns names of all required sources for a given ns (in dependency order), does include self
    (eg. [\"goog/string/string.js\" \"cljs/core.cljs\" \"my-ns.cljs\"])"
   [state ns-sym]
-  {:pre [(compiler-state? state)
+  {:pre [(util/compiler-state? state)
          (symbol? ns-sym)]}
   (let [name (get-in state [:provide->source ns-sym])]
     (when-not name
@@ -981,7 +894,7 @@ normalize-resource-name
               (not= elide-asserts true)]
 
       (let [source @input]
-        (with-logged-time
+        (util/with-logged-time
           [state {:type :compile-cljs :name name}]
 
           (let [compile-init
@@ -998,7 +911,7 @@ normalize-resource-name
 
                 js
                 (if (and source-map (:source-map state))
-                  (str js "\n//# sourceMappingURL=" (file-basename js-name) ".map\n")
+                  (str js "\n//# sourceMappingURL=" (util/file-basename js-name) ".map\n")
                   js)]
 
             (when-not ns
@@ -1067,7 +980,7 @@ normalize-resource-name
                  (> (.lastModified cache-js) last-modified))
 
         (let [cache-data
-              (read-cache cache-file)
+              (cache/read-cache cache-file)
 
               age-of-deps
               (make-age-map state ns)]
@@ -1087,8 +1000,8 @@ normalize-resource-name
                        #(= (get-in state [:compiler-options %])
                            (get-in cache-data [:cache-options %]))
                        cache-affecting-options))
-            (log state {:type :cache-read
-                        :name name})
+            (util/log state {:type :cache-read
+                             :name name})
 
             ;; restore analysis data
             (let [ana-data (:analyzer cache-data)]
@@ -1103,10 +1016,10 @@ normalize-resource-name
                        :output (slurp cache-js))))))
 
       (catch Exception e
-        (log state {:type :cache-error
-                    :ns ns
-                    :name name
-                    :error e})
+        (util/log state {:type :cache-error
+                         :ns ns
+                         :name name
+                         :error e})
         nil))))
 
 (defn write-cached-cljs-resource
@@ -1138,21 +1051,21 @@ normalize-resource-name
               (io/file cache-dir cljs-runtime-path js-name)]
 
           (io/make-parents cache-file)
-          (write-cache cache-file cache-data)
+          (cache/write-cache cache-file cache-data)
 
           (io/make-parents cache-js)
           (spit cache-js (:output rc))
 
-          (log state {:type :cache-write
-                      :ns ns
-                      :name name})
+          (util/log state {:type :cache-write
+                           :ns ns
+                           :name name})
 
           true)
         (catch Exception e
-          (log state {:type :cache-error
-                      :ns ns
-                      :name name
-                      :error e})
+          (util/log state {:type :cache-error
+                           :ns ns
+                           :name name
+                           :error e})
           nil)
         ))))
 
@@ -1220,12 +1133,12 @@ normalize-resource-name
   [state {:keys [name provides url] :as src}]
   (cond
     (not (valid-resource? src))
-    (do (log state {:type :invalid-resource :name name :url url})
+    (do (util/log state {:type :invalid-resource :name name :url url})
         state)
 
     (and (= :js (:type src))
          (contains? (:provides src) 'cljs.core))
-    (do (log state {:type :bad-resource :url url})
+    (do (util/log state {:type :bad-resource :url url})
         state)
 
     ;; no not merge files that don't have the expected path for their ns
@@ -1238,7 +1151,7 @@ normalize-resource-name
                     (= name expected-cljc)
                     ))))
 
-    (do (log state
+    (do (util/log state
           {:type :name-violation
            :src src
            :expected (str (ns->cljs-file (:ns src)) " (or .cljc)")})
@@ -1259,7 +1172,7 @@ normalize-resource-name
                         (:from-jar src)))
           ;; don't complain if we have a file from the fs and the conflict is from the jar
           ;; assume thats an intentional override
-          (log state
+          (util/log state
             {:type :duplicate-resource
              :name name
              :path-use (get-in state [:sources name :source-path])
@@ -1291,12 +1204,12 @@ normalize-resource-name
         ;; don't merge .cljc file if a .cljs of the same name exists
         (and cljc? (contains? (:sources state) cljs-name))
         ;; less noise by not complaining, some offenders in cljs package
-        (do #_(log state {:type :bad-resource
-                          :reason :cljs-over-cljc
-                          :name name
-                          :cljc-name name
-                          :cljs-name cljs-name
-                          :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
+        (do #_(util/log state {:type :bad-resource
+                               :reason :cljs-over-cljc
+                               :name name
+                               :cljc-name name
+                               :cljs-name cljs-name
+                               :msg (format "File conflict: \"%s\" -> \"%s\" (using \"%s\")" name cljs-name cljs-name)})
           state)
 
         ;; if a .cljc exists for a .cljs file
@@ -1310,7 +1223,7 @@ normalize-resource-name
         ;; ensure that files do not have conflicting provides
         (and (seq existing-provides)
              (not (every? #(is-same-resource? src (get-in state [:sources %])) existing-provides)))
-        (do (log state
+        (do (util/log state
               {:type :provide-conflict
                :name name
                :source-path (:source-path src)
@@ -1336,7 +1249,7 @@ normalize-resource-name
 ;;; COMPILE STEPS
 
 (defn do-find-resources-in-path [state path]
-  {:pre [(compiler-state? state)]}
+  {:pre [(util/compiler-state? state)]}
   (if (is-jar? path)
     (find-jar-resources state path)
     (find-fs-resources state path)))
@@ -1372,7 +1285,7 @@ normalize-resource-name
   ([state path]
    (find-resources state path {:reloadable true}))
   ([state path opts]
-   (with-logged-time
+   (util/with-logged-time
      [state {:type :find-resources
              :path path}]
      (let [file (io/file path)
@@ -1381,8 +1294,8 @@ normalize-resource-name
          (throw (ex-info (format "\"%s\" does not exist" path) {:path path})))
 
        (if (contains? (:source-paths state) abs-path)
-         (do (log state {:type :duplicate-path
-                         :path path})
+         (do (util/log state {:type :duplicate-path
+                              :path path})
              state)
          (merge-resources-in-path state path opts))
        ))))
@@ -1392,16 +1305,13 @@ normalize-resource-name
   ([state]
    (find-resources-in-classpath state {:exclude (:classpath-excludes state [])}))
   ([state {:keys [exclude]}]
-   (with-logged-time
+   (util/with-logged-time
      [state {:type :find-resources-classpath}]
      (let [paths
            (->> (cp/classpath)
                 (remove #(should-exclude-classpath exclude %)))]
        (reduce merge-resources-in-path state paths)
        ))))
-
-(def cljs-core-name "cljs/core.cljs")
-(def goog-base-name "goog/base.js")
 
 (def ^:dynamic *in-compiler-env* false)
 
@@ -1450,7 +1360,7 @@ normalize-resource-name
                                        [name url]
                                        (let [name (str name "c")]
                                          [name (io/resource name)]))]
-                      #_(when-not url (log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
+                      #_(when-not url (util/log-warning logger (format "Macro namespace: %s not found, required by %s" macro-ns used-by)))
                       {:ns macro-ns
                        :used-by used-by
                        :name name
@@ -1541,57 +1451,6 @@ normalize-resource-name
            is-default?
            (assoc :default-module module-name)
            )))))
-
-(defn closure-defines-json [{:keys [closure-defines] :as state}]
-  (let [closure-defines
-        (reduce-kv
-          (fn [def key value]
-            (let [key (if (symbol? key) (str (comp/munge key)) key)]
-              (assoc def key value)))
-          {}
-          closure-defines)]
-
-    (json/write-str closure-defines :escape-slashes false)))
-
-(defn closure-defines [{:keys [public-path cljs-runtime-path] :as state}]
-  (str "var CLOSURE_NO_DEPS = true;\n"
-       ;; goog.findBasePath_() requires a base.js which we dont have
-       ;; this is usually only needed for unoptimized builds anyways
-       "var CLOSURE_BASE_PATH = '" public-path "/" cljs-runtime-path "/';\n"
-       "var CLOSURE_DEFINES = " (closure-defines-json state) ";\n"))
-
-(defn closure-defines-and-base [{:keys [public-path cljs-runtime-path] :as state}]
-  (let [goog-rc (get-in state [:sources goog-base-name])
-        goog-base @(:input goog-rc)]
-
-    (when-not (seq goog-base)
-      (throw (ex-info "no goog/base.js" {})))
-
-    ;; FIXME: work arround for older cljs versions that used broked closure release, remove.
-    (when (< (count goog-base) 500)
-      (throw (ex-info "probably not the goog/base.js you were expecting"
-               (get-in state [:sources goog-base-name]))))
-
-    (str (closure-defines state)
-         goog-base
-         "\n")))
-
-(defn make-foreign-js-header
-  "goog.provide/goog.require statements for foreign js files"
-  [{:keys [provides require-order]}]
-  (let [sb (StringBuilder.)]
-    (doseq [provide provides]
-      (doto sb
-        (.append "goog.provide(\"")
-        (.append (munge-goog-ns provide))
-        (.append "\");\n")))
-    (doseq [require require-order]
-      (doto sb
-        (.append "goog.require(\"")
-        (.append (munge-goog-ns require))
-        (.append "\");\n")))
-    (.toString sb)
-    ))
 
 (defn dump-js-modules [modules]
   (doseq [js-mod modules]
@@ -1735,9 +1594,9 @@ normalize-resource-name
                (sort-by :name)
                (filter #(seq (:warnings %))))]
     (doseq [warning warnings]
-      (log state {:type :warning
-                  :name name
-                  :warning warning})
+      (util/log state {:type :warning
+                       :name name
+                       :warning warning})
       )))
 
 (defn get-deps-for-entries [state entries]
@@ -1822,9 +1681,6 @@ normalize-resource-name
      :last-modified 0
      }))
 
-(defn foreign? [{:keys [type] :as src}]
-  (= :foreign type))
-
 (defn make-runtime-setup
   [{:keys [runtime] :as state}]
   (let [src (str/join "\n"
@@ -1847,64 +1703,9 @@ normalize-resource-name
      :last-modified 0 ;; this file should never cause recompiles
      }))
 
-;; FIXME: about 100ms for even simple files, might be too slow to process each file indiviually
-(defn compile-es6 [state {:keys [module-alias name js-name input] :as src}]
-  (with-logged-time
-    [state {:type :compile-es6 :name name}]
-    (let [co
-          (doto (closure/make-convert-js-module-options (:compiler-options state))
-            (.setSourceMapOutputPath "/dev/null")
-            (.setPrettyPrint true) ;; FIXME: only useful for debugging really
-            (.setLanguageIn CompilerOptions$LanguageMode/ECMASCRIPT6)
-            (.setLanguageOut (closure/lang-key->lang-mode (get-in state [:compiler-options :language-out] :ecmascript3))))
-
-          ;; FIXME: should really work out how to just convert the single file
-          ;; noop since it will warn about missing module files
-          ;; this compiles each file individually so the files aren't really missing
-          ;; Compiler.moduleLoader is a bit too hidden to get the inputs there
-          ;; it only needs the DependecyInfo which we have
-          ;; closure will attempt to compile (again) if we pass everything
-          cc
-          (make-closure-compiler (noop-error-manager))
-
-          src-file
-          (SourceFile/fromCode name @input)
-
-          result
-          (.compile cc default-externs [src-file] co)]
-
-      (when-not (.success result)
-        (throw (ex-info (format "failed to compile %s" name) {:result result})))
-
-      (swap! env/*compiler* update-in [:js-module-index] assoc (str module-alias) name)
-
-      (let [source-map?
-            (boolean (:source-map state))
-
-            sm
-            (when source-map?
-              ;; need to map test/a.js to a.js since we always keep source maps next to the source
-              ;; must be done before calling toSource
-              (doto (.getSourceMap cc)
-                (.setPrefixMappings [(SourceMap$LocationMapping. name (file-basename name))])))
-
-            output
-            (.toSource cc)]
-
-        (-> src
-            (assoc :output output)
-            (cond->
-              source-map?
-              (-> (assoc :source-map-json
-                         (let [sw (StringWriter.)]
-                           (.appendTo sm sw js-name)
-                           (.toString sw)))
-                  (update :output str "\n//# sourceMappingURL=" (file-basename js-name) ".map\n"))))))))
-
-
 (defn maybe-compile-js [state {:keys [input module-type] :as src}]
   (if module-type
-    (compile-es6 state src)
+    (closure/compile-es6 state src)
     (assoc src :output @input)))
 
 (defn compile-foreign [state {:keys [input] :as src}]
@@ -1984,9 +1785,9 @@ normalize-resource-name
               ;; should probably add a real timeout and fail the build instead of looping forever
               (if (>= idle-count 3000)
                 (let [pending (set/difference requires ready)]
-                  (log state {:type :pending-compile
-                              :source-name source-name
-                              :pending pending})
+                  (util/log state {:type :pending-compile
+                                   :source-name source-name
+                                   :pending pending})
                   (recur 0))
                 (recur (inc idle-count))))
 
@@ -2080,9 +1881,9 @@ normalize-resource-name
    requires that the names are in dependency order
    requires that ALL of the dependencies NOT in source names are already compiled
    eg. you cannot just compile [\"clojure/string.cljs\"] as it requires other files to be compiled first"
-  (log state {:type :compile-sources
-              :n-compile-threads n-compile-threads
-              :source-names source-names})
+  (util/log state {:type :compile-sources
+                   :n-compile-threads n-compile-threads
+                   :source-names source-names})
   (-> state
       (assoc :build-start (System/currentTimeMillis))
       (cond->
@@ -2103,13 +1904,6 @@ normalize-resource-name
       (finalize-config)
       ))
 
-(defn foreign-js-source-for-mod [state {:keys [sources] :as mod}]
-  (->> sources
-       (map #(get-in state [:sources %]))
-       (filter foreign?)
-       (map :output)
-       (str/join "\n")))
-
 (defn md5hex [^String text]
   (let [bytes
         (.getBytes text)
@@ -2128,7 +1922,7 @@ normalize-resource-name
   (let [foreign-srcs
         (->> sources
              (map #(get-in state [:sources %]))
-             (filter foreign?))]
+             (filter util/foreign?))]
 
     (if-not (seq foreign-srcs)
       mod
@@ -2186,7 +1980,7 @@ normalize-resource-name
 (defn compile-modules
   "compiles according to configured :modules"
   [state]
-  (with-logged-time
+  (util/with-logged-time
     [state {:type :compile-modules}]
     (let [state
           (-> state
@@ -2225,293 +2019,6 @@ normalize-resource-name
         (compile-sources deps))
     ))
 
-(defn make-closure-modules
-  "make a list of modules (already in dependency order) and create the closure JSModules"
-  [state modules]
-
-  (let [js-mods
-        (reduce
-          (fn [js-mods {:keys [js-name name depends-on sources] :as mod}]
-            (let [js-mod (JSModule. js-name)]
-              (when (:default mod)
-                (.add js-mod (SourceFile/fromCode "closure_setup.js" (closure-defines-and-base state))))
-
-              (doseq [{:keys [name type js-name output] :as src}
-                      (map #(get-in state [:sources %]) sources)]
-                ;; throws hard to track NPE otherwise
-                (when-not (and js-name output (seq output))
-                  (throw (ex-info "missing output for source" {:js-name js-name :name (:name src)})))
-
-                (case type
-                  ;; foreign files only include the goog.require/goog.provide statements
-                  ;; not the actual foreign code, that will be prepended after optimizations
-                  :foreign
-                  (.add js-mod (SourceFile/fromCode js-name (make-foreign-js-header src)))
-
-                  :js
-                  (.add js-mod (SourceFile/fromCode js-name output))
-
-                  :cljs
-                  (.add js-mod (SourceFile/fromCode js-name output))
-
-                  (throw (ex-info "unsupported type for closure" src))))
-
-              (doseq [other-mod-name depends-on
-                      :let [other-mod (get js-mods other-mod-name)]]
-                (when-not other-mod
-                  (throw (ex-info "module depends on undefined module" {:mod name :other other-mod-name})))
-                (.addDependency js-mod other-mod))
-
-              (assoc js-mods name js-mod)))
-          {}
-          modules)]
-    (for [{:keys [name] :as mod} modules]
-      (assoc mod :js-module (get js-mods name))
-      )))
-
-(defn flush-sources-by-name
-  ([state]
-   (flush-sources-by-name state (mapcat :sources (:build-modules state))))
-  ([{:keys [public-dir cljs-runtime-path] :as state} source-names]
-   (with-logged-time
-     [state {:type :flush-sources
-             :source-names source-names}]
-     (doseq [src-name source-names
-             :let [{:keys [js-name name input output last-modified source-map source-map-json] :as src}
-                   (get-in state [:sources src-name])
-
-                   js-file
-                   (io/file public-dir cljs-runtime-path js-name)
-
-                   src-file
-                   (io/file public-dir cljs-runtime-path name)
-
-                   src-map?
-                   (and (:source-map state) (or source-map source-map-json))
-
-                   src-map-file
-                   (io/file public-dir cljs-runtime-path (str js-name ".map"))]
-
-             ;; skip files we already have
-             :when (or (not (.exists js-file))
-                       (zero? last-modified)
-                       ;; js is not compiled but maybe modified
-                       (> (or (:compiled-at src) last-modified)
-                          (.lastModified js-file))
-                       (and src-map? (or (not (.exists src-file))
-                                         (not (.exists src-map-file)))))]
-
-       (io/make-parents js-file)
-
-       ;; must not modify output in any way, will mess up source maps otherwise
-       (spit js-file output)
-
-       (when src-map?
-         ;; spit original source, needed for source maps
-         (spit src-file @input)
-
-         (let [source-map-json
-               (or source-map-json
-                   (sm/encode
-                     {name source-map}
-                     ;; very important that :lines is accurate for closure source maps, otherwise unused
-                     {:lines
-                      (-> (StringReader. output)
-                          (BufferedReader.)
-                          (line-seq)
-                          (count))
-                      :file js-name
-                      :preamble-line-count 0}))]
-
-           (spit src-map-file source-map-json))))
-
-     state)))
-
-(defn flush-foreign-bundles
-  [{:keys [public-dir build-modules] :as state}]
-  (doseq [{:keys [foreign-files] :as mod} build-modules
-          {:keys [js-name provides output]} foreign-files]
-    (let [target (io/file public-dir js-name)]
-      (when-not (.exists target)
-
-        (io/make-parents target)
-
-        (log state {:type :flush-foreign
-                    :provides provides
-                    :js-name js-name
-                    :js-size (count output)})
-
-        (spit target output))))
-  state)
-
-(defn flush-modules-to-disk
-  [{modules :optimized
-    :keys [^File public-dir cljs-runtime-path]
-    :as state}]
-
-  (flush-foreign-bundles state)
-
-  (with-logged-time
-    [state {:type :flush-optimized}]
-
-    (when-not (seq modules)
-      (throw (ex-info "flush before optimize?" {})))
-
-    (when-not public-dir
-      (throw (ex-info "missing :public-dir" {})))
-
-    (doseq [{:keys [output source-map-name source-map-json name js-name] :as mod} modules]
-      (let [target (io/file public-dir js-name)]
-
-        (io/make-parents target)
-
-        (spit target output)
-
-        (log state {:type :flush-module
-                    :name name
-                    :js-name js-name
-                    :js-size (count output)})
-
-        (when source-map-name
-          (let [target (io/file public-dir cljs-runtime-path source-map-name)]
-            (io/make-parents target)
-            (spit target source-map-json)))))
-
-    ;; with-logged-time expects that we return the compiler-state
-    state
-    ))
-
-(defn load-externs [{:keys [externs deps-externs build-modules] :as state}]
-  (let [externs
-        (distinct
-          (concat
-            (:externs state)
-            (get-in state [:compiler-options :externs])))
-
-        manual-externs
-        (when (seq externs)
-          (->> externs
-               (map
-                 (fn [ext]
-                   (if-let [rc (or (io/resource ext)
-                                   (let [file (io/file ext)]
-                                     (when (.exists file)
-                                       file)))]
-                     (SourceFile/fromCode (str "EXTERNS:" ext) (slurp rc))
-                     (do (log state {:type :missing-externs
-                                     :extern ext})
-                         nil))))
-               (remove nil?)
-               ;; just to force the logging
-               (into [])))
-
-        deps-externs
-        (->> (for [[deps-path externs] deps-externs
-                   {:keys [name source] :as ext} externs]
-               ;; FIXME: use url? deps-path is accurate enough for now
-               (SourceFile/fromCode (str "EXTERNS:" deps-path "!/" name) source))
-             (into []))
-
-        foreign-externs
-        (->> build-modules
-             (mapcat :sources)
-             (map #(get-in state [:sources %]))
-             (filter foreign?)
-             (filter :externs-source)
-             (map (fn [{:keys [source-path js-name externs externs-source] :as foreign-src}]
-                    (SourceFile/fromCode (str "EXTERNS:" source-path "!/" js-name) externs-source)))
-             ;; just to force the logging
-             (into []))]
-
-    (->> (concat default-externs deps-externs foreign-externs manual-externs)
-         (into []))
-    ))
-
-;; added by default in init-state
-(defn closure-add-replace-constants-pass [cc ^CompilerOptions co state]
-  (.addCustomPass co CustomPassExecutionTime/BEFORE_CHECKS (ReplaceCLJSConstants. cc)))
-
-(defn closure-register-cljs-protocol-properties
-  "this is needed to make :check-types work
-
-   It registers all known CLJS protocols with the Closure TypeRegistry
-   each method is as a property on Object since most of the time Closure doesn't know the proper type
-   and annotating everything seems unlikely.
-
-   The property on Object doesn't hurt and won't hinder renaming (as opposed to externs)"
-  [cc co {:keys [compiler-env build-sources] :as state}]
-  (when (contains? #{:warning :error} (get-in state [:compiler-options :closure-warnings :check-types]))
-    (let [type-reg
-          (.getTypeRegistry cc)
-
-          obj-type
-          (.getType type-reg "Object")]
-
-      ;; some general properties
-      (doseq [prop
-              ["cljs$lang$protocol_mask$partition$"
-               "cljs$lang$macro"
-               "cljs$lang$test"]]
-        (.registerPropertyOnType type-reg prop obj-type))
-
-      ;; find all protocols and register the protocol method properties
-      (doseq [ana-ns (vals (::ana/namespaces compiler-env))
-              :let [{:keys [defs]} ana-ns]
-              def (vals defs)
-              :when (-> def :meta :protocol-symbol)]
-
-        (let [{:keys [name meta]} def
-              {:keys [protocol-info]} meta
-
-              prefix
-              (str (comp/protocol-prefix name))]
-
-          ;; the marker prop
-          ;; some.prototype.cljs$core$ISeq$ = cljs.core.PROTOCOL_SENTINEL;
-          (.registerPropertyOnType type-reg prefix obj-type)
-
-          (doseq [[meth-name meth-sigs] (:methods protocol-info)
-                  :let [munged-name (comp/munge meth-name)]
-                  meth-sig meth-sigs]
-
-            (let [arity
-                  (count meth-sig)
-
-                  prop
-                  (str prefix munged-name "$arity$" arity)]
-
-              ;; register each arity some.prototype.cljs$core$ISeq$_seq$arity$1
-              (.registerPropertyOnType type-reg prop obj-type)
-              )))))))
-
-(defn read-variable-map [{:keys [cache-dir] :as state} name]
-  (let [map-file (io/file cache-dir name)]
-    (when (.exists map-file)
-      (try
-        (VariableMap/load (.getAbsolutePath map-file))
-        (catch Exception e
-          (prn [:variable-map-load map-file e])
-          nil)))))
-
-(defn write-variable-map [{:keys [cache-dir] :as state} name map]
-  (when map
-    (let [map-file
-          (doto (io/file cache-dir name)
-            (io/make-parents))
-
-          bytes
-          (ByteArrayInputStream. (.toBytes map))]
-
-      (with-open [out (FileOutputStream. map-file)]
-        (io/copy bytes out)))))
-
-(defn closure-add-variable-maps [cc co {:keys [cache-dir] :as state}]
-  (when-some [data (read-variable-map state "closure.property.map")]
-    (.setInputPropertyMap co data))
-
-  (when-some [data (read-variable-map state "closure.variable.map")]
-    (.setInputVariableMap co data)))
-
 (defn add-closure-configurator
   "adds a closure configurator 2-arity function that will be called before the compiler is invoked
    signature of the callback is (fn [compiler compiler-options])
@@ -2527,494 +2034,14 @@ normalize-resource-name
   [state callback]
   (update state :closure-configurators conj callback))
 
-(defn js-error-xf [state ^com.google.javascript.jscomp.Compiler cc]
-  (comp
-    ;; remove some annoying UNDECLARED_VARIABLES in cljs/core.cljs
-    ;; these are only used in self-hosted but I don't want to provide externs for them in browser builds
-    #_(remove
-        (fn [^JSError err]
-          (and (= "cljs/core.js" (.-sourceName err))
-               (let [text (.-description err)]
-                 (or (= "variable process is undeclared" text)
-                     (= "variable global is undeclared" text))))))
-    (map
-      (fn [^JSError err]
-        (let [sb
-              (StringBuilder.)
-
-              source-name
-              (.-sourceName err)
-
-              line
-              (.getLineNumber err)
-
-              column
-              (.getCharno err)
-
-              mapping
-              (.getSourceMapping cc source-name line column)]
-
-          (when mapping
-            (doto sb
-              (.append (.getOriginalFile mapping))
-              (.append "[")
-              (.append (.getLineNumber mapping))
-              (.append ":")
-              (.append (.getColumnPosition mapping))
-              (.append "]")
-              (.append " (compiled to ")))
-
-          (doto sb
-            (.append source-name)
-            (.append "[")
-            (.append line)
-            (.append ":")
-            (.append column)
-            (.append "]"))
-
-          (when mapping
-            (.append sb ")"))
-
-          (doto sb
-            (.append "\n\t")
-            (.append (.-description err)))
-
-          (-> {:line line
-               :column column
-               :source-name source-name
-               :msg (.toString sb)}
-              (cond->
-                mapping
-                (assoc :original-line (.getLineNumber mapping)
-                       :original-column (.getColumnPosition mapping)
-                       :original-name (.getOriginalFile mapping)))))))))
-
-;; FIXME: this only works if flush-sources-by-name was called before optimize
-;; as it works off the source map file that was generated
-;; could work off the :source-map key but that isn't present when using cached files
-;; would also need to convert to closure sm format which is then done again on flush
-;; I think I can live with flush before optimize for now
-(defn add-input-source-maps [state cc]
-  (let [{:keys [build-sources public-dir cljs-runtime-path]} state]
-    (doseq [src build-sources]
-      (let [{:keys [js-name name] :as rc}
-            (get-in state [:sources src])
-
-            sm-file
-            (io/file public-dir cljs-runtime-path (str js-name ".map"))]
-
-        (when (.exists sm-file)
-          ;; not using SourceFile/fromFile as the name that gets displayed in warnings sucks
-          ;; public/js/cljs-runtime/cljs/core.cljs vs cljs/core.cljs
-          (.addInputSourceMap cc js-name (SourceMapInput. (SourceFile/fromCode name (slurp sm-file))))
-          )))))
+(defn closure-check [state]
+  (closure/closure-check state))
 
 (defn closure-optimize
-  "takes the current defined modules and runs it through the closure optimizer
-
-   will return the state with :optimized a list of module which now have a js-source and optionally source maps"
-  ([state optimizations]
-   (-> state
-       (update :compiler-options assoc :optimizations optimizations)
-       (closure-optimize)))
-  ([{:keys [build-modules closure-configurators bundle-foreign cljs-runtime-path] :as state}]
-   (when-not (seq build-modules)
-     (throw (ex-info "optimize before compile?" {})))
-
-   (let [source-map?
-         (boolean (:source-map state))]
-
-     ;; FIXME: required for input source maps
-     ;; I do not like flushing here since you do not need the intermediate sources
-     ;; when working with an optimized build
-     ;; source maps however need them
-     (when source-map?
-       (flush-sources-by-name state))
-
-     (with-logged-time
-       [state {:type :optimize}]
-
-       (let [modules
-             (make-closure-modules state build-modules)
-
-             ;; can't use the shared one, that only allows one compile
-             ;; noop because we don't want to print any errors, we will emit
-             ;; them through our log instead
-             cc
-             (make-closure-compiler (noop-error-manager))
-
-             co
-             (doto (closure/make-options (:compiler-options state))
-               (.resetWarningsGuard)
-               (.setWarningLevel DiagnosticGroups/CHECK_TYPES CheckLevel/OFF)
-               ;; really only want the undefined variables warnings
-               ;; must turn off CHECK_VARIABLES first or it will complain too much (REDECLARED_VARIABLES)
-               (.setWarningLevel DiagnosticGroups/CHECK_VARIABLES CheckLevel/OFF)
-               ;; this one is very helpful to spot missing externs
-               ;; (js/React...) will otherwise just work without externs
-               (.setWarningLevel DiagnosticGroups/UNDEFINED_VARIABLES CheckLevel/WARNING))
-
-             ;; FIXME: make-options already called set-options
-             ;; but I want to reset warnings and enable UNDEFINED_VARIABLES
-             ;; calling set-options again so user :closure-warnings works
-             _ (closure/set-options (:compiler-options state) co)
-
-             _ (when source-map?
-                 ;; FIXME: path is not used at all but needs to be set
-                 ;; otherwise the applyInputSourceMaps will have no effect since it happens
-                 ;; inside a if (sourceMapOutputPath != null)
-                 (.setSourceMapOutputPath co "/dev/null")
-                 (.setApplyInputSourceMaps co true))
-
-             ;; (fn [closure-compiler compiler-options state])
-             _ (doseq [cfg closure-configurators]
-                 (cfg cc co state))
-
-             externs
-             (load-externs state)
-
-             state
-             (assoc state
-                    :build-externs externs
-                    :closure-compiler cc
-                    :closure-compiler-options co)
-
-             _ (when source-map?
-                 (add-input-source-maps state cc))
-
-             result
-             (.compileModules cc externs (map :js-module modules) co)]
-
-         (let [warnings (into [] (js-error-xf state cc) (.warnings result))]
-           (when (seq warnings)
-             (log state {:type :closure-warnings
-                         :warnings warnings})))
-
-         (if-not (.success result)
-           (let [errors (into [] (js-error-xf state cc) (.errors result))]
-             (throw (ex-info "optimization failed" {:tag ::closure :errors errors})))
-           (let [source-map
-                 (when source-map? (.getSourceMap cc))
-
-                 optimized-modules
-                 (->> modules
-                      (mapv
-                        (fn [{:keys [js-name js-module prepend append default] :as mod}]
-                          (when source-map
-                            (.reset source-map))
-                          (let [output
-                                (.toSource cc js-module)
-
-                                module-prefix
-                                (cond
-                                  default
-                                  (:unoptimizable state)
-
-                                  (:web-worker mod)
-                                  (let [deps (:depends-on mod)]
-                                    (str (str/join "\n" (for [other modules
-                                                              :when (contains? deps (:name other))]
-                                                          (str "importScripts('" (:js-name other) "');")))
-                                         "\n\n"))
-
-                                  :else
-                                  "")
-
-                                module-prefix
-                                (if (= :inline bundle-foreign)
-                                  (str prepend (foreign-js-source-for-mod state mod) module-prefix)
-                                  (str prepend "\n" module-prefix))
-
-                                module-prefix
-                                (if (seq module-prefix)
-                                  (str module-prefix "\n")
-                                  "")
-
-                                source-map-name
-                                (str js-name ".map")
-
-                                final-output
-                                (str module-prefix
-                                     output
-                                     append
-                                     (when source-map
-                                       (str "\n//# sourceMappingURL=" cljs-runtime-path "/" source-map-name "\n")))]
-
-                            (-> mod
-                                (dissoc :js-module)
-                                (assoc :output final-output)
-                                (cond->
-                                  source-map
-                                  (merge (let [sw
-                                               (StringWriter.)
-
-                                               _ (.setWrapperPrefix source-map module-prefix)
-                                               _ (.appendTo source-map sw js-name)
-
-                                               closure-json
-                                               (.toString sw)]
-
-                                           {:source-map-json closure-json
-                                            :source-map-name source-map-name}))))))))]
-
-             ;; see closure-add-variable-maps configurator which loads these before compiling
-             (write-variable-map state "closure.variable.map" (.-variableMap result))
-             (write-variable-map state "closure.property.map" (.-propertyMap result))
-
-             (assoc state :closure-result result :optimized optimized-modules))))))))
-
-(defn- ns-list-string [coll]
-  (->> coll
-       (map #(str "'" (comp/munge %) "'"))
-       (str/join ",")))
-
-(defn closure-goog-deps
   ([state]
-   (closure-goog-deps state (-> state :sources keys)))
-  ([state source-names]
-   (->> source-names
-        (remove #{"goog/base.js"})
-        (map #(get-in state [:sources %]))
-        (map (fn [{:keys [js-name require-order provides]}]
-               (str "goog.addDependency(\"" js-name "\","
-                    "[" (ns-list-string provides) "],"
-                    "[" (->> require-order (remove '#{goog}) (ns-list-string)) "]);")))
-        (str/join "\n"))))
-
-
-
-(defn directory? [^File x]
-  (and (instance? File x)
-       (or (not (.exists x))
-           (.isDirectory x))))
-
-;; FIXME: this could inline everything from a jar since they will never be live-reloaded
-;; but it would need to create a proper source-map for the module file
-;; since we need that for CLJS files
-;; compact-mode has a bunch of work for index source-maps, should be an easy port
-(defn inlineable? [{:keys [type from-jar provides requires] :as src}]
-  ;; only inline things from jars
-  (and from-jar
-       ;; only js is inlineable since we want proper source maps for cljs
-       (= :js type)
-       ;; only inline goog for now
-       (every? #(str/starts-with? (str %) "goog") requires)
-       (every? #(str/starts-with? (str %) "goog") provides)
-       ))
-
-(defn flush-unoptimized-module!
-  [{:keys [dev-inline-js public-dir public-path unoptimizable] :as state}
-   {:keys [default js-name prepend append sources web-worker] :as mod}]
-
-  (let [inlineable-sources
-        (if-not dev-inline-js
-          []
-          (->> sources
-               (map #(get-in state [:sources %]))
-               (filter inlineable?)
-               (into [])))
-
-        inlineable-set
-        (into #{} (map :name) inlineable-sources)
-
-        target
-        (io/file public-dir js-name)
-
-        inlined-js
-        (->> inlineable-sources
-             (map :output)
-             (str/join "\n"))
-
-        inlined-provides
-        (->> inlineable-sources
-             (mapcat :provides)
-             (into #{}))
-
-        ;; goog.writeScript_ (via goog.require) will set these
-        ;; since we skip these any later goog.require (that is not under our control, ie REPL)
-        ;; won't recognize them as loaded and load again
-        closure-require-hack
-        (->> inlineable-sources
-             (map :js-name)
-             (map (fn [js]
-                    ;; not entirely sure why we are setting the full path and just the name
-                    ;; goog seems to do that
-                    (str "goog.dependencies_.written[\"" js "\"] = true;\n"
-                         "goog.dependencies_.written[\"" public-path "/" js "\"] = true;")
-                    ))
-             (str/join "\n"))
-
-        requires
-        (->> sources
-             (remove inlineable-set)
-             (mapcat #(get-in state [:sources % :provides]))
-             (distinct)
-             (remove inlined-provides)
-             (remove '#{goog})
-             (map (fn [ns]
-                    (str "goog.require('" (comp/munge ns) "');")))
-             (str/join "\n"))
-
-        out
-        (str inlined-js
-             prepend
-             closure-require-hack
-             requires
-             append)
-
-        out
-        (if (or default web-worker)
-          ;; default mod needs closure related setup and goog.addDependency stuff
-          (str unoptimizable
-               (when web-worker
-                 "\nvar CLOSURE_IMPORT_SCRIPT = function(src) { importScripts(src); };\n")
-               (closure-defines-and-base state)
-               (closure-goog-deps state (:build-sources state))
-               "\n\n"
-               out)
-          ;; else
-          out)]
-
-    (spit target out)))
-
-(defn flush-unoptimized!
-  [{:keys [build-modules public-dir] :as state}]
-  {:pre [(directory? public-dir)]}
-
-  ;; FIXME: this always flushes
-  ;; it could do partial flushes when nothing was actually compiled
-  ;; a change in :closure-defines won't trigger a recompile
-  ;; so just checking if nothing was compiled is not reliable enough
-  ;; flushing really isn't that expensive so just do it always
-
-  (when-not (seq build-modules)
-    (throw (ex-info "flush before compile?" {})))
-
-  (flush-sources-by-name state)
-
-  (with-logged-time
-    [state {:type :flush-unoptimized}]
-
-    (doseq [mod build-modules]
-      (flush-unoptimized-module! state mod))
-
-    state
-    ))
-
-(defn flush-unoptimized
-  [state]
-  "util for ->"
-  (flush-unoptimized! state)
-  state)
-
-(defn line-count [text]
-  (with-open [rdr (io/reader (StringReader. text))]
-    (count (line-seq rdr))))
-
-(defn create-index-map
-  [{:keys [public-dir cljs-runtime-path] :as state}
-   out-file
-   init-offset
-   {:keys [sources js-name] :as mod}]
-  (let [index-map
-        (reduce
-          (fn [src-map src-name]
-            (let [{:keys [type output js-name] :as rc} (get-in state [:sources src-name])
-                  source-map-file (io/file public-dir cljs-runtime-path (str js-name ".map"))
-                  lc (line-count output)
-                  start-line (:current-offset src-map)
-
-                  ;; extra 2 lines per file
-                  ;; // SOURCE comment
-                  ;; goog.dependencies_.written[src] = true;
-                  src-map (update src-map :current-offset + lc 2)]
-
-              (if (and (= :cljs type)
-                       (.exists source-map-file))
-                (update src-map :sections conj {:offset {:line (+ start-line 3) :column 0}
-                                                ;; :url (str js-name ".map")
-                                                ;; chrome doesn't support :url
-                                                ;; see https://code.google.com/p/chromium/issues/detail?id=552455
-                                                ;; FIXME: inlining the source-map is expensive due to excessive parsing
-                                                ;; could try to insert MARKER instead and str/replace
-                                                ;; 300ms is acceptable for now, but might not be on bigger projects
-                                                ;; flushing the unoptmized version should not exceed 100ms
-                                                :map (let [sm (json/read-str (slurp source-map-file))]
-                                                       ;; must set sources and file to complete relative paths
-                                                       ;; as the source map only contains local references without path
-                                                       (assoc sm
-                                                              "sources" [src-name]
-                                                              "file" js-name))
-                                                })
-                ;; only have source-maps for cljs
-                src-map)
-              ))
-          {:current-offset init-offset
-           :version 3
-           :file (str "../" js-name)
-           :sections []}
-          sources)
-
-        index-map (dissoc index-map :current-offset)]
-
-    ;; (pprint index-map)
-    (spit out-file (json/write-str index-map))
-    ))
-
-(defn flush-unoptimized-compact
-  [{:keys [build-modules public-dir unoptimizable cljs-runtime-path] :as state}]
-  {:pre [(directory? public-dir)]}
-
-  (when-not (seq build-modules)
-    (throw (ex-info "flush before compile?" {})))
-
-  (flush-sources-by-name state)
-
-  (with-logged-time
-    [state {:type :flush-unoptimized
-            :compact true}]
-
-    ;; flush fake modules
-    (doseq [{:keys [default js-name name prepend append sources web-worker] :as mod} build-modules]
-      (let [target (io/file public-dir js-name)
-            append-to-target
-            (fn [text]
-              (spit target text :append true))]
-
-        (spit target prepend)
-        (when (or default web-worker)
-          (append-to-target
-            (str unoptimizable
-                 (if web-worker
-                   "\nvar SHADOW_IMPORT = function(src) { importScripts(src); };\n"
-                   ;; FIXME: should probably throw an error because we NEVER want to import anything this way
-                   "\nvar SHADOW_IMPORT = function(src, opt_sourceText) { console.log(\"BROKEN IMPORT\", src); };\n"
-                   )
-                 (closure-defines-and-base state)
-                 (closure-goog-deps state (:build-sources state))
-                 "\n\n"
-                 )))
-
-        ;; at least line-count must be captured here
-        ;; since it is the initial offset before we actually have a source map
-        (create-index-map
-          state
-          (io/file public-dir cljs-runtime-path (str (clojure.core/name name) "-index.js.map"))
-          (line-count (slurp target))
-          mod)
-
-        (doseq [src-name sources
-                :let [{:keys [output name js-name] :as rc} (get-in state [:sources src-name])]]
-          (append-to-target (str "// SOURCE=" name "\n"))
-          ;; pretend we actually loaded a separate file, live-reload needs this
-          (append-to-target (str "goog.dependencies_.written[" (pr-str js-name) "] = true;\n"))
-          (append-to-target (str (str/trim (str/replace output "//# sourceMappingURL=" "// ")) "\n")))
-
-        (append-to-target (str "//# sourceMappingURL=" cljs-runtime-path "/" (clojure.core/name name) "-index.js.map\n"))
-        )))
-
-  ;; return unmodified state
-  state)
+   (closure/closure-optimize state))
+  ([state optimizations]
+   (closure/closure-optimize state optimizations)))
 
 (defn get-reloadable-source-paths [state]
   (->> state
@@ -3168,7 +2195,7 @@ normalize-resource-name
   "blocks current thread waiting for modified files
   return resource maps with a :scan key which is either :new :modified :delete"
   [{:keys [sources] :as initial-state}]
-  (log initial-state {:type :waiting-for-modified-files})
+  (util/log initial-state {:type :waiting-for-modified-files})
   (loop [state initial-state
          i 0]
 
@@ -3187,21 +2214,21 @@ normalize-resource-name
 
 (defn ^:deprecated reload-modified-resource
   [state {:keys [scan name file ns] :as rc}]
-  (log state {:type :reload
-              :action scan
-              :ns ns
-              :name name})
+  (util/log state {:type :reload
+                   :action scan
+                   :ns ns
+                   :name name})
   (case scan
     :macro
     (do (try
           ;; FIXME: :reload enough probably?
           (require ns :reload-all)
           (catch Exception e
-            (log state {:type :macro-error
-                        :ns ns
-                        :name name
-                        :file file
-                        :exception e})))
+            (util/log state {:type :macro-error
+                             :ns ns
+                             :name name
+                             :file file
+                             :exception e})))
         (assoc-in state [:macros ns] (dissoc rc :scan)))
 
     :delete
@@ -3237,7 +2264,7 @@ enable-emit-constants [state]
 
 (defn enable-source-maps [state]
   (-> state
-      (update :compiler-options assoc :source-map "cljs.closure/make-options expects a string but we dont use it")
+      (update :compiler-options assoc :source-map "/dev/null")
       (assoc :source-map true)))
 
 (defn merge-compiler-options [state opts]
@@ -3265,13 +2292,13 @@ enable-emit-constants [state]
 
 (def stdout-log
   (reify log/BuildLog
-    (log* [_ state evt]
+    (util/log* [_ state evt]
       (locking stdout-lock
         (println (log/event-text evt))
         ))))
 
 (defn init-state []
-  (-> {::is-compiler-state true
+  (-> {::util/is-compiler-state true
 
        :ignore-patterns
        #{#"^node_modules/"
@@ -3285,7 +2312,7 @@ enable-emit-constants [state]
         #"classes(/?)$"
         #"java(/?)$"]
 
-       ::cc (make-closure-compiler)
+       ::cc (closure/make-closure-compiler)
 
        ;; map of {source-path [global-extern-names ...]}
        ;; provided by the deps.cljs of all source-paths
@@ -3352,9 +2379,9 @@ enable-emit-constants [state]
        :logger
        stdout-log}
 
-      (add-closure-configurator closure-register-cljs-protocol-properties)
-      (add-closure-configurator closure-add-replace-constants-pass)
-      (add-closure-configurator closure-add-variable-maps)
+      (add-closure-configurator closure/closure-register-cljs-protocol-properties)
+      (add-closure-configurator closure/closure-add-replace-constants-pass)
+      (add-closure-configurator closure/closure-add-variable-maps)
       ))
 
 (defn watch-and-repeat! [state callback]
@@ -3371,4 +2398,13 @@ enable-emit-constants [state]
 (defn has-tests? [{:keys [requires] :as rc}]
   (contains? requires 'cljs.test))
 
+;; api delegation
 
+(defn flush-unoptimized [state]
+  (output/flush-unoptimized state))
+
+(defn flush-modules-to-disk [state]
+  (output/flush-modules-to-disk state))
+
+(defn flush-sources-by-name [state]
+  (output/flush-sources-by-name state))

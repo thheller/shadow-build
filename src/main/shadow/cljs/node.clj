@@ -1,11 +1,13 @@
 (ns shadow.cljs.node
   (:refer-clojure :exclude [flush compile])
-  (:require [shadow.cljs.build :as cljs]
-            [shadow.cljs.log :as log]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.string :as str]
+            [clojure.data.json :as json]
             [cljs.compiler :as comp]
-            [clojure.data.json :as json])
+            [shadow.cljs.log :as log]
+            [shadow.cljs.build :as cljs]
+            [shadow.cljs.output :as output]
+            [shadow.cljs.util :as util])
   (:import (java.lang ProcessBuilder$Redirect)))
 
 (defmethod log/event->str ::flush-unoptimized
@@ -78,15 +80,15 @@
 (defn closure-defines
   [state]
   (str "\nSHADOW_ENV.CLOSURE_NO_DEPS = true;\n"
-       "\nSHADOW_ENV.CLOSURE_DEFINES = " (cljs/closure-defines-json state) ";\n"))
+       "\nSHADOW_ENV.CLOSURE_DEFINES = " (output/closure-defines-json state) ";\n"))
 
 (defn flush-unoptimized
   [{:keys [build-modules cljs-runtime-path source-map public-dir node-config] :as state}]
-  {:pre [(cljs/directory? public-dir)]}
+  {:pre [(output/directory? public-dir)]}
   (when (not= 1 (count build-modules))
     (throw (ex-info "node builds can only have one module!" {})))
 
-  (cljs/flush-sources-by-name state)
+  (output/flush-sources-by-name state)
 
   ;; FIXME: this is a bit annoying
   ;; goog/base.js is never compiled and never appears in module :sources
@@ -95,12 +97,12 @@
       (update-in [:sources "goog/base.js"]
         (fn [{:keys [input] :as rc}]
           (assoc rc :output @input)))
-      (cljs/flush-sources-by-name ["goog/base.js"]))
+      (output/flush-sources-by-name ["goog/base.js"]))
 
   (let [{:keys [output-to]}
         node-config]
 
-    (cljs/with-logged-time
+    (util/with-logged-time
       [state {:type ::flush-unoptimized
               :output-file (.getAbsolutePath output-to)}]
 
@@ -174,7 +176,7 @@
 (defn flush-optimized
   [{modules :optimized :keys [node-config] :as state}]
   (let [{:keys [output-to]} node-config]
-    (cljs/with-logged-time
+    (util/with-logged-time
       [state {:type ::flush-optimized
               :output-file (.getAbsolutePath output-to)}]
 
@@ -217,7 +219,7 @@
     ;; I prefer to see progress
     ;; (prn (apply shell/sh script-args))
 
-    (cljs/with-logged-time
+    (util/with-logged-time
       [state {:type ::execute!
               :args script-args}]
       (let [proc
@@ -311,7 +313,7 @@
              (into []))]
 
     (if (empty? test-namespaces)
-      (do (cljs/log state {:type :info
+      (do (util/log state {:type :info
                            :msg (format "No tests to run for: %s" (pr-str source-names))})
           state)
       (do (-> state

@@ -6,6 +6,7 @@
             [shadow.cljs.node :as node]
             [shadow.cljs.util :as util]
             [shadow.cljs.umd :as umd]
+            [shadow.cljs.cache :as cache]
             [cljs.analyzer :as ana]
             [clojure.pprint :refer (pprint)]
             [clojure.string :as str]
@@ -666,8 +667,8 @@
   (let [out (File. "target/dummy.cache")
         data {:dummy "data"
               :url (URL. "http://github.com")}
-        read (do (cljs/write-cache out data)
-                 (cljs/read-cache out))]
+        read (do (cache/write-cache out data)
+                 (cache/read-cache out))]
     (is (= data read))))
 
 

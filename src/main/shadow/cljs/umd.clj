@@ -1,9 +1,11 @@
 (ns shadow.cljs.umd
-  (:require [shadow.cljs.build :as cljs]
-            [clojure.java.io :as io]
+  (:require [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str]
-            [shadow.cljs.node :as node]))
+            [shadow.cljs.build :as cljs]
+            [shadow.cljs.output :as output]
+            [shadow.cljs.node :as node]
+            [shadow.cljs.util :as util]))
 
 (defn flush-module [state]
   (node/flush-optimized state))
@@ -16,7 +18,7 @@
   ([state exports]
    (create-module state exports {}))
   ([state exports {:keys [output-to public-dir] :as opts}]
-   {:pre [(cljs/compiler-state? state)
+   {:pre [(util/compiler-state? state)
           (map? exports)
           (seq exports)
           (map? opts)]}
