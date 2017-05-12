@@ -86,7 +86,7 @@
   [{:keys [build-modules cljs-runtime-path source-map public-dir node-config] :as state}]
   {:pre [(output/directory? public-dir)]}
   (when (not= 1 (count build-modules))
-    (throw (ex-info "node builds can only have one module!" {})))
+    (throw (ex-info "node builds can only have one module!" {:tag ::output :build-modules build-modules})))
 
   (output/flush-sources-by-name state)
 
@@ -181,7 +181,7 @@
               :output-file (.getAbsolutePath output-to)}]
 
       (when (not= 1 (count modules))
-        (throw (ex-info "node builds can only have one module!" {})))
+        (throw (ex-info "node builds can only have one module!" {:tag ::output :modules modules})))
 
       (when-not (seq modules)
         (throw (ex-info "flush before optimize?" {})))

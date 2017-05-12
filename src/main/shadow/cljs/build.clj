@@ -578,7 +578,7 @@ normalize-resource-name
                                 (when-not src-name
                                   (throw
                                     (ex-info
-                                      (format "ns \"%s\" not available, required by %s" require-sym name)
+                                      (format "The required \"%s\" is not available, required by \"%s\"" require-sym name)
                                       {:tag ::missing-ns
                                        :ns require-sym
                                        :src name})))
