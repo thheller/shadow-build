@@ -70,10 +70,11 @@
   {:requires :uses
    :require-macros :use-macros})
 
-(defn- check-require-once! [{:keys [name requires] :as ns-info} require-ns]
-  (when (some #(= % require-ns) (vals requires))
-    (throw (ex-info (format "NS:%s has duplicate require/use for %s" name require-ns) {:ns-info ns-info}))
-    ))
+;; not actually an error to require things twice, clojure does allow this as well
+#_(defn- check-require-once! [{:keys [name requires] :as ns-info} require-ns]
+    (when (some #(= % require-ns) (vals requires))
+      (throw (ex-info (format "NS:%s has duplicate require/use for %s" name require-ns) {:ns-info ns-info}))
+      ))
 
 (defn is-macro?
   ([ns sym]
@@ -171,9 +172,6 @@
               (when-not (set/subset? (keys options) require-option-keys)
                 (throw (ex-info (str "Only :as alias and :refer (names) options supported in " key) {:form form :part part})))
 
-              (when (= :requires key)
-                (check-require-once! ns-info require-ns))
-
               (let [alias
                     (:as options)
 
@@ -245,9 +243,6 @@
               (let [{:keys [only] :as options} (apply hash-map more)]
                 (when-not (set/subset? (keys options) use-option-keys)
                   (throw (ex-info (str "Only :only (names)/:rename {from to} options supported in " key) {:form form :part part})))
-
-                (when (= :uses key)
-                  (check-require-once! ns-info use-ns))
 
                 (let [ns-info
                       (if (= :uses key)
