@@ -1,8 +1,8 @@
 # shadow-build
 
-Please consider using [shadow-devtools](https://github.com/thheller/shadow-devtools).
+Please use [shadow-devtools](https://github.com/thheller/shadow-devtools).
 
-This library is very low level and should only be used when writing custom build targets for `shadow-devtools`.
+This is deprecated and now part of `shadow-devtools`.
 
 ## License
 
