@@ -1,8 +1,6 @@
-# shadow-build
+# [DEPRECATED] shadow-build
 
-Please use [shadow-devtools](https://github.com/thheller/shadow-devtools).
-
-This is deprecated and now part of `shadow-devtools`.
+Everything in this project was merged into [shadow-cljs](https://github.com/thheller/shadow-cljs).
 
 ## License
 
